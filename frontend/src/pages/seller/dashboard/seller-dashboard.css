@@ -1,0 +1,83 @@
+/* ============================================================
+   Seller Dashboard — /app/seller — scoped to .sd-*
+   "Enterprise SaaS Administration / Control Plane" look: dense KPI
+   row, quiet cards, no playful color — see SELLER PORTAL spec section 13.
+   ============================================================ */
+
+.sd-page { padding-bottom: 40px; }
+
+.sd-header { margin-bottom: 18px; }
+.sd-header h1 { font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary); }
+.sd-subtitle { font-size: var(--fs-sm); color: var(--text-muted); margin-top: 2px; }
+
+.sd-loading, .sd-banner {
+  display: flex; align-items: center; gap: 8px; padding: 14px 16px; border-radius: var(--radius-md); font-size: var(--fs-sm);
+}
+.sd-loading { color: var(--text-muted); }
+.sd-banner.error { background: var(--color-danger-bg); color: var(--color-danger-dark); }
+.sd-spin { animation: sd-spin 0.8s linear infinite; }
+@keyframes sd-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+/* ── KPI cards ─────────────────────────────────────────────── */
+.sd-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 18px; }
+.sd-kpi-card {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl);
+  padding: 16px 18px; position: relative;
+}
+.sd-kpi-icon {
+  width: 34px; height: 34px; border-radius: var(--radius-md); display: flex; align-items: center;
+  justify-content: center; margin-bottom: 10px;
+}
+.sd-kpi-icon-primary { background: var(--color-primary-light); color: var(--color-primary); }
+.sd-kpi-icon-success  { background: var(--color-success-bg);   color: var(--color-success); }
+.sd-kpi-icon-warning  { background: var(--color-warning-bg);   color: var(--color-warning); }
+.sd-kpi-icon-danger   { background: var(--color-danger-bg);    color: var(--color-danger); }
+.sd-kpi-icon-info     { background: var(--color-info-bg);      color: var(--color-info); }
+.sd-kpi-val { font-size: 24px; font-weight: var(--fw-extrabold); color: var(--text-primary); letter-spacing: -0.4px; line-height: 1; }
+.sd-kpi-of { font-size: 14px; font-weight: 600; color: var(--text-faint); }
+.sd-kpi-label { font-size: var(--fs-sm); color: var(--text-muted); margin-top: 5px; font-weight: var(--fw-medium); }
+.sd-kpi-sub { font-size: 11px; color: var(--text-faint); font-weight: 400; }
+
+@media (max-width: 1400px) { .sd-kpis { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 900px)  { .sd-kpis { grid-template-columns: repeat(2, 1fr); } }
+
+/* ── Chart cards ───────────────────────────────────────────── */
+.sd-charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+@media (max-width: 1100px) { .sd-charts-row { grid-template-columns: 1fr; } }
+
+.sd-card {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl);
+  padding: 18px; margin-bottom: 14px;
+}
+.sd-charts-row .sd-card { margin-bottom: 0; }
+.sd-card-title { font-size: var(--fs-md); font-weight: var(--fw-semibold); color: var(--text-primary); margin-bottom: 12px; }
+.sd-card-subtitle { font-size: 11.5px; font-weight: 400; color: var(--text-faint); }
+
+.sd-legend { display: flex; gap: 14px; margin-bottom: 10px; font-size: 11.5px; color: var(--text-muted); }
+.sd-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.sd-legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+
+/* ── Bar chart (customer growth / usage trend) ────────────────── */
+.sd-chart-scroll { overflow-x: auto; }
+.sd-bar-chart { display: block; }
+.sd-bar-label { font-size: 9.5px; fill: var(--text-faint); }
+
+/* ── Horizontal bar list (subscription overview / module adoption) ── */
+.sd-hbar-list { display: flex; flex-direction: column; gap: 10px; }
+.sd-hbar-row { display: grid; grid-template-columns: 110px 1fr 44px; align-items: center; gap: 10px; }
+.sd-hbar-label { font-size: 12.5px; color: var(--text-secondary); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sd-hbar-track { background: #F1F5F9; border-radius: var(--radius-full); height: 8px; overflow: hidden; }
+.sd-hbar-fill { background: var(--color-primary); height: 100%; border-radius: var(--radius-full); }
+.sd-hbar-value { font-size: 12px; color: var(--text-muted); text-align: right; font-weight: 600; }
+
+/* ── Recent activity table ────────────────────────────────────── */
+.sd-table-wrap { overflow-x: auto; }
+.sd-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.sd-table th {
+  padding: 9px 14px; text-align: left; font-size: var(--fs-xs); font-weight: var(--fw-semibold);
+  letter-spacing: 0.4px; text-transform: uppercase; color: var(--text-muted); border-bottom: 1px solid var(--border);
+  background: #F8FAFC;
+}
+.sd-table td { padding: 10px 14px; color: var(--text-primary); border-bottom: 1px solid #F1F5F9; vertical-align: middle; }
+.sd-table tr:last-child td { border-bottom: none; }
+.sd-table tr:hover td { background: #FAFBFC; }

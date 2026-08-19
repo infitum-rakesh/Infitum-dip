@@ -1,0 +1,152 @@
+@import './variables.css';
+
+/* ── Reset ────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 16px; scroll-behavior: smooth; height: 100%; }
+body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  color: var(--text-primary);
+  background: var(--bg-body);
+  -webkit-font-smoothing: antialiased;
+  height: 100%;
+  overflow-x: hidden;
+}
+#root { height: 100%; }
+a { color: inherit; text-decoration: none; }
+ul, ol { list-style: none; }
+img, svg { display: block; max-width: 100%; }
+button { cursor: pointer; border: none; background: none; font-family: inherit; font-size: inherit; }
+input, select, textarea { font-family: inherit; font-size: inherit; }
+canvas { display: block; }
+
+/* ── Typography ───────────────────────────────────────────── */
+h1 { font-size: var(--fs-5xl); font-weight: var(--fw-extrabold); line-height: var(--lh-tight); }
+h2 { font-size: var(--fs-4xl); font-weight: var(--fw-bold); line-height: var(--lh-tight); }
+h3 { font-size: var(--fs-3xl); font-weight: var(--fw-semibold); }
+h4 { font-size: var(--fs-2xl); font-weight: var(--fw-semibold); }
+h5 { font-size: var(--fs-xl);  font-weight: var(--fw-semibold); }
+h6 { font-size: var(--fs-lg);  font-weight: var(--fw-medium); }
+p  { color: var(--text-muted); line-height: var(--lh-relaxed); }
+
+/* ── Utility — Display ─────────────────────────────────────── */
+.flex          { display: flex; }
+.flex-col      { flex-direction: column; }
+.flex-wrap     { flex-wrap: wrap; }
+.inline-flex   { display: inline-flex; align-items: center; }
+.items-center  { align-items: center; }
+.items-start   { align-items: flex-start; }
+.items-end     { align-items: flex-end; }
+.justify-center{ justify-content: center; }
+.justify-between{justify-content: space-between;}
+.justify-end   { justify-content: flex-end; }
+.flex-1        { flex: 1; }
+.flex-shrink-0 { flex-shrink: 0; }
+.gap-1         { gap: var(--space-1); }
+.gap-2         { gap: var(--space-2); }
+.gap-3         { gap: var(--space-3); }
+.gap-4         { gap: var(--space-4); }
+.gap-6         { gap: var(--space-6); }
+.gap-8         { gap: var(--space-8); }
+.grid          { display: grid; }
+.grid-2        { grid-template-columns: repeat(2, 1fr); }
+.grid-3        { grid-template-columns: repeat(3, 1fr); }
+.grid-4        { grid-template-columns: repeat(4, 1fr); }
+
+/* ── Utility — Spacing ─────────────────────────────────────── */
+.mt-1{margin-top:var(--space-1)}.mt-2{margin-top:var(--space-2)}.mt-3{margin-top:var(--space-3)}
+.mt-4{margin-top:var(--space-4)}.mt-6{margin-top:var(--space-6)}.mt-8{margin-top:var(--space-8)}
+.mb-2{margin-bottom:var(--space-2)}.mb-3{margin-bottom:var(--space-3)}.mb-4{margin-bottom:var(--space-4)}
+.mb-6{margin-bottom:var(--space-6)}.mb-8{margin-bottom:var(--space-8)}
+.ml-auto{margin-left:auto}.mr-auto{margin-right:auto}
+.p-4{padding:var(--space-4)}.p-5{padding:var(--space-5)}.p-6{padding:var(--space-6)}
+
+/* ── Utility — Typography ──────────────────────────────────── */
+.text-xs  { font-size: var(--fs-xs); }
+.text-sm  { font-size: var(--fs-sm); }
+.text-base{ font-size: var(--fs-base); }
+.text-md  { font-size: var(--fs-md); }
+.text-lg  { font-size: var(--fs-lg); }
+.text-xl  { font-size: var(--fs-xl); }
+.text-2xl { font-size: var(--fs-2xl); }
+.fw-medium   { font-weight: var(--fw-medium); }
+.fw-semibold { font-weight: var(--fw-semibold); }
+.fw-bold     { font-weight: var(--fw-bold); }
+.fw-extrabold{ font-weight: var(--fw-extrabold); }
+.text-muted  { color: var(--text-muted); }
+.text-faint  { color: var(--text-faint); }
+.text-primary-color { color: var(--color-primary); }
+.text-success{ color: var(--color-success); }
+.text-danger { color: var(--color-danger); }
+.text-warning{ color: var(--color-warning); }
+.text-center { text-align: center; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mono { font-family: var(--font-mono); }
+
+/* ── Utility — Layout ──────────────────────────────────────── */
+.w-full   { width: 100%; }
+.h-full   { height: 100%; }
+.min-h-0  { min-height: 0; }
+.hidden   { display: none !important; }
+.relative { position: relative; }
+.absolute { position: absolute; }
+.overflow-hidden{ overflow: hidden; }
+.overflow-auto  { overflow: auto; }
+.overflow-x-auto{ overflow-x: auto; }
+.cursor-pointer { cursor: pointer; }
+.select-none    { user-select: none; }
+
+/* ── Scrollbar (thin, tasteful) ────────────────────────────── */
+* { scrollbar-width: thin; scrollbar-color: #CBD5E1 transparent; }
+*::-webkit-scrollbar { width: 5px; height: 5px; }
+*::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: var(--radius-full); }
+
+/* ── Focus ring ────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* ── Divider ───────────────────────────────────────────────── */
+.divider { height: 1px; background: var(--border); margin: var(--space-4) 0; }
+
+/* ── Card ──────────────────────────────────────────────────── */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: var(--space-5);
+  box-shadow: var(--shadow-xs);
+}
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-4);
+}
+.card-title { font-size: var(--fs-lg); font-weight: var(--fw-semibold); color: var(--text-primary); }
+.card-subtitle { font-size: var(--fs-sm); color: var(--text-muted); margin-top: 2px; }
+
+/* ── Animations ────────────────────────────────────────────── */
+@keyframes fadeIn       { from{opacity:0}to{opacity:1} }
+@keyframes fadeInUp     { from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)} }
+@keyframes slideUp      { from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)} }
+@keyframes slideInRight { from{opacity:0;transform:translateX(12px)}to{opacity:1;transform:translateX(0)} }
+@keyframes spin         { from{transform:rotate(0deg)}to{transform:rotate(360deg)} }
+@keyframes pulse        { 0%,100%{opacity:1}50%{opacity:0.5} }
+@keyframes shimmer      { 0%{background-position:-200% 0}100%{background-position:200% 0} }
+
+.animate-fade-in    { animation: fadeIn 0.2s ease; }
+.animate-fade-in-up { animation: fadeInUp 0.3s ease; }
+.animate-slide-up   { animation: slideUp 0.2s ease; }
+.animate-spin       { animation: spin 0.7s linear infinite; }
+.animate-pulse      { animation: pulse 1.5s ease-in-out infinite; }
+
+/* ── Skeleton ──────────────────────────────────────────────── */
+.skeleton {
+  background: linear-gradient(90deg, #F1F5F9 25%, #E2E8F0 50%, #F1F5F9 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: var(--radius);
+}

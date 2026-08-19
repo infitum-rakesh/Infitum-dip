@@ -1,0 +1,526 @@
+/* ============================================================
+   SQL Workspace — /app/sql-workspace — scoped to .sqlw-*
+   ============================================================ */
+
+.sqlw-page { padding-bottom: 40px; display: flex; flex-direction: column; height: calc(100vh - 96px); }
+
+.sqlw-header { margin-bottom: 14px; flex-shrink: 0; }
+.sqlw-header h1 { font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary); }
+.sqlw-subtitle { font-size: var(--fs-sm); color: var(--text-muted); margin-top: 2px; }
+
+/* ── Tab bar ───────────────────────────────────────────────── */
+.sqlw-tabbar {
+  display: flex; align-items: center; gap: 2px; flex-shrink: 0; margin-bottom: 10px;
+  border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: thin;
+}
+.sqlw-tab {
+  display: flex; align-items: center; gap: 6px; padding: 8px 8px 8px 12px; max-width: 220px;
+  border: 1px solid transparent; border-bottom: none; border-radius: var(--radius-md) var(--radius-md) 0 0;
+  background: transparent; cursor: pointer; position: relative; flex-shrink: 0;
+}
+.sqlw-tab:hover { background: #F8FAFC; }
+.sqlw-tab.active {
+  background: var(--bg-card); border-color: var(--border); border-bottom: 1px solid var(--bg-card);
+  margin-bottom: -1px;
+}
+.sqlw-tab-label {
+  font-size: 12.5px; font-weight: 600; color: var(--text-secondary); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; max-width: 130px; display: inline-flex; align-items: center; gap: 4px;
+}
+.sqlw-tab.active .sqlw-tab-label { color: var(--text-primary); }
+.sqlw-tab-dirty { color: var(--color-primary); font-size: 9px; line-height: 1; }
+.sqlw-tab-rename {
+  font-size: 12.5px; font-weight: 600; color: var(--text-primary); border: 1px solid var(--color-primary);
+  border-radius: var(--radius-sm); padding: 1px 4px; width: 120px; outline: none;
+}
+.sqlw-tab-close, .sqlw-tab-menu-btn {
+  color: var(--text-faint); flex-shrink: 0; border-radius: var(--radius-sm); padding: 2px; display: flex;
+}
+.sqlw-tab-close:hover, .sqlw-tab-menu-btn:hover { background: var(--border); color: var(--text-secondary); }
+.sqlw-tab-menu-wrap { position: relative; flex-shrink: 0; }
+/* Rendered through a portal at document.body (see TabBar in SqlWorkspace.jsx)
+   — position/top/left come from the inline style computed from the
+   button's real screen coordinates, not from this class, so the menu
+   escapes the tab bar's own overflow-x: auto clipping. */
+.sqlw-tab-menu-backdrop { position: fixed; inset: 0; z-index: 60; }
+.sqlw-tab-menu {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-lg); z-index: 61; min-width: 130px; padding: 4px; display: flex; flex-direction: column;
+}
+.sqlw-tab-menu button {
+  text-align: left; font-size: 12.5px; color: var(--text-secondary); padding: 6px 8px; border-radius: var(--radius-sm);
+}
+.sqlw-tab-menu button:hover { background: #F8FAFC; color: var(--text-primary); }
+.sqlw-tab-add {
+  display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex-shrink: 0;
+  color: var(--text-faint); border-radius: var(--radius-md);
+}
+.sqlw-tab-add:hover { background: #F8FAFC; color: var(--color-primary); }
+
+.sqlw-layout { display: flex; gap: 14px; flex: 1; min-height: 0; }
+
+/* ── Sidebar ───────────────────────────────────────────────── */
+.sqlw-sidebar {
+  width: 250px; flex-shrink: 0; background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-xl); display: flex; flex-direction: column; overflow: hidden;
+}
+.sqlw-sidebar-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.sqlw-sidebar-tabs button {
+  flex: 1; padding: 10px 4px; font-size: 11.5px; font-weight: 600; color: var(--text-muted);
+  border-bottom: 2px solid transparent; display: flex; align-items: center; justify-content: center; gap: 4px;
+  white-space: nowrap;
+}
+.sqlw-sidebar-tabs button.active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
+.sqlw-count {
+  background: var(--color-primary-light); color: var(--color-primary); font-size: 10.5px; font-weight: 700;
+  border-radius: var(--radius-full); padding: 1px 6px;
+}
+
+.sqlw-tree, .sqlw-saved-list { flex: 1; overflow-y: auto; padding: 6px; }
+.sqlw-tree-empty {
+  padding: 16px 10px; font-size: 12.5px; color: var(--text-faint); display: flex; align-items: center; gap: 6px;
+}
+.sqlw-tree-empty.small { padding: 6px 10px 6px 26px; font-size: 12px; }
+
+.sqlw-tree-node { margin-bottom: 1px; }
+.sqlw-tree-schema {
+  width: 100%; display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-radius: var(--radius-md);
+  font-size: 12.5px; font-weight: 600; color: var(--text-secondary); text-align: left;
+}
+.sqlw-tree-schema:hover { background: #F8FAFC; }
+.sqlw-tree-schema svg:nth-child(2) { color: var(--text-faint); }
+
+.sqlw-tree-objects { padding-left: 20px; }
+.sqlw-tree-object {
+  width: 100%; display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: var(--radius-md);
+  font-size: 12px; color: var(--text-muted); text-align: left;
+}
+.sqlw-tree-object:hover { background: var(--color-primary-light); color: var(--color-primary); }
+
+/* ── Database Explorer ────────────────────────────────────────── */
+.sqlw-explorer { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+/* Matches .header-search-input (Header.css) — same pill shape, fill,
+   and focus treatment as the main top-bar search box, so this doesn't
+   read as a separate, plainer rectangular field. */
+.sqlw-exp-search {
+  display: flex; align-items: center; gap: 6px; margin: 6px 6px 2px; padding: 6px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-full); background: var(--bg-body);
+  color: var(--text-faint); flex-shrink: 0; transition: var(--transition);
+}
+.sqlw-exp-search:focus-within { border-color: var(--color-primary); background: var(--bg-card); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+/* The <input> itself carries its own default browser border unless
+   reset — left alone, that renders as a second, rectangular border
+   nested inside the pill-shaped wrapper above (the "dark box" look).
+   .header-search-input doesn't hit this because the border there is
+   set directly on the <input>, not a separate wrapper div. */
+.sqlw-exp-search input { flex: 1; font-size: 12px; color: var(--text-primary); background: transparent; border: none; outline: none; }
+.sqlw-exp-search-clear { cursor: pointer; }
+.sqlw-exp-search-clear:hover { color: var(--text-secondary); }
+
+.sqlw-exp-schema { margin-bottom: 1px; }
+.sqlw-exp-schema-row {
+  width: 100%; display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-radius: var(--radius-md);
+  font-size: 12.5px; font-weight: 600; color: var(--text-secondary); text-align: left;
+}
+.sqlw-exp-schema-row:hover { background: #F8FAFC; }
+.sqlw-exp-schema-body { padding-left: 10px; }
+
+.sqlw-exp-group { margin-bottom: 4px; }
+.sqlw-exp-group-label {
+  padding: 4px 8px; font-size: 10.5px; font-weight: 700; color: var(--text-faint);
+  text-transform: uppercase; letter-spacing: 0.4px;
+}
+
+.sqlw-exp-object-row {
+  width: 100%; display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 8px; border-radius: var(--radius-md);
+  font-size: 12px; color: var(--text-muted); text-align: left; cursor: grab; position: relative;
+}
+.sqlw-exp-object-row:hover { background: var(--color-primary-light); color: var(--color-primary); }
+.sqlw-exp-object-row:hover .sqlw-exp-object-icon { color: var(--color-primary); }
+.sqlw-exp-object-icon { color: var(--text-faint); flex-shrink: 0; }
+.sqlw-exp-object-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sqlw-exp-object-menu-wrap { position: relative; flex-shrink: 0; }
+.sqlw-exp-menu-btn {
+  color: var(--text-faint); border-radius: var(--radius-sm); padding: 2px; display: flex; opacity: 0;
+}
+.sqlw-exp-object-row:hover .sqlw-exp-menu-btn { opacity: 1; }
+.sqlw-exp-menu-btn:hover { background: var(--border); color: var(--text-secondary); }
+
+.sqlw-exp-menu, .sqlw-exp-genpopover {
+  position: absolute; top: 100%; right: 0; margin-top: 4px; background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-lg); z-index: 30; min-width: 190px; padding: 4px;
+}
+.sqlw-exp-menu { display: flex; flex-direction: column; }
+.sqlw-exp-menu button {
+  display: flex; align-items: center; gap: 7px; text-align: left; font-size: 12.5px; color: var(--text-secondary);
+  padding: 6px 8px; border-radius: var(--radius-sm); white-space: nowrap;
+}
+.sqlw-exp-menu button:hover { background: #F8FAFC; color: var(--text-primary); }
+.sqlw-exp-menu-sep { height: 1px; background: var(--border); margin: 4px 2px; }
+
+.sqlw-exp-genpopover { display: flex; flex-direction: column; gap: 6px; padding: 10px; min-width: 170px; }
+.sqlw-exp-genpopover label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
+.sqlw-exp-genpopover-insert {
+  margin-top: 4px; padding: 6px 10px; background: var(--color-primary); color: white; border-radius: var(--radius-md);
+  font-size: 12px; font-weight: 600;
+}
+
+.sqlw-exp-columns { padding: 2px 4px 6px 26px; }
+.sqlw-exp-col { display: flex; align-items: center; gap: 6px; padding: 3px 6px; font-size: 11.5px; }
+.sqlw-exp-col-name { color: var(--text-secondary); font-family: var(--font-mono); flex-shrink: 0; }
+.sqlw-exp-col-type { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.sqlw-exp-col-badges { display: flex; gap: 3px; flex-shrink: 0; }
+.sqlw-badge {
+  display: inline-flex; align-items: center; gap: 2px; font-size: 9px; font-weight: 700; padding: 1px 4px;
+  border-radius: var(--radius-sm); letter-spacing: 0.2px;
+}
+.sqlw-badge.pk { background: #FEF3C7; color: #92400E; }
+.sqlw-badge.fk { background: #DBEAFE; color: #1E40AF; }
+.sqlw-badge.unique { background: #EDE9FE; color: #5B21B6; }
+.sqlw-badge.notnull { background: #F1F5F9; color: var(--text-faint); }
+
+.sqlw-saved-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.sqlw-saved-scopes { display: flex; gap: 2px; padding: 6px 6px 0; flex-shrink: 0; }
+.sqlw-saved-scopes button {
+  flex: 1; padding: 6px 4px; font-size: 11px; font-weight: 600; color: var(--text-faint);
+  border-radius: var(--radius-md); background: var(--bg-body);
+}
+.sqlw-saved-scopes button.active { background: var(--color-primary-light); color: var(--color-primary); }
+.sqlw-saved-row {
+  width: 100%; display: flex; align-items: center; gap: 6px;
+  padding: 8px 10px; border-radius: var(--radius-md); font-size: 12.5px; color: var(--text-secondary); text-align: left;
+}
+.sqlw-saved-row:hover { background: #F8FAFC; }
+.sqlw-saved-row.active { background: var(--color-primary-light); color: var(--color-primary); font-weight: 600; }
+.sqlw-saved-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sqlw-saved-fav { color: var(--text-faint); flex-shrink: 0; }
+.sqlw-saved-fav:hover { color: #F59E0B; }
+.sqlw-saved-fav.active { color: #F59E0B; }
+.sqlw-saved-shared { color: var(--text-faint); flex-shrink: 0; }
+.sqlw-saved-delete { color: var(--text-faint); flex-shrink: 0; }
+.sqlw-saved-delete:hover { color: var(--color-danger); }
+.sqlw-share-toggle {
+  display: flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; color: var(--text-muted);
+  padding: 0 6px; cursor: pointer; user-select: none;
+}
+.sqlw-share-toggle input { cursor: pointer; }
+
+/* ── Main ──────────────────────────────────────────────────── */
+.sqlw-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+
+.sqlw-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sqlw-name-input {
+  font-size: var(--fs-md); font-weight: var(--fw-semibold); color: var(--text-primary);
+  border: 1px solid transparent; border-radius: var(--radius-md); padding: 6px 8px; width: 200px; outline: none;
+}
+.sqlw-name-input:hover, .sqlw-name-input:focus { border-color: var(--border); background: var(--bg-card); }
+.sqlw-select {
+  padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); background: white; outline: none; min-width: 180px;
+}
+.sqlw-select-narrow { min-width: 90px; }
+.sqlw-select:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+.sqlw-toolbar-spacer { flex: 1; }
+
+.sqlw-banner {
+  border-radius: var(--radius-md); padding: 9px 12px; font-size: var(--fs-sm);
+  display: flex; align-items: center; gap: 8px;
+}
+.sqlw-banner.small { padding: 6px 10px; font-size: 12px; }
+.sqlw-banner.error   { background: var(--color-danger-bg); color: var(--color-danger-dark); }
+.sqlw-banner.warning { background: var(--color-warning-bg); color: var(--color-warning-dark); }
+.sqlw-banner.success { background: var(--color-success-bg); color: var(--color-success-dark); }
+
+.sqlw-editor {
+  width: 100%; min-height: 140px; height: 22vh; resize: vertical; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius-lg); outline: none;
+  font-family: var(--font-mono); font-size: 13px; line-height: 1.6; color: var(--text-primary);
+  background: var(--bg-card);
+}
+.sqlw-editor:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+.sqlw-editor-hint { font-size: 11.5px; color: var(--text-faint); margin-top: -4px; }
+
+/* flex:1 (not a fixed vh height) is what makes the editor the ONE
+   flexible element in the .sqlw-main column — the results panel below
+   is sized via flexBasis (flex-shrink:0, see .sqlw-results), so as
+   dragging the resize handle changes that basis, the editor absorbs
+   exactly the complementary space. That keeps the total column height
+   constant and pinned to .sqlw-main's own bounded height, so the
+   execution footer at the bottom of the results panel never drifts —
+   only the editor/results boundary (the handle itself) moves. Without
+   this, the editor's height was fixed independent of the drag, so the
+   column's total content height changed with every drag frame and the
+   footer visibly moved (or the layout overflowed) instead of staying put. */
+.sqlw-monaco-wrap {
+  width: 100%; flex: 1; min-height: 140px; border: 1px solid var(--border); border-radius: var(--radius-lg);
+  overflow: hidden; background: var(--bg-card); transition: border-color 0.15s, box-shadow 0.15s;
+}
+.sqlw-monaco-wrap:focus-within { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+
+.sqlw-results-resize-handle {
+  height: 6px; margin: -6px 0 -2px; flex-shrink: 0; cursor: row-resize; position: relative; z-index: 1;
+}
+.sqlw-results-resize-handle::after {
+  content: ''; position: absolute; left: 0; right: 0; top: 2px; height: 2px; border-radius: 1px; background: transparent;
+}
+.sqlw-results-resize-handle:hover::after { background: var(--color-primary); }
+
+.sqlw-result-tabs { display: flex; align-items: center; gap: 2px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.sqlw-result-tabs button {
+  padding: 7px 12px; font-size: 12px; font-weight: 600; color: var(--text-muted);
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.sqlw-result-tabs button.active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
+.sqlw-result-tabs-minimized { cursor: pointer; }
+.sqlw-result-tabs-spacer { flex: 1; }
+.sqlw-panel-controls { display: flex; gap: 2px; padding-right: 2px; }
+.sqlw-panel-control {
+  display: flex; align-items: center; justify-content: center; width: 22px; height: 22px;
+  border-radius: var(--radius-sm); color: var(--text-muted);
+}
+.sqlw-panel-control:hover { background: var(--border); color: var(--text-primary); }
+.sqlw-plan-text {
+  flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 12px 14px;
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.6; color: var(--text-secondary); white-space: pre;
+}
+
+/* flex-basis (set inline, per resultsMode/resultsHeightPct) replaces the
+   old flex:1 fill-remaining-space behavior — flex-shrink:0 keeps that
+   basis from being squeezed by the editor above it once it's been
+   explicitly sized, whether by drag, maximize, or the 30% default. */
+.sqlw-results { flex: 0 0 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.sqlw-results-scroll { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+.sqlw-results-empty {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px;
+  color: var(--text-faint); font-size: 13px; background: var(--bg-card); border: 1px dashed var(--border); border-radius: var(--radius-xl);
+}
+
+/* ── Messages / Statistics tabs ───────────────────────────────── */
+.sqlw-messages { padding: 2px 0; }
+.sqlw-stats { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; }
+.sqlw-stats-table { border-collapse: collapse; font-size: 13px; }
+.sqlw-stats-table th, .sqlw-stats-table td { text-align: left; padding: 6px 16px 6px 0; border-bottom: 1px solid var(--border); }
+.sqlw-stats-table th { color: var(--text-muted); font-weight: 600; white-space: nowrap; }
+.sqlw-stats-table td { color: var(--text-primary); }
+
+/* ── Footer execution status bar ──────────────────────────────── */
+.sqlw-exec-footer {
+  flex-shrink: 0; display: flex; align-items: center; gap: 16px; padding: 6px 4px 0;
+  border-top: 1px solid var(--border); font-size: 12px; color: var(--text-muted); flex-wrap: wrap;
+}
+.sqlw-exec-status { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; }
+.sqlw-exec-status.success { color: var(--color-success-dark); }
+.sqlw-exec-status.success svg { fill: currentColor; }
+.sqlw-exec-status.failed { color: var(--color-danger-dark); }
+.sqlw-exec-status.failed svg { fill: currentColor; }
+.sqlw-exec-status.running { color: var(--text-muted); }
+.sqlw-exec-footer-error {
+  color: var(--color-danger-dark); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%;
+}
+
+.sqlw-grid-wrap {
+  flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg-card);
+  border: 1px solid var(--border); border-radius: var(--radius-xl); overflow: hidden;
+}
+.sqlw-grid-meta {
+  display: flex; align-items: center; justify-content: space-between; padding: 8px 12px;
+  border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-muted); flex-shrink: 0;
+}
+.sqlw-elapsed { display: inline-flex; align-items: center; gap: 3px; color: var(--text-faint); }
+.sqlw-grid-scroll { flex: 1; overflow: auto; }
+.sqlw-grid { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.sqlw-grid thead th {
+  position: sticky; top: 0; background: #F8FAFC; text-align: left; padding: 8px 12px;
+  font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px;
+  border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.sqlw-grid tbody td {
+  padding: 7px 12px; border-bottom: 1px solid #F1F5F9; color: var(--text-secondary);
+  font-family: var(--font-mono); white-space: nowrap;
+}
+.sqlw-grid tbody tr:hover td { background: #F8FAFC; }
+.sqlw-grid .sqlw-null { color: var(--text-faint); font-style: italic; }
+
+/* ── Interactive result grid ──────────────────────────────────── */
+.sqlw-grid-toolbar { display: flex; align-items: center; gap: 2px; }
+.sqlw-grid-tool { color: var(--text-faint); padding: 5px; border-radius: var(--radius-md); display: flex; }
+.sqlw-grid-tool:hover { background: #F8FAFC; color: var(--text-secondary); }
+.sqlw-grid-tool.active { background: var(--color-primary-light); color: var(--color-primary); }
+.sqlw-grid-export-wrap { position: relative; }
+/* position/top-or-bottom/left/maxHeight come from the inline style,
+   computed from the button's real screen rect via computeFloatingMenuPos()
+   in ResultGrid.jsx — position:fixed (not absolute) so it escapes
+   .sqlw-results-scroll's overflow:auto instead of being clipped when the
+   results panel is short, and the computed maxHeight + overflowY:auto
+   below guarantee it's always fully reachable, never cut off. */
+.sqlw-grid-export-menu {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-lg); z-index: 30; min-width: 210px; padding: 4px; display: flex; flex-direction: column;
+}
+.sqlw-grid-export-menu button { display: flex; align-items: center; gap: 6px; white-space: nowrap; text-align: left; font-size: 12.5px; color: var(--text-secondary); padding: 6px 8px; border-radius: var(--radius-sm); flex-shrink: 0; }
+.sqlw-grid-export-menu button:disabled { opacity: 0.6; cursor: not-allowed; }
+.sqlw-grid-export-menu button + button { margin-top: 1px; }
+.sqlw-grid-export-menu hr { border: none; border-top: 1px solid var(--border); margin: 4px 0; flex-shrink: 0; }
+.sqlw-grid-export-menu button:hover { background: #F8FAFC; color: var(--text-primary); }
+
+/* Background-export popover — embeds the full ExportsPanel (format
+   picker, Export Full Result, live job list) right under the grid's own
+   Export button, so it's the one place for both bounded client-side
+   export and real unbounded background jobs (Parquet included). Height is
+   capped dynamically (inline maxHeight, see doBackgroundExport) rather
+   than a fixed value, so it never overflows a short viewport. */
+.sqlw-grid-bgexport-panel { min-width: 340px; max-width: 380px; padding: 0; overflow: hidden; }
+.sqlw-grid-bgexport-header {
+  display: flex; align-items: center; justify-content: space-between; padding: 8px 10px;
+  border-bottom: 1px solid var(--border); font-size: 12.5px; font-weight: 600; color: var(--text-primary); flex-shrink: 0;
+}
+.sqlw-grid-bgexport-panel .sqlw-export-panel { flex: 1; min-height: 0; }
+
+.sqlw-grid-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+
+.sqlw-grid-interactive thead th { cursor: pointer; user-select: none; position: relative; }
+.sqlw-th-label { display: inline-flex; align-items: center; gap: 4px; }
+.sqlw-th-resize {
+  position: absolute; right: 0; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 1;
+}
+.sqlw-th-resize:hover { background: var(--color-primary); opacity: 0.4; }
+.sqlw-grid-selectcol { width: 32px; min-width: 32px; text-align: center; cursor: default !important; }
+.sqlw-grid-filterrow th { padding: 4px 8px; background: var(--bg-card); }
+.sqlw-grid-filterrow input {
+  width: 100%; font-size: 11.5px; font-weight: 400; padding: 4px 6px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); outline: none; color: var(--text-primary);
+}
+.sqlw-grid-filterrow input:focus { border-color: var(--color-primary); }
+.sqlw-row-selected td { background: var(--color-primary-light); }
+/* Higher specificity than ".sqlw-grid-interactive thead th" (which sets
+   position:relative for the resize handle) — otherwise that rule wins on
+   specificity alone and this column silently stops sticking, while its
+   `left` offset still applies as a plain relative shift, overlapping the
+   next column instead of freezing in place during horizontal scroll. */
+.sqlw-grid-interactive .sqlw-frozen { position: sticky; left: 32px; z-index: 1; background: var(--bg-card); box-shadow: 2px 0 4px rgba(0,0,0,0.04); }
+.sqlw-row-selected .sqlw-frozen { background: var(--color-primary-light); }
+
+.sqlw-grid-ctxmenu {
+  position: fixed; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg); z-index: 100; min-width: 170px; padding: 4px; display: flex; flex-direction: column;
+}
+.sqlw-grid-ctxmenu button { text-align: left; font-size: 12.5px; color: var(--text-secondary); padding: 6px 10px; border-radius: var(--radius-sm); }
+.sqlw-grid-ctxmenu button:hover { background: #F8FAFC; color: var(--text-primary); }
+
+/* ── Row inspector (pivot panel) ──────────────────────────────── */
+.sqlw-inspector {
+  width: 260px; flex-shrink: 0; border-left: 1px solid var(--border); display: flex; flex-direction: column;
+  overflow: hidden; background: var(--bg-card);
+}
+.sqlw-inspector-header {
+  display: flex; align-items: center; justify-content: space-between; padding: 8px 10px;
+  border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 700; color: var(--text-secondary); flex-shrink: 0;
+}
+.sqlw-inspector-actions { display: flex; gap: 4px; }
+.sqlw-inspector-actions button { color: var(--text-faint); padding: 4px; border-radius: var(--radius-sm); }
+.sqlw-inspector-actions button:hover { background: #F8FAFC; color: var(--text-secondary); }
+.sqlw-inspector-body { flex: 1; overflow-y: auto; padding: 6px; }
+.sqlw-inspector-field { padding: 7px 8px; border-bottom: 1px solid #F1F5F9; }
+.sqlw-inspector-field-name { font-size: 10.5px; font-weight: 700; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 3px; }
+.sqlw-inspector-field-value-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
+.sqlw-inspector-field-value { font-size: 12.5px; color: var(--text-primary); font-family: var(--font-mono); word-break: break-word; white-space: pre-wrap; flex: 1; min-width: 0; }
+.sqlw-inspector-field-value.null { color: var(--text-faint); font-style: italic; }
+.sqlw-inspector-field-value.sqlw-inspector-clamped {
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.sqlw-inspector-field-actions { display: flex; align-items: flex-start; gap: 4px; flex-shrink: 0; margin-top: 2px; }
+.sqlw-inspector-toggle { color: var(--text-faint); cursor: pointer; padding: 1px; border-radius: var(--radius-sm); display: flex; }
+.sqlw-inspector-toggle:hover { background: #F8FAFC; color: var(--color-primary); }
+.sqlw-inspector-copy { color: var(--text-faint); flex-shrink: 0; cursor: pointer; }
+.sqlw-inspector-copy:hover { color: var(--color-primary); }
+
+.sqlw-spin { animation: sqlw-spin 0.8s linear infinite; }
+@keyframes sqlw-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+/* ── AI Assistant panel ─────────────────────────────────────── */
+.sqlw-sidebar-tabs button svg { vertical-align: -2px; margin-right: 3px; }
+.sqlw-ai-panel { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.sqlw-ai-field { display: flex; flex-direction: column; gap: 5px; }
+.sqlw-ai-field label { font-size: 11px; font-weight: 700; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.3px; }
+.sqlw-ai-field .sqlw-select { width: 100%; }
+.sqlw-ai-question {
+  width: 100%; resize: vertical; border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 8px 9px; font-size: 12.5px; font-family: inherit; color: var(--text-primary); background: var(--bg-card);
+  outline: none; line-height: 1.5;
+}
+.sqlw-ai-question:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+.sqlw-ai-empty { font-size: 12px; color: var(--text-faint); padding: 8px 0; }
+.sqlw-ai-result { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
+.sqlw-ai-result-head { display: flex; align-items: center; justify-content: space-between; }
+.sqlw-ai-badge {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
+  padding: 2px 7px; border-radius: var(--radius-sm);
+}
+.sqlw-ai-badge-read    { background: var(--color-success-bg); color: var(--color-success-dark); }
+.sqlw-ai-badge-write   { background: var(--color-warning-bg); color: var(--color-warning-dark); }
+.sqlw-ai-badge-ddl     { background: var(--color-danger-bg);  color: var(--color-danger-dark); }
+.sqlw-ai-badge-dcl     { background: var(--color-danger-bg);  color: var(--color-danger-dark); }
+.sqlw-ai-badge-unknown { background: #F1F5F9; color: var(--text-muted); }
+.sqlw-ai-model { font-size: 11px; color: var(--text-faint); }
+.sqlw-ai-sql {
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.6; color: var(--text-primary);
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 9px 10px; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto;
+}
+.sqlw-ai-explanation { display: flex; align-items: flex-start; gap: 5px; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.sqlw-ai-explanation svg { flex-shrink: 0; margin-top: 2px; }
+.sqlw-ai-disclaimer { font-size: 10.5px; color: var(--text-faint); line-height: 1.4; text-align: center; }
+
+/* ── History panel ──────────────────────────────────────────── */
+.sqlw-history-panel { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+.sqlw-history-filters { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--border); flex-shrink: 0; align-items: center; }
+.sqlw-history-filters .sqlw-select { flex: 1; min-width: 0; }
+.sqlw-history-refresh { color: var(--text-faint); padding: 6px; border-radius: var(--radius-md); flex-shrink: 0; }
+.sqlw-history-refresh:hover { background: var(--border); color: var(--text-secondary); }
+.sqlw-history-row {
+  display: flex; flex-direction: column; gap: 3px; width: 100%; text-align: left;
+  padding: 8px 10px; border-bottom: 1px solid #F1F5F9; cursor: pointer;
+}
+.sqlw-history-row:hover { background: #F8FAFC; }
+.sqlw-history-row-top { display: flex; align-items: center; gap: 5px; }
+.sqlw-history-ok { color: var(--color-success-dark); flex-shrink: 0; }
+.sqlw-history-err { color: var(--color-danger-dark); flex-shrink: 0; }
+.sqlw-history-cmd { font-size: 11px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.3px; }
+.sqlw-history-ai { color: var(--color-primary); flex-shrink: 0; }
+.sqlw-history-time { margin-left: auto; font-size: 10.5px; color: var(--text-faint); flex-shrink: 0; }
+.sqlw-history-sql {
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--text-primary); line-height: 1.4;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sqlw-history-meta { display: flex; gap: 8px; font-size: 10.5px; color: var(--text-faint); flex-wrap: wrap; }
+.sqlw-history-conn { font-weight: 600; color: var(--text-muted); }
+.sqlw-history-errtext { color: var(--color-danger-dark); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.sqlw-history-user { margin-left: auto; }
+
+/* ── Export panel ───────────────────────────────────────────── */
+.sqlw-export-panel { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+.sqlw-export-start { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--border); flex-shrink: 0; align-items: center; }
+.sqlw-export-start .sqlw-select { flex-shrink: 0; }
+.sqlw-export-start-btn {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 0;
+  font-size: 12px; font-weight: 600; color: #fff; background: var(--color-primary); padding: 7px 10px; border-radius: var(--radius-md);
+}
+.sqlw-export-start-btn:hover { background: var(--color-primary-dark, var(--color-primary)); }
+.sqlw-export-start-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.sqlw-export-row {
+  display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left;
+  padding: 8px 10px; border-bottom: 1px solid #F1F5F9;
+}
+.sqlw-export-row-top { display: flex; align-items: center; gap: 5px; }
+.sqlw-export-format { font-size: 11px; font-weight: 700; color: var(--text-secondary); letter-spacing: 0.3px; }
+.sqlw-export-actions { display: flex; gap: 6px; margin-top: 2px; }
+.sqlw-export-action {
+  display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: var(--text-secondary);
+  padding: 4px 8px; border-radius: var(--radius-sm); background: #F8FAFC; border: 1px solid var(--border);
+}
+.sqlw-export-action:hover { background: #F1F5F9; }
+.sqlw-export-action.danger { color: var(--color-danger-dark); }
+
+@media (max-width: 900px) {
+  .sqlw-sidebar { display: none; }
+}

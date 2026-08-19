@@ -1,0 +1,80 @@
+/* ============================================================
+   Seller Portal — License Management — /app/seller/license-management
+   scoped .lm-*
+   ============================================================ */
+
+.lm-page { padding-bottom: 40px; }
+
+.lm-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 18px; gap: 12px; flex-wrap: wrap; }
+.lm-header h1 { font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary); }
+.lm-subtitle { font-size: var(--fs-sm); color: var(--text-muted); margin-top: 2px; }
+.lm-header-actions { display: flex; gap: 8px; }
+
+/* ── KPIs ──────────────────────────────────────────────────── */
+.lm-kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 18px; }
+.lm-kpi-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 14px 16px; }
+.lm-kpi-val { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; color: var(--text-primary); line-height: 1.2; }
+.lm-kpi-val-success { color: var(--color-success-dark); }
+.lm-kpi-val-warning { color: var(--color-warning-dark); }
+.lm-kpi-val-danger  { color: var(--color-danger-dark); }
+.lm-kpi-label { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600; }
+@media (max-width: 1300px) { .lm-kpis { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 640px)  { .lm-kpis { grid-template-columns: repeat(2, 1fr); } }
+
+/* ── Expiration alerts ─────────────────────────────────────── */
+.lm-alerts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 18px; }
+@media (max-width: 900px) { .lm-alerts { grid-template-columns: 1fr; } }
+.lm-alert-card { border-radius: var(--radius-xl); padding: 14px 16px; border: 1px solid; }
+.lm-alert-card.danger { background: var(--color-danger-bg); border-color: var(--color-danger); }
+.lm-alert-card.warning { background: var(--color-warning-bg); border-color: var(--color-warning); }
+.lm-alert-card.info { background: var(--color-info-bg); border-color: var(--color-info); }
+.lm-alert-title { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+.lm-alert-card.danger .lm-alert-title { color: var(--color-danger-dark); }
+.lm-alert-card.warning .lm-alert-title { color: var(--color-warning-dark); }
+.lm-alert-card.info .lm-alert-title { color: var(--color-info); }
+.lm-alert-count { font-size: 26px; font-weight: 800; color: var(--text-primary); }
+.lm-alert-names { font-size: 11px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+
+/* ── Filters ───────────────────────────────────────────────── */
+.lm-search-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.lm-input {
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); background: white; outline: none; color: var(--text-primary);
+}
+select.lm-input.lm-inline-filter { width: auto; min-width: 140px; }
+.lm-input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+
+/* ── Table ─────────────────────────────────────────────────── */
+.lm-plan-pill {
+  background: var(--color-primary-light); color: var(--color-primary); font-size: 11px; font-weight: 700;
+  padding: 2px 8px; border-radius: var(--radius-full);
+}
+.lm-icon-btn {
+  width: 26px; height: 26px; border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); border: 1px solid transparent; transition: var(--transition);
+}
+.lm-icon-btn:hover:not(:disabled) { background: var(--color-primary-light); color: var(--color-primary); border-color: var(--color-primary-mid); }
+.lm-row-menu { position: relative; }
+.lm-row-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
+.lm-row-menu-list {
+  position: absolute; z-index: 41; min-width: 190px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg); padding: 6px; display: flex; flex-direction: column;
+}
+.lm-row-menu-list button {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius-md);
+  font-size: var(--fs-sm); color: var(--text-secondary); text-align: left; transition: var(--transition);
+}
+.lm-row-menu-list button:hover:not(:disabled) { background: var(--bg-body); color: var(--text-primary); }
+.lm-row-menu-danger { color: var(--color-danger-dark) !important; }
+.lm-row-menu-danger:hover { background: var(--color-danger-bg) !important; color: var(--color-danger-dark) !important; }
+.lm-row-menu-warn { color: var(--color-warning-dark) !important; }
+.lm-row-menu-warn:hover { background: var(--color-warning-bg) !important; color: var(--color-warning-dark) !important; }
+
+/* ── Modals ────────────────────────────────────────────────── */
+.lm-form-error { background: var(--color-danger-bg); color: var(--color-danger-dark); padding: 8px 12px; border-radius: var(--radius-md); font-size: 12.5px; margin-bottom: 12px; }
+.lm-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
+.lm-field { display: flex; flex-direction: column; gap: 5px; }
+.lm-field-full { grid-column: 1 / -1; }
+.lm-field-label { font-size: 11.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; }

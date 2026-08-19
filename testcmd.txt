@@ -1,0 +1,13 @@
+cd backend
+# copy .env.example → .env (edit secrets)
+uvicorn app.main:app --reload --port 8000
+# Swagger: http://localhost:8000/api/docs
+# First login: admin@dip.local / Admin@1234!
+
+
+
+cd frontend
+# In PowerShell first run: Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+# Or use:
+cmd /c "cd frontend && npm run dev"
+# App: http://localhost:5173

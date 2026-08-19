@@ -1,0 +1,97 @@
+/* ============================================================
+   Seller Portal — Seller Users — /app/seller/users — scoped .su-*
+   ============================================================ */
+
+.su-page { padding-bottom: 40px; }
+
+.su-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 18px; gap: 12px; flex-wrap: wrap; }
+.su-title { font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary); }
+.su-subtitle { font-size: var(--fs-sm); color: var(--text-muted); margin-top: 2px; }
+.su-header-actions { display: flex; gap: 8px; }
+
+/* ── KPIs ──────────────────────────────────────────────────── */
+.su-kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 18px; }
+.su-kpi-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 14px 16px; }
+.su-kpi-val { font-size: 22px; font-weight: 800; letter-spacing: -0.4px; color: var(--text-primary); line-height: 1.2; }
+.su-kpi-val-success { color: var(--color-success); }
+.su-kpi-val-warning { color: var(--color-warning); }
+.su-kpi-val-info { color: var(--color-info); }
+.su-kpi-label { font-size: 11px; color: var(--text-muted); margin-top: 3px; font-weight: 600; }
+@media (max-width: 1100px) { .su-kpis { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 640px)  { .su-kpis { grid-template-columns: repeat(2, 1fr); } }
+
+/* ── Search / filters ──────────────────────────────────────── */
+.su-search-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.su-search-box { flex: 1; min-width: 220px; max-width: 360px; }
+.su-input {
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); background: white; outline: none; color: var(--text-primary);
+}
+.su-input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+.su-inline-filter { min-width: 170px; }
+.su-clear-search-btn {
+  display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-xs); color: var(--text-muted);
+  background: none; border: none; cursor: pointer; padding: 6px 8px;
+}
+.su-clear-search-btn:hover { color: var(--text-primary); }
+
+/* ── Table ─────────────────────────────────────────────────── */
+.su-table-panel { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); overflow: hidden; }
+.su-name-cell { display: flex; align-items: center; gap: 10px; }
+.su-avatar {
+  width: 30px; height: 30px; border-radius: 50%; background: var(--color-primary-light); color: var(--color-primary);
+  display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0;
+}
+.su-name-text { font-weight: 500; color: var(--text-primary); }
+.su-role-pill {
+  display: inline-block; padding: 3px 9px; border-radius: var(--radius-full); font-size: 11.5px; font-weight: 600;
+  background: #F1F5F9; color: var(--text-secondary);
+}
+.su-role-pill-admin { background: var(--color-primary-light); color: var(--color-primary); }
+
+/* ── Row actions / kebab menu ─────────────────────────────────── */
+.su-row-actions { display: flex; align-items: center; gap: 4px; }
+.su-icon-btn {
+  width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: white; color: var(--text-muted);
+  cursor: pointer;
+}
+.su-icon-btn:hover { background: #F8FAFC; color: var(--text-primary); }
+
+.su-row-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
+.su-row-menu-list {
+  z-index: 41; background: white; border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg); min-width: 190px; padding: 4px; display: flex; flex-direction: column;
+}
+.su-row-menu-list button {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: none; background: none;
+  font-size: 13px; color: var(--text-secondary); border-radius: var(--radius-md); cursor: pointer; text-align: left; width: 100%;
+}
+.su-row-menu-list button:hover:not(:disabled) { background: #F8FAFC; color: var(--text-primary); }
+.su-row-menu-list button:disabled { opacity: 0.4; cursor: not-allowed; }
+.su-row-menu-danger { color: var(--color-danger) !important; }
+.su-row-menu-danger:hover:not(:disabled) { background: #FEF2F2 !important; }
+
+/* ── Modal form fields (shared by Invite/Edit/Change Role/Reset Password) ── */
+.su-form-error {
+  background: #FEF2F2; color: var(--color-danger); border: 1px solid #FECACA; border-radius: var(--radius-md);
+  padding: 8px 12px; font-size: 12.5px; margin-bottom: 12px;
+}
+.su-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 4px; }
+.su-field { margin-bottom: 12px; }
+.su-field-label { display: block; font-size: 12.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 5px; }
+.su-required { color: var(--color-danger); }
+.su-checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); margin-top: 4px; }
+
+.su-credential-box { background: #F8FAFC; border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 14px; }
+.su-credential-label { font-size: 11.5px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; }
+.su-credential-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.su-credential-value { font-family: var(--font-mono, monospace); font-size: 14px; font-weight: 600; color: var(--text-primary); letter-spacing: 0.3px; }
+.su-credential-note { font-size: 11.5px; color: var(--text-faint); margin-top: 10px; line-height: 1.5; }
+
+/* ── Activity tab (Change Role / Edit modal side panel) ───────── */
+.su-activity-list { display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow-y: auto; }
+.su-activity-row { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid #F1F5F9; font-size: 12.5px; }
+.su-activity-row:last-child { border-bottom: none; }
+.su-activity-msg { color: var(--text-secondary); }
+.su-activity-meta { color: var(--text-faint); white-space: nowrap; }

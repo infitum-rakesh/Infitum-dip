@@ -1,0 +1,162 @@
+/* ============================================================
+   Validation module styles — scoped to .vld-*
+   ============================================================ */
+
+/* ── Page ──────────────────────────────────────────────────── */
+.vld-header {
+  display: flex; align-items: flex-start;
+  justify-content: space-between; margin-bottom: 20px; gap: 16px; flex-wrap: wrap;
+}
+.vld-title    { font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary); }
+.vld-subtitle { font-size: var(--fs-md);  color: var(--text-muted);    margin-top: 3px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.vld-actions  { display: flex; gap: 8px; flex-shrink: 0; align-items: center; }
+
+.vld-name-input {
+  font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary);
+  border: none; outline: none; background: none; padding: 0; width: 100%; max-width: 480px;
+}
+.vld-name-input:focus { border-bottom: 1.5px solid var(--color-primary); }
+
+.vld-ruleset-select {
+  padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 12px; background: var(--bg-card); color: var(--text-secondary); outline: none;
+}
+
+.vld-object-row { margin-bottom: 16px; }
+.vld-picker-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.vld-picker-select {
+  padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); background: var(--bg-card); color: var(--text-primary); outline: none; min-width: 160px;
+}
+.vld-picker-select:disabled { opacity: 0.6; cursor: not-allowed; }
+.vld-picker-search {
+  display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-card);
+}
+.vld-picker-search input { border: none; outline: none; font-size: var(--fs-sm); background: none; width: 160px; }
+
+.vld-info-banner {
+  padding: 10px 14px; margin-bottom: 16px; background: var(--color-info-bg);
+  color: var(--color-info-dark); border-radius: var(--radius-md); font-size: 13px;
+}
+
+.vld-tab-nav  { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 0; }
+.vld-tab-btn  {
+  padding: 10px 16px; font-size: var(--fs-sm); font-weight: var(--fw-medium);
+  color: var(--text-muted); cursor: pointer;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: var(--transition); background: none;
+}
+.vld-tab-btn:hover  { color: var(--text-primary); }
+.vld-tab-btn.active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
+
+/* ── Summary metric cards ──────────────────────────────────── */
+.vld-summary {
+  display: grid; grid-template-columns: repeat(5, 1fr);
+  gap: 12px; margin-bottom: 20px;
+}
+.vld-metric {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-xl); padding: 16px;
+  text-align: center; transition: var(--transition);
+}
+.vld-metric.highlight-success { border-top: 3px solid var(--color-success); }
+.vld-metric.highlight-danger  { border-top: 3px solid var(--color-danger); }
+.vld-metric.highlight-warning { border-top: 3px solid var(--color-warning); }
+.vld-metric-val   { font-size: 28px; font-weight: 800; color: var(--text-primary); letter-spacing: -0.5px; line-height: 1; }
+.vld-metric-label { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 4px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+.vld-metric-sub   { font-size: 11px; color: var(--text-faint); margin-top: 2px; }
+
+/* ── Stacked quality bar ───────────────────────────────────── */
+.vld-quality-bar-wrap { margin-bottom: 20px; }
+.vld-quality-bar-title {
+  display: flex; justify-content: space-between;
+  font-size: var(--fs-sm); font-weight: 500; margin-bottom: 6px;
+}
+.vld-quality-bar {
+  height: 10px; border-radius: 99px; overflow: hidden;
+  display: flex; background: var(--border);
+}
+.vld-bar-seg { height: 100%; transition: width 0.8s ease; }
+.vld-bar-legend {
+  display: flex; gap: 16px; margin-top: 8px; flex-wrap: wrap;
+}
+.vld-bar-legend-item { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-muted); }
+.vld-bar-legend-dot  { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+/* ── Donut chart ───────────────────────────────────────────── */
+.vld-donut-wrap { display: flex; align-items: center; gap: 20px; }
+.vld-donut-legend { display: flex; flex-direction: column; gap: 8px; }
+.vld-donut-legend-item {
+  display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm);
+}
+.vld-donut-legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.vld-donut-legend-val { font-weight: 700; color: var(--text-primary); min-width: 40px; }
+.vld-donut-legend-lbl { color: var(--text-muted); }
+
+/* ── Rule list ─────────────────────────────────────────────── */
+.vld-rule-row {
+  display: grid;
+  grid-template-columns: 200px 130px 140px 80px 80px auto;
+  gap: 12px; align-items: center;
+  padding: 10px 16px; border-bottom: 1px solid #F1F5F9;
+  transition: var(--transition); font-size: var(--fs-sm);
+}
+.vld-rule-row:last-child { border-bottom: none; }
+.vld-rule-row:hover { background: #FAFBFC; }
+.vld-rule-name  { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text-primary); }
+.vld-rule-type  { font-size: var(--fs-xs); font-weight: 500; color: var(--text-muted); }
+.vld-rule-col   { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); }
+.vld-rule-actions { display: flex; gap: 4px; justify-content: flex-end; }
+
+/* ── Results drill-down ────────────────────────────────────── */
+.vld-result-row {
+  display: grid;
+  grid-template-columns: 200px 120px 130px 90px 1fr 80px;
+  gap: 12px; align-items: center;
+  padding: 10px 16px; border-bottom: 1px solid #F1F5F9;
+  font-size: var(--fs-sm); transition: var(--transition); cursor: pointer;
+}
+.vld-result-row:last-child { border-bottom: none; }
+.vld-result-row:hover { background: #FAFBFC; }
+.vld-result-row.selected { background: var(--color-primary-light); }
+
+.vld-pass-bar { height: 5px; background: var(--border); border-radius: 99px; overflow: hidden; flex: 1; }
+.vld-pass-fill-success { height: 100%; background: var(--color-success); border-radius: 99px; transition: width 0.6s ease; }
+.vld-pass-fill-warning { height: 100%; background: var(--color-warning); border-radius: 99px; transition: width 0.6s ease; }
+.vld-pass-fill-danger  { height: 100%; background: var(--color-danger);  border-radius: 99px; transition: width 0.6s ease; }
+
+/* ── Failed records panel ──────────────────────────────────── */
+.vld-drill-panel {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-xl); overflow: hidden; margin-top: 16px;
+}
+.vld-drill-header {
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  background: var(--color-danger-bg); display: flex; align-items: center;
+  justify-content: space-between;
+}
+.vld-drill-title {
+  font-size: var(--fs-md); font-weight: var(--fw-semibold);
+  color: var(--color-danger-dark);
+}
+
+/* ── Add rule modal ────────────────────────────────────────── */
+.vld-rule-type-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 16px; }
+.vld-rule-type-card {
+  border: 1.5px solid var(--border); border-radius: var(--radius-lg);
+  padding: 10px 12px; cursor: pointer; transition: var(--transition);
+  text-align: center;
+}
+.vld-rule-type-card:hover,
+.vld-rule-type-card.selected {
+  border-color: var(--color-primary); background: var(--color-primary-light);
+}
+.vld-rule-type-icon  { font-size: 20px; margin-bottom: 4px; }
+.vld-rule-type-label { font-size: var(--fs-xs); font-weight: 600; color: var(--text-primary); }
+
+@media (max-width: 1100px) {
+  .vld-summary       { grid-template-columns: repeat(3, 1fr); }
+  .vld-rule-row      { grid-template-columns: 1fr 100px auto; }
+  .vld-result-row    { grid-template-columns: 1fr auto; }
+}

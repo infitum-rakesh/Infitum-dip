@@ -1,0 +1,121 @@
+/* ============================================================
+   Design Tokens — Data Intelligence Platform
+   ============================================================ */
+
+:root {
+  /* ── Brand ──────────────────────────────────────────────── */
+  --color-primary:        #4F46E5;
+  --color-primary-dark:   #4338CA;
+  --color-primary-light:  #EEF2FF;
+  --color-primary-mid:    #C7D2FE;
+
+  /* ── Sidebar ────────────────────────────────────────────── */
+  --sidebar-bg:           #0F172A;
+  --sidebar-hover:        #1E293B;
+  --sidebar-active-bg:    rgba(79, 70, 229, 0.14);
+  --sidebar-text:         #94A3B8;
+  --sidebar-text-active:  #A5B4FC;
+  --sidebar-section:      #475569;
+  --sidebar-border:       rgba(255,255,255,0.06);
+  --sidebar-width:        260px;
+  --sidebar-width-collapsed: 64px;
+
+  /* ── Surface / Background ───────────────────────────────── */
+  --bg-body:     #F8FAFC;
+  --bg-card:     #FFFFFF;
+  --bg-input:    #FFFFFF;
+  --bg-sidebar:  var(--sidebar-bg);
+  --bg-overlay:  rgba(15, 23, 42, 0.7);
+
+  /* ── Text ───────────────────────────────────────────────── */
+  --text-primary:   #0F172A;
+  --text-secondary: #334155;
+  --text-muted:     #64748B;
+  --text-faint:     #94A3B8;
+  --text-on-dark:   #F1F5F9;
+  --text-on-primary:#FFFFFF;
+
+  /* ── Border ─────────────────────────────────────────────── */
+  --border:       #E2E8F0;
+  --border-dark:  #CBD5E1;
+  --border-input: #D1D5DB;
+
+  /* ── Status / Semantic ──────────────────────────────────── */
+  --color-success:      #10B981;
+  --color-success-bg:   #ECFDF5;
+  --color-success-dark: #047857;
+  --color-warning:      #F59E0B;
+  --color-warning-bg:   #FFFBEB;
+  --color-warning-dark: #B45309;
+  --color-danger:       #EF4444;
+  --color-danger-bg:    #FEF2F2;
+  --color-danger-dark:  #B91C1C;
+  --color-info:         #3B82F6;
+  --color-info-bg:      #EFF6FF;
+  --color-info-dark:    #1D4ED8;
+
+  /* ── Typography ─────────────────────────────────────────── */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+
+  --fs-xs:  11px;
+  --fs-sm:  12px;
+  --fs-base:13px;
+  --fs-md:  14px;
+  --fs-lg:  15px;
+  --fs-xl:  16px;
+  --fs-2xl: 18px;
+  --fs-3xl: 22px;
+  --fs-4xl: 28px;
+  --fs-5xl: 36px;
+  --fs-6xl: 48px;
+
+  --fw-normal:   400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+  --fw-bold:     700;
+  --fw-extrabold:800;
+
+  --lh-tight:  1.2;
+  --lh-normal: 1.5;
+  --lh-relaxed:1.7;
+
+  /* ── Spacing ─────────────────────────────────────────────── */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10:40px;
+  --space-12:48px;
+  --space-16:64px;
+
+  /* ── Border Radius ──────────────────────────────────────── */
+  --radius-sm:  4px;
+  --radius:     6px;
+  --radius-md:  8px;
+  --radius-lg:  10px;
+  --radius-xl:  12px;
+  --radius-2xl: 16px;
+  --radius-3xl: 20px;
+  --radius-full:9999px;
+
+  /* ── Shadows ─────────────────────────────────────────────── */
+  --shadow-xs: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow:    0 4px 6px -1px rgba(0,0,0,0.06), 0 2px 4px -1px rgba(0,0,0,0.04);
+  --shadow-md: 0 10px 15px -3px rgba(0,0,0,0.07), 0 4px 6px -2px rgba(0,0,0,0.04);
+  --shadow-lg: 0 20px 25px -5px rgba(0,0,0,0.08), 0 10px 10px -5px rgba(0,0,0,0.03);
+  --shadow-xl: 0 25px 50px -12px rgba(0,0,0,0.22);
+  --shadow-primary: 0 4px 14px rgba(79,70,229,0.30);
+
+  /* ── Layout ─────────────────────────────────────────────── */
+  --header-height: 56px;
+  --content-max:  1400px;
+
+  /* ── Transition ─────────────────────────────────────────── */
+  --transition:      all 0.15s ease;
+  --transition-slow: all 0.25s ease;
+}

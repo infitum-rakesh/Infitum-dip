@@ -1,0 +1,29 @@
+.app-shell {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg-body);
+}
+
+.app-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.app-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-6);
+  background: var(--bg-body);
+}
+
+/* Breadcrumb (shared) */
+.breadcrumb { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; }
+.bc-item    { display: flex; align-items: center; }
+.bc-sep     { color: var(--text-faint); margin: 0 2px; }
+.bc-link    { font-size: var(--fs-sm); color: var(--text-muted); transition: var(--transition); }
+.bc-link:hover { color: var(--color-primary); }
+.bc-current { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-primary); }

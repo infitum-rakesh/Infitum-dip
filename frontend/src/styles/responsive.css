@@ -1,0 +1,15 @@
+/* Responsive breakpoints and layout helpers */
+@media (max-width: 1280px) {
+  .grid-4 { grid-template-columns: repeat(2, 1fr); }
+  .grid-3 { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 960px) {
+  :root { --sidebar-width: var(--sidebar-width-collapsed); }
+  .hide-mobile { display: none !important; }
+}
+
+@media (max-width: 640px) {
+  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+  .hide-sm { display: none !important; }
+}

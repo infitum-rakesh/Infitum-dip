@@ -1,0 +1,187 @@
+/* ============================================================
+   Administration → Users module styles — scoped to .usr-*
+   ============================================================ */
+
+.usr-page { padding-bottom: 24px; }
+
+/* ── Header ────────────────────────────────────────────────── */
+.usr-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px; gap: 16px; flex-wrap: wrap; }
+.usr-title    { font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary); }
+.usr-subtitle { font-size: var(--fs-md);  color: var(--text-muted); margin-top: 3px; }
+.usr-header-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
+
+/* ── KPI cards ─────────────────────────────────────────────── */
+.usr-kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 20px; }
+.usr-kpi-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 14px 16px; }
+.usr-kpi-val   { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; color: var(--text-primary); line-height: 1.2; }
+.usr-kpi-val-success { color: var(--color-success-dark); }
+.usr-kpi-val-danger  { color: var(--color-danger-dark); }
+.usr-kpi-val-warning { color: var(--color-warning-dark); }
+.usr-kpi-val-info    { color: var(--color-info-dark); }
+.usr-kpi-label { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600; }
+
+/* ── Search + inline filters ──────────────────────────────────── */
+.usr-search-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.usr-search-box { flex: 1; min-width: 220px; max-width: 480px; }
+select.usr-input.usr-inline-filter { width: auto; min-width: 150px; }
+.usr-input {
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); background: white; outline: none; transition: var(--transition); font-family: inherit;
+}
+.usr-input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+.usr-clear-search-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted);
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-full);
+  background: var(--bg-card); transition: var(--transition);
+}
+.usr-clear-search-btn:hover { color: var(--text-primary); border-color: var(--border-dark); }
+
+/* ── Table ─────────────────────────────────────────────────── */
+.usr-table-panel { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); overflow: hidden; }
+.usr-name-cell { display: flex; align-items: center; gap: 10px; }
+.usr-avatar {
+  width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--color-primary-light); color: var(--color-primary);
+  font-size: 12px; font-weight: 700;
+}
+.usr-name-text { font-weight: 600; color: var(--text-primary); }
+.usr-role-pill {
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-full);
+  background: var(--bg-body); color: var(--text-secondary); border: 1px solid var(--border);
+  text-transform: capitalize; display: inline-block;
+}
+
+.usr-row-actions { display: flex; gap: 4px; align-items: center; position: relative; }
+.usr-icon-btn {
+  width: 26px; height: 26px; border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); border: 1px solid transparent; transition: var(--transition);
+  background: none; flex-shrink: 0;
+}
+.usr-icon-btn:hover:not(:disabled) { background: var(--color-primary-light); color: var(--color-primary); border-color: var(--color-primary-mid); }
+.usr-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Row kebab menu (portal-based) ───────────────────────────── */
+.usr-row-menu { position: relative; }
+.usr-row-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
+.usr-row-menu-list {
+  position: absolute; right: 0; top: 30px; z-index: 41; min-width: 190px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg); padding: 6px; display: flex; flex-direction: column;
+}
+.usr-row-menu-list button {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius-md);
+  font-size: var(--fs-sm); color: var(--text-secondary); text-align: left; transition: var(--transition);
+}
+.usr-row-menu-list button:hover:not(:disabled) { background: var(--bg-body); color: var(--text-primary); }
+.usr-row-menu-list button:disabled { opacity: 0.4; cursor: not-allowed; }
+.usr-row-menu-danger { color: var(--color-danger-dark) !important; }
+.usr-row-menu-danger:hover:not(:disabled) { background: var(--color-danger-bg) !important; color: var(--color-danger-dark) !important; }
+
+@media (max-width: 1300px) {
+  .usr-kpis { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 640px) {
+  .usr-kpis { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ============================================================
+   Invite User modal
+   ============================================================ */
+
+.usr-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+.usr-field { display: flex; flex-direction: column; gap: 6px; }
+.usr-field-label { font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; }
+.usr-required { color: var(--color-danger); margin-left: 2px; }
+.usr-form-error {
+  padding: 10px 12px; margin-bottom: 14px; background: var(--color-danger-bg); color: var(--color-danger-dark);
+  border-radius: var(--radius-md); font-size: var(--fs-sm);
+}
+.usr-checkbox-row { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--text-secondary); margin-top: 4px; }
+
+/* One-time temp-password reveal — after Invite / Reset Password */
+.usr-credential-box {
+  background: var(--color-primary-light); border: 1px solid var(--color-primary-mid);
+  border-radius: var(--radius-lg); padding: 14px 16px; margin-top: 4px;
+}
+.usr-credential-label { font-size: var(--fs-xs); font-weight: 700; color: var(--color-primary); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 6px; }
+.usr-credential-row { display: flex; align-items: center; gap: 8px; }
+.usr-credential-value {
+  font-family: var(--font-mono); font-size: var(--fs-md); font-weight: 700; color: var(--text-primary);
+  background: white; border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 6px 10px; flex: 1; overflow-x: auto; white-space: nowrap;
+}
+.usr-credential-note { font-size: 11px; color: var(--text-muted); margin-top: 8px; line-height: 1.5; }
+
+/* ============================================================
+   User Details — /app/admin/users/:userId
+   ============================================================ */
+
+.usrd-back-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: var(--fs-sm); font-weight: 600; color: var(--text-muted);
+  padding: 6px 4px; margin-bottom: 10px; transition: var(--transition);
+}
+.usrd-back-btn:hover { color: var(--color-primary); }
+
+.usrd-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+.usrd-header-left { display: flex; align-items: center; gap: 14px; }
+.usrd-avatar { width: 52px; height: 52px; border-radius: 50%; font-size: 18px; }
+.usrd-title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.usrd-title { font-size: var(--fs-2xl); font-weight: var(--fw-bold); color: var(--text-primary); }
+.usrd-subtitle { font-size: var(--fs-sm); color: var(--text-muted); margin-top: 2px; }
+.usrd-actions { display: flex; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
+
+.usrd-tab-nav { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 18px; gap: 2px; flex-wrap: wrap; }
+.usrd-tab-btn {
+  padding: 10px 14px; font-size: var(--fs-sm); font-weight: var(--fw-medium);
+  color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent;
+  margin-bottom: -1px; transition: var(--transition); background: none;
+  display: flex; align-items: center; gap: 6px;
+}
+.usrd-tab-btn:hover  { color: var(--text-primary); }
+.usrd-tab-btn.active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
+
+.usrd-card {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl);
+  padding: 18px 20px; margin-bottom: 18px;
+}
+.usrd-card-title { font-size: var(--fs-md); font-weight: 700; color: var(--text-primary); margin-bottom: 14px; }
+
+.usrd-meta-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
+.usrd-meta-item { display: flex; flex-direction: column; gap: 3px; }
+.usrd-meta-label { font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; }
+.usrd-meta-value { font-size: var(--fs-sm); font-weight: 600; color: var(--text-primary); }
+
+/* Module Access checklist */
+.usrd-module-list { display: flex; flex-direction: column; gap: 2px; }
+.usrd-module-row {
+  display: flex; align-items: center; gap: 10px; padding: 9px 4px;
+  border-bottom: 1px solid var(--border); font-size: var(--fs-sm);
+}
+.usrd-module-row:last-child { border-bottom: none; }
+.usrd-module-icon { font-size: 15px; }
+.usrd-module-name { flex: 1; color: var(--text-primary); font-weight: 500; }
+.usrd-module-hint { font-size: var(--fs-xs); color: var(--text-muted); margin-bottom: 10px; }
+
+/* Permissions matrix (read-only, from ROLE_DEFAULT_ACTIONS) */
+.usrd-perm-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.usrd-perm-chip {
+  font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: var(--radius-full);
+  background: var(--color-success-bg, #ECFDF5); color: var(--color-success-dark);
+  border: 1px solid rgba(16,185,129,0.25);
+}
+
+/* Activity / login history feed */
+.usrd-feed { display: flex; flex-direction: column; }
+.usrd-feed-item { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.usrd-feed-item:last-child { border-bottom: none; }
+.usrd-feed-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-primary); margin-top: 5px; flex-shrink: 0; }
+.usrd-feed-body { flex: 1; min-width: 0; }
+.usrd-feed-type { font-size: var(--fs-sm); font-weight: 700; color: var(--text-primary); }
+.usrd-feed-msg { font-size: var(--fs-sm); color: var(--text-secondary); margin-top: 2px; }
+.usrd-feed-meta { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+
+.usr-empty-inline { font-size: var(--fs-xs); color: var(--text-faint); }

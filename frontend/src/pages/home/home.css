@@ -1,0 +1,855 @@
+/* ============================================================
+   Home / Landing Page — Data Intelligence Platform
+   All styles scoped to .home to avoid leaking into the app.
+   Inherits design tokens from variables.css via global import.
+   ============================================================ */
+
+/* ── Page shell ────────────────────────────────────────────── */
+.home {
+  min-height: 100vh;
+  background: #070D1A;
+  color: #F1F5F9;
+  font-family: var(--font-sans);
+  overflow-x: hidden;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   NAVIGATION
+══════════════════════════════════════════════════════════════ */
+.hnav {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 900;
+  background: rgba(7, 13, 26, 0.85);
+  backdrop-filter: blur(20px);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.hnav-inner {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 40px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 32px;
+}
+
+/* Logo */
+.hnav-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  flex-shrink: 0;
+}
+.hnav-mark {
+  width: 32px; height: 32px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #4F46E5, #818CF8);
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 12px; color: white;
+  flex-shrink: 0;
+}
+.hnav-name     { font-size: 15px; font-weight: 700; color: #F1F5F9; letter-spacing: -0.3px; }
+.hnav-platform { font-size: 10px; color: #475569; padding: 2px 6px; border: 1px solid #334155; border-radius: 4px; font-weight: 500; }
+
+/* Nav links */
+.hnav-links {
+  display: flex;
+  list-style: none;
+  gap: 4px;
+  margin-left: 8px;
+}
+.hnav-link {
+  font-size: 13px;
+  color: rgba(255,255,255,0.6);
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-weight: 450;
+}
+.hnav-link:hover { color: white; background: rgba(255,255,255,0.06); }
+
+/* Nav buttons */
+.hnav-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.hnav-btn-ghost {
+  padding: 7px 14px;
+  font-size: 13px; font-weight: 500;
+  color: rgba(255,255,255,0.7);
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-decoration: none;
+  border: 1px solid transparent;
+}
+.hnav-btn-ghost:hover { color: white; background: rgba(255,255,255,0.07); border-color: rgba(255,255,255,0.1); }
+.hnav-btn-primary {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 7px 16px;
+  font-size: 13px; font-weight: 600;
+  color: white;
+  background: #4F46E5;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-decoration: none;
+  border: none;
+}
+.hnav-btn-primary:hover { background: #4338CA; box-shadow: 0 0 20px rgba(79,70,229,0.4); }
+
+/* ══════════════════════════════════════════════════════════════
+   HERO
+══════════════════════════════════════════════════════════════ */
+.hero {
+  min-height: 100vh;
+  padding: 120px 40px 80px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Background grid */
+.hero-grid-bg {
+  position: absolute; inset: 0; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(79,70,229,0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(79,70,229,0.04) 1px, transparent 1px);
+  background-size: 52px 52px;
+}
+
+/* Ambient glows */
+.hero-glow { position: absolute; border-radius: 50%; pointer-events: none; }
+.hero-glow-c {
+  width: 900px; height: 900px;
+  background: radial-gradient(circle, rgba(79,70,229,0.10) 0%, transparent 60%);
+  top: -200px; left: 50%; transform: translateX(-50%);
+}
+
+/* Text content */
+.hero-content {
+  text-align: center;
+  max-width: 820px;
+  position: relative;
+  z-index: 1;
+  animation: fadeInUp 0.6s ease both;
+}
+
+.hero-badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 16px;
+  border: 1px solid rgba(79,70,229,0.4);
+  border-radius: 999px;
+  font-size: 12px; font-weight: 500;
+  color: #A5B4FC;
+  background: rgba(79,70,229,0.1);
+  margin-bottom: 24px;
+}
+.hero-badge-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #818CF8;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.hero-h1 {
+  font-size: clamp(38px, 5.5vw, 68px);
+  font-weight: 800;
+  color: white;
+  line-height: 1.08;
+  letter-spacing: -2px;
+  margin-bottom: 20px;
+  animation: fadeInUp 0.6s ease 0.1s both;
+}
+.hero-grad {
+  background: linear-gradient(135deg, #818CF8 0%, #A78BFA 50%, #60A5FA 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.hero-sub {
+  font-size: clamp(15px, 1.8vw, 18px);
+  color: rgba(255,255,255,0.55);
+  max-width: 600px;
+  margin: 0 auto 32px;
+  line-height: 1.75;
+  animation: fadeInUp 0.6s ease 0.2s both;
+}
+
+/* CTAs */
+.hero-ctas {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+  animation: fadeInUp 0.6s ease 0.3s both;
+}
+
+.hero-cta-primary {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 13px 28px;
+  font-size: 15px; font-weight: 600;
+  color: white; background: #4F46E5;
+  border-radius: 10px; border: none; cursor: pointer;
+  transition: all 0.18s ease;
+  text-decoration: none;
+  box-shadow: 0 4px 24px rgba(79,70,229,0.4);
+}
+.hero-cta-primary:hover {
+  background: #4338CA;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 32px rgba(79,70,229,0.5);
+}
+
+.hero-cta-secondary {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 13px 24px;
+  font-size: 15px; font-weight: 500;
+  color: rgba(255,255,255,0.85);
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 10px; cursor: pointer;
+  transition: all 0.18s ease;
+  text-decoration: none;
+}
+.hero-cta-secondary:hover { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.25); }
+.hero-play-icon { opacity: 0.8; }
+
+/* Trust line */
+.hero-trust {
+  display: flex;
+  gap: 20px;
+  justify-content: center;
+  flex-wrap: wrap;
+  animation: fadeInUp 0.6s ease 0.4s both;
+}
+.hero-trust-item {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 500;
+  color: rgba(255,255,255,0.4);
+}
+
+/* ── Hero visualization wrapper ── */
+.hero-viz-wrap {
+  width: 100%;
+  max-width: 900px;
+  margin-top: 56px;
+  position: relative;
+  z-index: 1;
+  animation: fadeInUp 0.7s ease 0.5s both;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   PIPELINE VISUALIZATION  (3D animated)
+══════════════════════════════════════════════════════════════ */
+.pviz-wrap {
+  position: relative;
+  width: 100%;
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 20px;
+  padding: 28px 24px 24px;
+  overflow: hidden;
+}
+
+/* Ambient glows inside the viz */
+.pviz-glow {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  filter: blur(60px);
+}
+.pviz-glow-1 {
+  width: 300px; height: 300px;
+  background: rgba(79,70,229,0.15);
+  top: -60px; left: 20%;
+}
+.pviz-glow-2 {
+  width: 200px; height: 200px;
+  background: rgba(16,185,129,0.1);
+  bottom: -40px; right: 15%;
+}
+
+/* ── Row 1: Source nodes — equal-width grid so all 5 cards share identical
+   width/height/spacing and sit on one perfectly aligned row ── */
+.pviz-sources {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+  max-width: 620px;
+  margin: 0 auto;
+  position: relative;
+  z-index: 2;
+}
+.pviz-sources > [role="listitem"] { display: contents; }
+
+.pviz-source-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 76px;
+  padding: 12px 8px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px;
+  position: relative;
+  cursor: default;
+  animation: fadeInUp 0.5s ease both;
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+.pviz-source-card:hover {
+  background: rgba(255,255,255,0.07);
+  border-color: var(--nc, rgba(255,255,255,0.2));
+  box-shadow: 0 0 16px rgba(79,70,229,0.15);
+  transform: translateY(-2px);
+}
+.pviz-source-icon { font-size: 20px; line-height: 1; }
+.pviz-source-label { font-size: 11px; font-weight: 500; color: rgba(255,255,255,0.55); white-space: nowrap; }
+.pviz-source-dot {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--nc, #4F46E5);
+  animation: pulse 1.5s ease-in-out infinite;
+  position: absolute; top: 8px; right: 8px;
+}
+
+/* ── Converging animated SVG paths (desktop only — replaced by
+   FlowConnector chain on mobile). Real <path> curves, evenly spaced,
+   merging smoothly into the engine instead of crossing. ── */
+.pviz-conv {
+  height: 46px;
+  position: relative;
+  z-index: 1;
+  /* Must match .pviz-sources' width/centering exactly — the path x-positions
+     are percentages of THIS box, so a mismatched width makes the lines miss
+     the card edges they're supposed to touch. */
+  max-width: 620px;
+  margin: 0 auto;
+}
+.pviz-conv-svg { width: 100%; height: 100%; overflow: visible; }
+
+/* Static dotted guide — always visible, marks the route to the engine */
+.pviz-flow-track {
+  fill: none;
+  stroke: rgba(255,255,255,0.14);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-dasharray: 1.6 3;
+  vector-effect: non-scaling-stroke;
+}
+
+/* Colored line that travels along the same dotted path, per source —
+   replaces a separate pulsing ring on the engine card with motion that
+   visibly arrives from each source instead. */
+.pviz-flow-path {
+  fill: none;
+  stroke: var(--dc, #818CF8);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-dasharray: 10 90;
+  stroke-dashoffset: 100;
+  opacity: 0.85;
+  filter: drop-shadow(0 0 2px var(--dc, #818CF8));
+  animation: dashFlow 2.6s linear infinite;
+  vector-effect: non-scaling-stroke;
+}
+
+/* ── Intelligence engine — Scanner / OCR / AI Extraction always on one
+   horizontal line on desktop ── */
+.pviz-engine-row {
+  display: flex;
+  justify-content: center;
+  position: relative;
+  z-index: 2;
+}
+.pviz-engine-card {
+  position: relative;
+  border-radius: 14px;
+  padding: 3px;
+  background: linear-gradient(135deg, rgba(79,70,229,0.6), rgba(139,92,246,0.4), rgba(59,130,246,0.4));
+}
+
+.pviz-engine-body {
+  background: #0D1528;
+  border-radius: 12px;
+  padding: 16px 28px;
+}
+.pviz-engine-stages {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.pviz-engine-step-wrap { display: flex; align-items: center; }
+.pviz-engine-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 64px;
+}
+.pviz-engine-step-icon { font-size: 19px; line-height: 1; }
+.pviz-engine-step-label { font-size: 11px; font-weight: 500; color: rgba(255,255,255,0.6); white-space: nowrap; }
+
+/* Reused (rotated 90° on mobile) for both the engine separators and the
+   output-row connectors — one visual language for "flow" everywhere. */
+.pviz-engine-sep {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 16px;
+  flex-shrink: 0;
+}
+.pviz-engine-sep-line {
+  width: 14px; height: 2px;
+  background: linear-gradient(to right, rgba(79,70,229,0.5), rgba(139,92,246,0.5));
+  position: relative; overflow: hidden;
+}
+.pviz-engine-sep-line::after {
+  content: '';
+  position: absolute; top: 0; left: -100%; right: 0; bottom: 0;
+  background: linear-gradient(to right, transparent, rgba(165,180,252,0.9), transparent);
+  animation: hlineFlow 1.8s linear infinite;
+}
+.pviz-engine-sep-icon { color: rgba(165,180,252,0.7); flex-shrink: 0; }
+
+.pviz-engine-tag {
+  text-align: center;
+  font-size: 11px; font-weight: 600;
+  color: #A5B4FC;
+  letter-spacing: 0.3px;
+}
+
+/* ── Vertical connector: engine → output pipeline (both layouts) ── */
+.pviz-vline-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 32px;
+  position: relative;
+  z-index: 1;
+}
+.pviz-vline {
+  width: 2px; flex: 1;
+  background: linear-gradient(to bottom, rgba(79,70,229,0.7), rgba(16,185,129,0.7));
+  position: relative;
+  overflow: hidden;
+}
+.pviz-vline::after {
+  content: '';
+  position: absolute;
+  top: -100%; left: 0; right: 0;
+  height: 100%;
+  background: linear-gradient(to bottom, transparent, rgba(165,180,252,0.8), transparent);
+  animation: vlineFlow 1.5s linear infinite;
+}
+.pviz-vline-arrow {
+  border-top: 7px solid rgba(16,185,129,0.7);
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+}
+
+/* ── Output pipeline row — Dataset → Transform → Validate → Reconcile → Target.
+   Fixed width/height (not min-width) so every card is truly equal size,
+   equal spacing and center-aligned regardless of label length. ── */
+.pviz-output-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  position: relative;
+  z-index: 2;
+}
+.pviz-output-step-wrap { display: flex; align-items: center; }
+
+.pviz-output-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 104px;
+  height: 74px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.09);
+  border-top: 2px solid var(--sc, #4F46E5);
+  border-radius: 10px;
+  position: relative;
+  animation: fadeInUp 0.5s ease both;
+  cursor: default;
+  transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+.pviz-output-stage:hover {
+  background: rgba(255,255,255,0.07);
+  box-shadow: 0 0 20px rgba(79,70,229,0.12);
+  transform: translateY(-2px);
+}
+.pviz-output-icon  { font-size: 19px; line-height: 1; }
+.pviz-output-label { font-size: 11px; font-weight: 500; color: rgba(255,255,255,0.55); white-space: nowrap; }
+.pviz-output-indicator {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--sc, #10B981);
+  animation: pulse 1.5s ease-in-out infinite;
+  position: absolute; top: 7px; right: 7px;
+}
+
+/* Horizontal connector between output stages (rotated to vertical on mobile) */
+.pviz-h-connector { display: flex; align-items: center; flex-shrink: 0; }
+.pviz-h-line {
+  width: 24px; height: 2px;
+  background: linear-gradient(to right, rgba(79,70,229,0.5), rgba(59,130,246,0.5));
+  position: relative; overflow: hidden;
+}
+.pviz-h-line::after {
+  content: '';
+  position: absolute; top: 0; left: -100%; right: 0; bottom: 0;
+  background: linear-gradient(to right, transparent, rgba(165,180,252,0.9), transparent);
+  animation: hlineFlow 1.8s linear infinite;
+}
+.pviz-h-arrow-icon { color: rgba(59,130,246,0.7); flex-shrink: 0; }
+
+/* ── Mobile-only stacked flow connector (hidden on desktop) ── */
+.pviz-flow-connector { display: none; }
+.pviz-flow-connector-line {
+  width: 2px; height: 16px;
+  background: linear-gradient(to bottom, rgba(79,70,229,0.7), rgba(139,92,246,0.55));
+  position: relative; overflow: hidden;
+}
+.pviz-flow-connector-line::after {
+  content: '';
+  position: absolute; top: -100%; left: 0; right: 0; height: 100%;
+  background: linear-gradient(to bottom, transparent, rgba(165,180,252,0.9), transparent);
+  animation: vlineFlow 1.4s linear infinite;
+}
+.pviz-flow-connector svg { color: rgba(139,92,246,0.6); margin-top: -2px; }
+
+/* ── Floating particles — a few subtle drifting points, kept minimal ── */
+.pviz-particle {
+  position: absolute;
+  width: 4px; height: 4px; border-radius: 50%;
+  background: rgba(165,180,252,0.4);
+  pointer-events: none;
+  animation: floatParticle 4s ease-in-out infinite;
+}
+.pviz-particle-1 { top: 15%; left:  6%; animation-delay: 0s;   animation-duration: 4.2s; }
+.pviz-particle-2 { top: 30%; left: 92%; animation-delay: 0.7s; animation-duration: 3.8s; background: rgba(16,185,129,0.4); }
+.pviz-particle-3 { top: 70%; left:  4%; animation-delay: 1.4s; animation-duration: 5s;   background: rgba(139,92,246,0.4); }
+.pviz-particle-4 { top: 78%; left: 90%; animation-delay: 0.3s; animation-duration: 3.5s; }
+
+/* ══════════════════════════════════════════════════════════════
+   STATS BAR
+══════════════════════════════════════════════════════════════ */
+.stats-bar {
+  background: rgba(255,255,255,0.03);
+  border-top: 1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.stats-inner {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 28px 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  flex-wrap: wrap;
+}
+.stats-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 0 40px;
+  position: relative;
+}
+.stats-sep {
+  position: absolute;
+  right: 0; top: 10%; bottom: 10%;
+  width: 1px;
+  background: rgba(255,255,255,0.08);
+}
+.stats-val   { font-size: 32px; font-weight: 800; color: white; letter-spacing: -1px; line-height: 1; }
+.stats-label { font-size: 12px; color: rgba(255,255,255,0.45); font-weight: 500; }
+
+/* ══════════════════════════════════════════════════════════════
+   SHARED SECTION STYLES
+══════════════════════════════════════════════════════════════ */
+.section { padding: 80px 40px; }
+.section-inner { max-width: 1100px; margin: 0 auto; }
+.section-eyebrow {
+  display: inline-block;
+  font-size: 11px; font-weight: 600;
+  letter-spacing: 1px; text-transform: uppercase;
+  color: #818CF8;
+  margin-bottom: 12px;
+}
+.section-h2 {
+  font-size: clamp(26px, 3.5vw, 38px);
+  font-weight: 800;
+  color: white;
+  letter-spacing: -1px;
+  margin-bottom: 12px;
+  line-height: 1.15;
+}
+.section-sub {
+  font-size: 16px;
+  color: rgba(255,255,255,0.5);
+  max-width: 540px;
+  margin-bottom: 48px;
+  line-height: 1.7;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   PIPELINE STEPS SECTION
+══════════════════════════════════════════════════════════════ */
+.pipeline-section { background: rgba(255,255,255,0.015); }
+
+.ps-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  position: relative;
+}
+
+.ps-step {
+  flex: 1;
+  min-width: 100px;
+  max-width: 140px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  position: relative;
+  padding: 0 8px 24px;
+}
+
+.ps-step-icon {
+  width: 52px; height: 52px;
+  border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px;
+  border: 1px solid;
+  margin-bottom: 10px;
+  transition: all 0.2s ease;
+}
+.ps-step:hover .ps-step-icon { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0,0,0,0.3); }
+
+.ps-step-num  { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; margin-bottom: 5px; }
+.ps-step-label{ font-size: 12px; font-weight: 600; color: white; margin-bottom: 5px; }
+.ps-step-desc { font-size: 11px; color: rgba(255,255,255,0.4); line-height: 1.5; }
+
+.ps-step-ai-badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  margin-top: 7px; padding: 2px 8px;
+  font-size: 10px; font-weight: 600;
+  color: #A5B4FC;
+  background: rgba(79,70,229,0.15);
+  border: 1px solid rgba(79,70,229,0.3);
+  border-radius: 999px;
+}
+
+.ps-step-arrow {
+  position: absolute;
+  right: -10px; top: 22px;
+  font-size: 16px;
+  color: rgba(255,255,255,0.2);
+  font-weight: 300;
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   FEATURES GRID
+══════════════════════════════════════════════════════════════ */
+.features-section { background: transparent; }
+
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.feature-card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 14px;
+  padding: 24px;
+  transition: all 0.22s ease;
+}
+.feature-card:hover {
+  background: rgba(255,255,255,0.05);
+  border-color: rgba(255,255,255,0.12);
+  transform: translateY(-2px);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.25);
+}
+
+.feature-card-icon {
+  width: 44px; height: 44px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px;
+  margin-bottom: 16px;
+}
+.feature-card-title {
+  font-size: 16px; font-weight: 700; color: white;
+  margin-bottom: 8px;
+}
+.feature-card-desc {
+  font-size: 13px; color: rgba(255,255,255,0.5); line-height: 1.7;
+  margin-bottom: 14px;
+}
+.feature-card-link {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: gap 0.15s ease;
+}
+.feature-card:hover .feature-card-link { gap: 6px; }
+
+/* ══════════════════════════════════════════════════════════════
+   CTA SECTION
+══════════════════════════════════════════════════════════════ */
+.cta-section { background: transparent; }
+
+.cta-box {
+  position: relative;
+  background: linear-gradient(135deg, rgba(79,70,229,0.12), rgba(59,130,246,0.06));
+  border: 1px solid rgba(79,70,229,0.2);
+  border-radius: 20px;
+  padding: 64px 48px;
+  text-align: center;
+  overflow: hidden;
+}
+.cta-glow {
+  position: absolute;
+  width: 500px; height: 300px; border-radius: 50%;
+  background: radial-gradient(ellipse, rgba(79,70,229,0.15) 0%, transparent 65%);
+  top: -80px; left: 50%; transform: translateX(-50%);
+  pointer-events: none;
+}
+.cta-content { position: relative; z-index: 1; }
+.cta-h2 {
+  font-size: clamp(26px, 3vw, 38px); font-weight: 800;
+  color: white; letter-spacing: -1px; margin-bottom: 12px;
+}
+.cta-sub { font-size: 16px; color: rgba(255,255,255,0.55); margin-bottom: 28px; }
+.cta-actions {
+  display: flex; gap: 12px; justify-content: center;
+  flex-wrap: wrap; margin-bottom: 16px;
+}
+.cta-footnote { font-size: 12px; color: rgba(255,255,255,0.35); }
+
+/* ══════════════════════════════════════════════════════════════
+   FOOTER
+══════════════════════════════════════════════════════════════ */
+.home-footer {
+  background: rgba(255,255,255,0.02);
+  border-top: 1px solid rgba(255,255,255,0.06);
+  padding: 24px 40px;
+}
+.footer-inner {
+  max-width: 1280px; margin: 0 auto;
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 16px;
+}
+.footer-brand { display: flex; align-items: center; gap: 10px; }
+.footer-copy   { font-size: 13px; color: rgba(255,255,255,0.35); }
+.footer-links  { display: flex; gap: 4px; flex-wrap: wrap; }
+.footer-link {
+  font-size: 13px; color: rgba(255,255,255,0.4);
+  padding: 4px 10px; border-radius: 5px; cursor: pointer; transition: all 0.15s ease;
+}
+.footer-link:hover { color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.05); }
+
+/* ══════════════════════════════════════════════════════════════
+   ANIMATIONS
+══════════════════════════════════════════════════════════════ */
+@keyframes dashFlow {
+  from { stroke-dashoffset: 100; }
+  to   { stroke-dashoffset: 0; }
+}
+@keyframes hlineFlow {
+  0%   { left: -100%; }
+  100% { left: 200%; }
+}
+@keyframes vlineFlow {
+  0%   { top: -100%; }
+  100% { top: 200%; }
+}
+@keyframes floatParticle {
+  0%, 100% { transform: translateY(0) scale(1); opacity: 0.5; }
+  33%       { transform: translateY(-10px) scale(1.3); opacity: 0.8; }
+  66%       { transform: translateY(5px) scale(0.8); opacity: 0.3; }
+}
+
+/* Reuse from global.css */
+/* fadeInUp already defined in global.css */
+/* pulse already defined in global.css */
+
+/* ══════════════════════════════════════════════════════════════
+   RESPONSIVE
+══════════════════════════════════════════════════════════════ */
+@media (max-width: 1024px) {
+  .features-grid { grid-template-columns: repeat(2, 1fr); }
+  .ps-step { min-width: 80px; }
+}
+
+@media (max-width: 768px) {
+  .hnav-links  { display: none; }
+  .hnav-inner  { padding: 0 20px; gap: 12px; }
+  .hero        { padding: 100px 20px 60px; }
+  .hero-h1     { letter-spacing: -1px; }
+  .hero-ctas   { flex-direction: column; align-items: center; }
+  .stats-inner { gap: 0; padding: 20px; }
+  .stats-item  { padding: 16px 20px; }
+  .section     { padding: 60px 20px; }
+  .features-grid { grid-template-columns: 1fr; }
+  .ps-grid     { justify-content: center; }
+  .ps-step     { min-width: 90px; max-width: 110px; }
+
+  /* ── Pipeline viz: full vertical stack (sources → engine → output),
+     with every connector re-oriented — nothing is hidden or "broken",
+     it just flows top-to-bottom instead of left-to-right. ── */
+  .pviz-wrap { padding: 24px 16px 20px; }
+
+  .pviz-sources {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    max-width: 240px;
+    margin: 0 auto;
+    gap: 0;
+  }
+  .pviz-sources > [role="listitem"] { display: flex; flex-direction: column; align-items: center; width: 100%; }
+  .pviz-source-card { width: 100%; max-width: 220px; height: auto; padding: 10px 14px; }
+
+  /* Desktop SVG fan is a converging-funnel geometry that only makes sense
+     as a horizontal row; on a vertical stack the FlowConnector chain
+     (already threaded between every node) takes over instead. */
+  .pviz-conv { display: none; }
+  .pviz-flow-connector { display: flex; flex-direction: column; align-items: center; margin: 2px 0; }
+
+  .pviz-engine-stages  { flex-direction: column; gap: 10px; margin-bottom: 12px; }
+  .pviz-engine-sep     { flex-direction: column; height: 20px; margin-bottom: 0; }
+  .pviz-engine-sep-line { transform: rotate(90deg); }
+  .pviz-engine-sep-icon { transform: rotate(90deg); }
+
+  .pviz-vline-wrap { height: 24px; }
+
+  .pviz-output-row      { flex-direction: column; gap: 0; }
+  .pviz-output-step-wrap { flex-direction: column; width: 100%; max-width: 220px; margin: 0 auto; }
+  .pviz-output-stage     { width: 100%; height: auto; padding: 10px 14px; }
+  .pviz-h-connector      { flex-direction: column; height: 20px; width: auto; margin: 2px 0; }
+  .pviz-h-line           { transform: rotate(90deg); }
+  .pviz-h-arrow-icon     { transform: rotate(90deg); }
+
+  .cta-box { padding: 40px 24px; }
+  .home-footer { padding: 20px; }
+}
+
+@media (max-width: 480px) {
+  .hnav-btn-ghost:not(:last-child) { display: none; }
+}

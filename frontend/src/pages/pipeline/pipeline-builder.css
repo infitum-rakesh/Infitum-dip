@@ -1,0 +1,219 @@
+/* ============================================================
+   Pipeline Builder page styles — scoped to .pb-*
+   Canvas/node styles stay in pipeline.css
+   ============================================================ */
+
+/* ── Page header ────────────────────────────────────────────── */
+.pb-header {
+  display: flex; align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 20px; gap: 16px; flex-wrap: wrap;
+}
+.pb-title    { font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary); }
+.pb-subtitle { font-size: var(--fs-md);  color: var(--text-muted);    margin-top: 3px; }
+.pb-actions  { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+
+/* ── Card/Table view toggle ─────────────────────────────────── */
+.pb-view-toggle {
+  display: flex; border: 1px solid var(--border); border-radius: var(--radius-md);
+  overflow: hidden; background: white; flex-shrink: 0;
+}
+.pb-view-toggle button {
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; color: var(--text-muted); transition: var(--transition);
+}
+.pb-view-toggle button:hover  { background: var(--bg-body); color: var(--text-primary); }
+.pb-view-toggle button.active { background: var(--color-primary); color: white; }
+
+/* ── Table view ─────────────────────────────────────────────── */
+.pb-table {
+  background: white; border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+}
+.pb-trow {
+  display: grid;
+  /* Actions is a FIXED width (not auto) so it stays the same size whether
+     a row renders 4 buttons (Run + Edit + Clone + Delete) or 5 (a row
+     with a job also shows Logs) — each .pb-trow sizes its own grid
+     independently (they're separate boxes, not one shared table grid),
+     so an `auto` track here made the Name/Version/Status/etc. columns
+     take a different actual width per row depending on how many icons
+     that row happened to have, throwing every row out of alignment with
+     the header and with each other. See pipeline.css's PipelineRuns fix
+     for the same underlying issue. */
+  grid-template-columns: 1.6fr 70px 130px 140px 170px 230px;
+  gap: 10px; align-items: center;
+  padding: 10px 16px; border-bottom: 1px solid #F1F5F9;
+}
+.pb-trow:last-child { border-bottom: none; }
+.pb-trow:hover { background: #FAFBFC; }
+.pb-trow-header {
+  background: #F8FAFC; border-bottom: 1px solid var(--border);
+  font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px;
+}
+.pb-trow-name { font-size: var(--fs-sm); font-weight: 600; color: var(--text-primary); cursor: pointer; }
+.pb-trow-name:hover { color: var(--color-primary); text-decoration: underline; }
+.pb-trow-actions { display: flex; gap: 4px; justify-content: flex-end; flex-wrap: nowrap; }
+
+@media (max-width: 900px) {
+  .pb-trow { grid-template-columns: 1fr 60px 110px 230px; }
+  .pb-trow-header span:nth-child(4), .pb-trow span:nth-child(4),
+  .pb-trow-header span:nth-child(5), .pb-trow span:nth-child(5) { display: none; }
+}
+
+/* ── Pipeline cards ─────────────────────────────────────────── */
+.pb-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.pb-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: var(--space-5, 20px);
+  cursor: pointer;
+  transition: var(--transition);
+  position: relative;
+  overflow: hidden;
+}
+.pb-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.pb-card.pb-card-active { border-color: var(--color-primary); }
+.pb-card-status-bar {
+  position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+}
+.pb-card-status-bar.success { background: var(--color-success); }
+.pb-card-status-bar.warning { background: var(--color-warning); }
+.pb-card-status-bar.failed  { background: var(--color-danger); }
+.pb-card-status-bar.running { background: var(--color-info); animation: statusBarFlow 1.5s linear infinite; }
+.pb-card-status-bar.paused  { background: #94A3B8; }
+
+.pb-card-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 10px; gap: 8px; }
+.pb-card-name   { font-size: var(--fs-lg); font-weight: var(--fw-semibold); color: var(--text-primary); }
+.pb-card-desc   { font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.5; margin-bottom: 14px; }
+.pb-card-meta   { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; font-size: var(--fs-xs); color: var(--text-muted); }
+.pb-card-meta-item { display: flex; align-items: center; gap: 4px; }
+.pb-card-tags   { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; }
+.pb-tag {
+  padding: 2px 7px; border-radius: var(--radius-full);
+  font-size: 10px; font-weight: 600; letter-spacing: 0.3px;
+  background: var(--bg-body); border: 1px solid var(--border); color: var(--text-muted);
+}
+.pb-card-actions { display: flex; gap: 6px; justify-content: flex-end; border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
+
+/* ── New pipeline card ──────────────────────────────────────── */
+.pb-new-card {
+  background: var(--bg-body);
+  border: 2px dashed var(--border-dark);
+  border-radius: var(--radius-xl);
+  min-height: 180px;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 8px; cursor: pointer; transition: var(--transition);
+  color: var(--text-muted); text-align: center; padding: 24px;
+}
+.pb-new-card:hover { border-color: var(--color-primary); background: var(--color-primary-light); color: var(--color-primary); }
+.pb-new-icon  { font-size: 28px; }
+.pb-new-label { font-size: var(--fs-sm); font-weight: var(--fw-semibold); }
+.pb-new-sub   { font-size: var(--fs-xs); opacity: 0.7; }
+
+/* ── Designer page layout ───────────────────────────────────── */
+.pb-designer {
+  display: flex; flex-direction: column;
+  height: calc(100vh - 160px);
+  min-height: 540px;
+}
+
+.pb-designer-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  flex-shrink: 0;
+}
+.pb-designer-name   { font-size: var(--fs-xl); font-weight: var(--fw-semibold); color: var(--text-primary); }
+.pb-version-badge {
+  padding: 2px 8px; border-radius: var(--radius-full);
+  background: var(--color-primary-light); color: var(--color-primary);
+  font-size: 11px; font-weight: 700; letter-spacing: 0.3px;
+}
+.pb-designer-actions { display: flex; gap: 6px; margin-left: auto; }
+
+.pb-tab-nav {
+  display: flex; border-bottom: 1px solid var(--border);
+  background: var(--bg-card); flex-shrink: 0;
+  border-left: 1px solid var(--border); border-right: 1px solid var(--border);
+}
+.pb-tab-btn {
+  padding: 9px 16px; font-size: var(--fs-sm); font-weight: var(--fw-medium);
+  color: var(--text-muted); cursor: pointer;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: var(--transition); background: none;
+}
+.pb-tab-btn:hover  { color: var(--text-primary); }
+.pb-tab-btn.active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
+
+.pb-tab-content {
+  flex: 1;
+  border: 1px solid var(--border); border-top: none;
+  border-radius: 0 0 var(--radius-xl) var(--radius-xl);
+  overflow: hidden; display: flex;
+  background: var(--bg-card);
+}
+
+/* ── Schedule panel ─────────────────────────────────────────── */
+.pb-schedule-panel { padding: 24px; max-width: 600px; }
+.pb-schedule-label { font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: var(--text-primary); margin-bottom: 12px; }
+.pb-cron-presets   { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.pb-cron-preset {
+  padding: 6px 12px; border-radius: var(--radius-md);
+  border: 1px solid var(--border); background: var(--bg-body);
+  font-size: var(--fs-sm); cursor: pointer; transition: var(--transition);
+}
+.pb-cron-preset:hover,
+.pb-cron-preset.active { border-color: var(--color-primary); background: var(--color-primary-light); color: var(--color-primary); }
+
+/* ── Settings panel ─────────────────────────────────────────── */
+.pb-settings-panel { padding: 24px; max-width: 600px; }
+
+/* ── Runs table ─────────────────────────────────────────────── */
+.pb-run-row {
+  display: grid;
+  grid-template-columns: 120px 1fr 90px 130px 90px 90px 100px;
+  gap: 8px; align-items: center;
+  padding: 10px 16px; border-bottom: 1px solid #F1F5F9;
+  font-size: var(--fs-sm); transition: var(--transition); cursor: pointer;
+}
+.pb-run-row:last-child { border-bottom: none; }
+.pb-run-row:hover { background: #FAFBFC; }
+.pb-run-id   { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text-primary); }
+.pb-run-time { font-size: var(--fs-xs); color: var(--text-muted); }
+
+/* ── Status indicators ──────────────────────────────────────── */
+.pb-pipeline-status {
+  display: flex; align-items: center; gap: 5px;
+  font-size: var(--fs-xs); font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px;
+}
+.pb-status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.pb-status-dot.active  { background: var(--color-success); animation: pulse-dot 2s infinite; }
+.pb-status-dot.paused  { background: #94A3B8; }
+.pb-status-dot.error   { background: var(--color-danger); }
+
+/* ── Animations ─────────────────────────────────────────────── */
+@keyframes statusBarFlow {
+  0%   { background-position: -100% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes pulse-dot {
+  0%,100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.5; transform: scale(1.4); }
+}
+
+@media (max-width: 1024px) {
+  .pb-cards    { grid-template-columns: 1fr 1fr; }
+  .pb-run-row  { grid-template-columns: 100px 1fr 80px 90px; }
+}
+@media (max-width: 640px) {
+  .pb-cards    { grid-template-columns: 1fr; }
+}

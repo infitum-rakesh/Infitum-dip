@@ -1,0 +1,11 @@
+.imp-banner {
+  display: flex; align-items: center; gap: 10px;
+  background: #7C2D12; color: #FED7AA;
+  padding: 8px 20px; font-size: 12.5px; font-weight: 500;
+}
+.imp-banner strong { color: #FFF7ED; font-weight: 700; }
+.imp-banner-exit {
+  margin-left: auto; background: #FED7AA; color: #7C2D12; font-weight: 700;
+  font-size: 11.5px; padding: 4px 12px; border-radius: var(--radius-md); flex-shrink: 0;
+}
+.imp-banner-exit:hover { background: #FFEDD5; }

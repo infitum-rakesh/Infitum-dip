@@ -1,0 +1,221 @@
+import { useEffect, useState } from 'react';
+import { NavLink, useLocation } from 'react-router-dom';
+import {
+  LayoutDashboard, Database, Link2, FileSearch, Files, CheckSquare,
+  GitBranch, Shuffle, Terminal, ShieldCheck, Scale, Network, Activity,
+  AlertTriangle, PlayCircle, Clock, Users, Shield, Building2, Key,
+  ScrollText, Settings, ChevronRight, LogOut, BarChart3, ArrowLeftRight,
+  CreditCard, Puzzle, Gauge, UserCog,
+} from 'lucide-react';
+import { useAuth } from '@/hooks/useAuth.js';
+import { usePermission } from '@/hooks/usePermission.js';
+import { MODULES, ROLES } from '@/utils/constants.js';
+import { initials } from '@/utils/formatters.js';
+import { reviewQueueApi } from '@/services/api/reviewQueueApi.js';
+import { incidentApi } from '@/services/api/incidentApi.js';
+import './Sidebar.css';
+
+const NAV = [
+  {
+    section: null,
+    items: [
+      { to: '/app/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    ],
+  },
+  {
+    section: 'DATA',
+    items: [
+      { to: '/app/catalog',       label: 'Data Catalog',  icon: Database },
+      { to: '/app/connections',   label: 'Connections',   icon: Link2 },
+      { to: '/app/sql-workspace', label: 'SQL Workspace', icon: Terminal, module: MODULES.SQL_WORKSPACE },
+    ],
+  },
+  {
+    section: 'DOCUMENT INTELLIGENCE',
+    module: MODULES.DOCUMENT_INTELLIGENCE,
+    items: [
+      { to: '/app/doc-intel',          label: 'Document Intelligence', icon: FileSearch },
+      { to: '/app/doc-intel/documents',label: 'Documents',            icon: Files },
+      { to: '/app/doc-intel/review',   label: 'Review Queue',         icon: CheckSquare, dynamicBadge: 'reviewQueue' },
+    ],
+  },
+  {
+    section: 'TRANSFORMATION',
+    items: [
+      { to: '/app/pipeline',   label: 'Pipeline Builder',      icon: GitBranch },
+      { to: '/app/transform',  label: 'Transform Workspace',   icon: Shuffle, module: MODULES.TRANSFORMATION },
+      { to: '/app/mapping',    label: 'Column Mapping',        icon: ArrowLeftRight, module: MODULES.TRANSFORMATION },
+    ],
+  },
+  {
+    section: 'DATA QUALITY',
+    items: [
+      { to: '/app/validation',    label: 'Validation',     icon: ShieldCheck, module: MODULES.VALIDATION },
+      { to: '/app/reconciliation',label: 'Reconciliation', icon: Scale,       module: MODULES.RECONCILIATION },
+    ],
+  },
+  {
+    section: 'OBSERVABILITY',
+    items: [
+      { to: '/app/lineage',    label: 'Data Lineage', icon: Network,       module: MODULES.LINEAGE },
+      { to: '/app/monitoring', label: 'Monitoring',   icon: BarChart3,     module: MODULES.OBSERVABILITY },
+      { to: '/app/incidents',  label: 'Incidents',    icon: AlertTriangle, dynamicBadge: 'incidents' },
+    ],
+  },
+  {
+    section: 'OPERATIONS',
+    items: [
+      { to: '/app/pipeline-runs', label: 'Pipeline Runs', icon: PlayCircle },
+      { to: '/app/schedules',     label: 'Schedules',     icon: Clock },
+    ],
+  },
+  {
+    section: 'ADMINISTRATION',
+    role: ROLES.ORG_ADMIN,
+    items: [
+      { to: '/app/admin/users',    label: 'Users',          icon: Users },
+      { to: '/app/admin/roles',    label: 'Roles',          icon: Shield },
+      { to: '/app/admin/orgs',     label: 'Organizations',  icon: Building2, role: ROLES.SUPER_ADMIN },
+      { to: '/app/admin/licenses', label: 'Licenses',       icon: Key },
+      { to: '/app/admin/audit',    label: 'Audit Logs',     icon: ScrollText },
+      { to: '/app/admin/settings', label: 'Settings',       icon: Settings },
+    ],
+  },
+  {
+    section: 'SELLER PORTAL',
+    role: ROLES.SELLER,
+    items: [
+      { to: '/app/seller',                    label: 'Seller Dashboard',   icon: BarChart3 },
+      { to: '/app/seller/customers',          label: 'Customers',          icon: Building2 },
+      { to: '/app/seller/subscriptions',      label: 'Subscriptions',      icon: CreditCard },
+      { to: '/app/seller/purchased-modules',  label: 'Purchased Modules',  icon: Puzzle },
+      { to: '/app/seller/usage',              label: 'Usage',              icon: Gauge },
+      { to: '/app/seller/license-management', label: 'License Management', icon: Key },
+    ],
+  },
+  {
+    section: 'SYSTEM',
+    role: ROLES.SELLER,
+    items: [
+      { to: '/app/seller/users',      label: 'Seller Users', icon: UserCog },
+      { to: '/app/seller/audit-logs', label: 'Audit Logs',   icon: ScrollText },
+      { to: '/app/seller/settings',   label: 'Settings',     icon: Settings },
+    ],
+  },
+];
+
+export function Sidebar({ collapsed, onToggle }) {
+  const { user, organization, logout } = useAuth();
+  const { hasRole, hasModule } = usePermission();
+  const location = useLocation();
+
+  // Review Queue's sidebar badge must reflect the real pending count from
+  // the API — never hardcoded. Polled so it stays fresh as items are
+  // processed elsewhere in the app.
+  const [reviewQueueCount, setReviewQueueCount] = useState(null);
+  useEffect(() => {
+    // Runs once on mount (not on every hasModule identity change — that
+    // function is recreated on every OrganizationContext render).
+    if (!hasModule(MODULES.DOCUMENT_INTELLIGENCE)) return;
+    let cancelled = false;
+    const load = () => reviewQueueApi.getCount().then((r) => { if (!cancelled) setReviewQueueCount(r.pending); }).catch(() => {});
+    load();
+    const interval = setInterval(load, 60_000);
+    return () => { cancelled = true; clearInterval(interval); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Incidents' sidebar badge = count of OPEN incidents, real from the API
+  // (was hardcoded '3'), same polling pattern as Review Queue above.
+  const [openIncidentCount, setOpenIncidentCount] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => incidentApi.getStats().then((r) => { if (!cancelled) setOpenIncidentCount(r.open); }).catch(() => {});
+    load();
+    const interval = setInterval(load, 60_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  return (
+    <aside className={`sidebar ${collapsed ? 'sidebar-collapsed' : ''}`}>
+      {/* Logo */}
+      <div className="sidebar-logo">
+        <div className="sidebar-logo-mark">DI</div>
+        {!collapsed && (
+          <div className="sidebar-logo-text">
+            <span className="sidebar-logo-name">DataIntelligence</span>
+            <span className="sidebar-logo-tag">Platform</span>
+          </div>
+        )}
+      </div>
+
+      {/* Trial banner */}
+      {!collapsed && organization?.license_status === 'trial' && (
+        <div className="sidebar-trial">
+          <span className="trial-label">🕐 Trial — 14 days remaining</span>
+          <div className="trial-bar"><div className="trial-fill" style={{ width: '57%' }} /></div>
+        </div>
+      )}
+
+      {/* Navigation */}
+      <nav className="sidebar-nav" aria-label="Main navigation">
+        {NAV.map((group) => {
+          // Section-level role gate
+          if (group.role && !hasRole(group.role)) return null;
+          // Section-level module gate
+          if (group.module && !hasModule(group.module)) return null;
+
+          return (
+            <div key={group.section ?? 'main'} className="nav-group">
+              {group.section && !collapsed && (
+                <span className="nav-section-label">{group.section}</span>
+              )}
+              {group.items.map((item) => {
+                // Item-level gates
+                if (item.role && !hasRole(item.role)) return null;
+                if (item.module && !hasModule(item.module)) return null;
+
+                const Icon = item.icon;
+                const badgeValue = item.dynamicBadge === 'reviewQueue' ? reviewQueueCount
+                  : item.dynamicBadge === 'incidents' ? openIncidentCount
+                  : item.badge;
+                return (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    title={collapsed ? item.label : undefined}
+                    className={({ isActive }) =>
+                      ['nav-item', isActive ? 'nav-item-active' : ''].filter(Boolean).join(' ')
+                    }
+                  >
+                    <Icon size={16} className="nav-icon" />
+                    {!collapsed && <span className="nav-label">{item.label}</span>}
+                    {!collapsed && !!badgeValue && (
+                      <span className="nav-badge">{badgeValue}</span>
+                    )}
+                  </NavLink>
+                );
+              })}
+            </div>
+          );
+        })}
+      </nav>
+
+      {/* User footer */}
+      <div className="sidebar-footer">
+        {!collapsed && (
+          <div className="sidebar-user">
+            <div className="sidebar-avatar">{initials(user?.full_name ?? 'U')}</div>
+            <div className="sidebar-user-info">
+              <span className="sidebar-user-name">{user?.full_name}</span>
+              <span className="sidebar-user-role">{user?.role?.replace(/_/g, ' ')}</span>
+            </div>
+          </div>
+        )}
+        <button className="sidebar-logout-btn" onClick={logout} title="Logout" aria-label="Logout">
+          <LogOut size={15} />
+        </button>
+      </div>
+    </aside>
+  );
+}

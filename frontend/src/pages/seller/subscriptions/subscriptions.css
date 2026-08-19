@@ -1,0 +1,73 @@
+/* ============================================================
+   Seller Portal — Subscriptions — /app/seller/subscriptions — scoped .ss-*
+   ============================================================ */
+
+.ss-page { padding-bottom: 40px; }
+
+.ss-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 18px; gap: 12px; flex-wrap: wrap; }
+.ss-header h1 { font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary); }
+.ss-subtitle { font-size: var(--fs-sm); color: var(--text-muted); margin-top: 2px; }
+.ss-header-actions { display: flex; gap: 8px; }
+
+.ss-status-strip { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.ss-status-chip {
+  display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: var(--radius-full);
+  border: 1px solid var(--border); background: var(--bg-card); font-size: 12px; font-weight: 600; color: var(--text-secondary);
+}
+.ss-status-chip.active { border-color: var(--color-primary); background: var(--color-primary-light); color: var(--color-primary); }
+.ss-status-chip b { font-weight: 800; }
+
+.ss-search-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.ss-search-box { flex: 1; min-width: 220px; max-width: 480px; }
+.ss-input {
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); background: white; outline: none; color: var(--text-primary);
+}
+select.ss-input.ss-inline-filter { width: auto; min-width: 150px; }
+.ss-input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+
+.ss-plan-pill {
+  background: var(--color-primary-light); color: var(--color-primary); font-size: 11px; font-weight: 700;
+  padding: 2px 8px; border-radius: var(--radius-full); text-transform: capitalize;
+}
+.ss-amount { font-weight: 700; color: var(--text-primary); }
+.ss-amount-zero { color: var(--text-faint); font-weight: 500; }
+
+.ss-icon-btn {
+  width: 26px; height: 26px; border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); border: 1px solid transparent; transition: var(--transition);
+}
+.ss-icon-btn:hover:not(:disabled) { background: var(--color-primary-light); color: var(--color-primary); border-color: var(--color-primary-mid); }
+.ss-row-menu { position: relative; }
+.ss-row-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
+.ss-row-menu-list {
+  position: absolute; z-index: 41; min-width: 190px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg); padding: 6px; display: flex; flex-direction: column;
+}
+.ss-row-menu-list button {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius-md);
+  font-size: var(--fs-sm); color: var(--text-secondary); text-align: left; transition: var(--transition);
+}
+.ss-row-menu-list button:hover:not(:disabled) { background: var(--bg-body); color: var(--text-primary); }
+.ss-row-menu-danger { color: var(--color-danger-dark) !important; }
+.ss-row-menu-danger:hover { background: var(--color-danger-bg) !important; color: var(--color-danger-dark) !important; }
+.ss-row-menu-warn { color: var(--color-warning-dark) !important; }
+.ss-row-menu-warn:hover { background: var(--color-warning-bg) !important; color: var(--color-warning-dark) !important; }
+
+/* ── Modals ────────────────────────────────────────────────── */
+.ss-form-error { background: var(--color-danger-bg); color: var(--color-danger-dark); padding: 8px 12px; border-radius: var(--radius-md); font-size: 12.5px; margin-bottom: 12px; }
+.ss-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
+.ss-field { display: flex; flex-direction: column; gap: 5px; }
+.ss-field-full { grid-column: 1 / -1; }
+.ss-field-label { font-size: 11.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; }
+.ss-plan-option-card {
+  display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius-lg); margin-bottom: 8px; cursor: pointer; transition: var(--transition);
+}
+.ss-plan-option-card:hover { border-color: var(--color-primary-mid); background: var(--color-primary-light); }
+.ss-plan-option-card.selected { border-color: var(--color-primary); background: var(--color-primary-light); }
+.ss-plan-option-name { font-weight: 700; color: var(--text-primary); font-size: 13px; }
+.ss-plan-option-meta { font-size: 11px; color: var(--text-muted); }
+.ss-plan-option-price { font-weight: 700; color: var(--color-primary); font-size: 13px; }

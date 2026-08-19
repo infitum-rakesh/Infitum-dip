@@ -1,0 +1,793 @@
+/* ============================================================
+   Pipeline Components — shared styles for canvas, nodes, edges.
+   Scoped to .pc-* (pipeline-component) to avoid leakage.
+   Uses design tokens from variables.css.
+   ============================================================ */
+
+/* ── Canvas shell ───────────────────────────────────────────── */
+.pc-canvas-wrap {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 220px);
+  min-height: 540px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+}
+
+.pc-canvas {
+  flex: 1;
+  position: relative;
+  /* Real horizontal + vertical scrollbars; wheel, shift+wheel and trackpad
+     horizontal scroll all work natively once this is `auto` instead of `hidden`. */
+  overflow: auto;
+  background-image:
+    radial-gradient(circle, #CBD5E1 1px, transparent 0);
+  background-size: 24px 24px;
+  background-color: #F8FAFC;
+  cursor: grab;
+  user-select: none;
+  overscroll-behavior: contain;
+}
+.pc-canvas.panning { cursor: grabbing; }
+
+/* Drop-highlight when a node is dragged over the canvas */
+.pc-canvas.drag-target {
+  background-color: #EFF6FF;
+  background-image: radial-gradient(circle, #93C5FD 1px, transparent 0);
+  background-size: 24px 24px;
+}
+/* Drop-highlight while hovering an INVALID connection target */
+.pc-canvas.drag-invalid {
+  background-color: #FEF2F2;
+  background-image: radial-gradient(circle, #FCA5A5 1px, transparent 0);
+  background-size: 24px 24px;
+}
+
+/* Sizer establishes the scrollable content size at the current zoom level */
+.pc-canvas-sizer {
+  position: relative;
+}
+
+/* Inner transform layer (zoom) — logical (unscaled) content, visually
+   scaled to fit the sizer box exactly (transform-origin 0 0). */
+.pc-canvas-inner {
+  position: absolute;
+  top: 0; left: 0;
+  transform-origin: 0 0;
+}
+
+/* ── SVG edge layer ─────────────────────────────────────────── */
+.pc-svg-layer {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+/* Edge group — the SVG layer itself is pointer-events:none so it never
+   blocks canvas panning/clicks, but each connection's own hit area must
+   punch back through to stay clickable/right-clickable. */
+.pc-edge-group { pointer-events: auto; cursor: pointer; }
+
+/* Edge path */
+.pc-edge-path {
+  fill: none;
+  stroke: var(--border-dark);
+  stroke-width: 2;
+  transition: stroke 0.15s, stroke-width 0.15s;
+}
+.pc-edge-group:hover .pc-edge-path:not(.selected) { stroke: #64748B; stroke-width: 2.5; }
+.pc-edge-path.selected { stroke: var(--color-primary); stroke-width: 2.5; }
+.pc-edge-path.animated {
+  stroke-dasharray: 8 5;
+  animation: edgeDash 1.8s linear infinite;
+}
+.pc-edge-path.success { stroke: var(--color-success); }
+.pc-edge-path.error   { stroke: var(--color-danger); }
+
+/* Soft halo glow behind a selected connection, like React Flow / ADF */
+.pc-edge-halo {
+  fill: none;
+  stroke: var(--color-primary);
+  stroke-width: 7;
+  opacity: 0.15;
+}
+
+.pc-edge-del-btn { animation: nodeAppear 0.12s ease; }
+
+/* Ghost edge being drawn */
+.pc-edge-ghost {
+  fill: none;
+  stroke: var(--color-primary);
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+  opacity: 0.75;
+  pointer-events: none;
+}
+.pc-edge-ghost.invalid {
+  stroke: var(--color-danger);
+}
+
+/* ── Edge right-click context menu (portal) ──────────────────── */
+.pc-edge-ctx-menu {
+  position: fixed;
+  z-index: 300;
+  min-width: 176px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+  animation: nodeAppear 0.12s ease;
+}
+.pc-edge-ctx-header {
+  font-size: 10px;
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.pc-edge-ctx-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 8px;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  border-radius: var(--radius-md);
+  transition: var(--transition);
+}
+.pc-edge-ctx-item:hover { background: var(--bg-body); color: var(--text-primary); }
+.pc-edge-ctx-item.danger { color: var(--color-danger-dark); }
+.pc-edge-ctx-item.danger:hover { background: var(--color-danger-bg); }
+
+/* ── Node ───────────────────────────────────────────────────── */
+.pc-node {
+  position: absolute;
+  background: var(--bg-card);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-sm);
+  min-width: 176px;
+  max-width: 216px;
+  cursor: grab;
+  transition: box-shadow 0.15s, border-color 0.15s;
+  user-select: none;
+}
+.pc-node:hover           { box-shadow: var(--shadow-md); }
+.pc-node.selected        { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.12), var(--shadow-md); }
+.pc-node.dragging        { cursor: grabbing; box-shadow: var(--shadow-lg); opacity: 0.9; z-index: 100; }
+
+/* Status accents */
+.pc-node.status-running  { border-color: var(--color-info); }
+.pc-node.status-success  { border-color: var(--color-success); }
+.pc-node.status-error    { border-color: var(--color-danger); }
+.pc-node.status-warning  { border-color: var(--color-warning); }
+
+/* Top status bar */
+.pc-node-status-bar {
+  height: 3px;
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+}
+.pc-node-status-bar.running { background: var(--color-info); animation: barPulse 1.5s ease-in-out infinite; }
+.pc-node-status-bar.success { background: var(--color-success); }
+.pc-node-status-bar.error   { background: var(--color-danger); }
+.pc-node-status-bar.warning { background: var(--color-warning); }
+
+/* Header */
+.pc-node-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 8px;
+}
+
+.pc-node-icon {
+  width: 28px; height: 28px;
+  border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.pc-node-title {
+  font-size: 13px;
+  font-weight: var(--fw-semibold);
+  color: var(--text-primary);
+  line-height: 1.2;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pc-node-type-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+/* Node body */
+.pc-node-body {
+  padding: 0 12px 10px;
+  border-top: 1px solid var(--border);
+  margin-top: 2px;
+}
+
+.pc-node-metric {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  font-size: 11px;
+}
+.pc-node-metric-key { color: var(--text-muted); }
+.pc-node-metric-val { font-weight: var(--fw-semibold); color: var(--text-primary); }
+
+/* Port handles */
+.pc-port {
+  position: absolute;
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: var(--bg-card);
+  border: 2px solid var(--border-dark);
+  cursor: crosshair;
+  transition: var(--transition);
+  z-index: 10;
+}
+.pc-port:hover          { background: var(--color-primary); border-color: var(--color-primary); transform: scale(1.3); }
+.pc-port.connected      { background: var(--color-primary); border-color: var(--color-primary); }
+.pc-port.input-port     { left: -6px; top: 50%; transform: translateY(-50%); }
+.pc-port.output-port    { right: -6px; top: 50%; transform: translateY(-50%); }
+.pc-port.input-port:hover  { transform: translateY(-50%) scale(1.3); }
+.pc-port.output-port:hover { transform: translateY(-50%) scale(1.3); }
+
+/* Delete button on hover */
+.pc-node-del {
+  position: absolute;
+  top: -7px; right: -7px;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: var(--color-danger);
+  color: white;
+  display: none;
+  align-items: center; justify-content: center;
+  font-size: 11px;
+  cursor: pointer;
+  z-index: 20;
+  border: 2px solid white;
+  font-weight: 700;
+  line-height: 1;
+}
+.pc-node.selected .pc-node-del,
+.pc-node:hover    .pc-node-del { display: flex; }
+
+/* ── Toolbar ────────────────────────────────────────────────── */
+.pc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.pc-toolbar-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+  margin: 0 4px;
+}
+
+.pc-toolbar-zoom {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.pc-toolbar-label {
+  font-size: 12px;
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+  padding: 0 6px;
+}
+
+.pc-version-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-primary);
+  background: var(--color-primary-light);
+  border-radius: var(--radius-full);
+  padding: 3px 9px;
+  white-space: nowrap;
+}
+
+.pc-dirty-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-warning-dark);
+  background: var(--color-warning-bg, #FFFBEB);
+  border: 1px solid var(--color-warning, #F59E0B);
+  border-radius: var(--radius-full);
+  padding: 3px 9px;
+  white-space: nowrap;
+  animation: nodeAppear 0.15s ease;
+}
+
+/* ── Node palette (sidebar) ─────────────────────────────────── */
+.pc-palette {
+  width: 200px;
+  min-width: 200px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-card);
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.pc-palette-section {
+  font-size: 10px;
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  padding: 12px 12px 5px;
+}
+
+.pc-palette-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: grab;
+  transition: var(--transition);
+  border-radius: var(--radius-md);
+  margin: 1px 6px;
+  border: 1px solid transparent;
+}
+.pc-palette-item:hover {
+  background: var(--color-primary-light);
+  border-color: var(--color-primary-mid);
+  color: var(--color-primary);
+}
+.pc-palette-item:active { cursor: grabbing; }
+
+.pc-palette-icon {
+  width: 24px; height: 24px;
+  border-radius: var(--radius);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+/* ── Config panel (right) ───────────────────────────────────── */
+.pc-config-panel {
+  width: 280px;
+  min-width: 280px;
+  border-left: 1px solid var(--border);
+  background: var(--bg-card);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.pc-config-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: #F8FAFC;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pc-config-title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text-primary);
+}
+
+.pc-config-close {
+  display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px;
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  transition: var(--transition);
+  flex-shrink: 0;
+}
+.pc-config-close:hover { background: var(--bg-body); color: var(--text-primary); }
+
+.pc-config-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px;
+}
+
+/* Read-only value row (e.g. Node Type) — looks like a field but isn't editable */
+.pc-config-readonly {
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  background: var(--bg-body);
+}
+
+/* Apply / Cancel footer — nothing reaches the node until Apply is clicked */
+.pc-config-footer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: #F8FAFC;
+  flex-shrink: 0;
+}
+.pc-config-footer > * { flex: 1; }
+
+.pc-save-status {
+  padding: 5px 16px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-primary);
+  background: var(--color-primary-light);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.pc-save-status.error {
+  color: var(--color-danger-dark);
+  background: var(--color-danger-bg);
+}
+
+.pc-config-section {
+  margin-bottom: 16px;
+}
+.pc-config-section-title {
+  font-size: 11px;
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+.pc-config-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.pc-config-label {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text-secondary);
+}
+.pc-config-input,
+.pc-config-select,
+.pc-config-textarea {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+  background: white;
+  outline: none;
+  transition: var(--transition);
+}
+.pc-config-input:focus,
+.pc-config-select:focus,
+.pc-config-textarea:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(79,70,229,0.1);
+}
+.pc-config-textarea { resize: vertical; min-height: 64px; }
+
+/* Widened variant for the Source Dataset node — schema/object browsing,
+   column tables and preview tables need more than 280px. */
+.pc-config-panel-wide { width: 420px; min-width: 420px; }
+
+/* ── LoadStrategyConfig — Full/Delta load, SCD1/SCD2 ────────────── */
+.ls-panel { display: flex; flex-direction: column; }
+.ls-radio-group { display: flex; flex-direction: row; gap: 14px; flex-wrap: wrap; }
+.ls-radio-group-col { flex-direction: column; gap: 8px; }
+.ls-radio {
+  display: flex; align-items: center; gap: 6px;
+  font-size: var(--fs-sm); color: var(--text-primary); cursor: pointer;
+}
+.ls-radio input[type="radio"] { accent-color: var(--color-primary); cursor: pointer; flex-shrink: 0; }
+.ls-radio-block { flex-direction: column; align-items: flex-start; gap: 2px; }
+.ls-radio-help { font-size: 11px; color: var(--text-muted); margin-left: 20px; }
+.ls-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 8px; border-radius: 999px;
+  background: var(--color-primary-bg, rgba(79,70,229,0.08));
+  color: var(--color-primary); font-size: 12px; font-weight: var(--fw-medium);
+}
+.ls-chip button {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: none; color: inherit; cursor: pointer; padding: 0;
+  opacity: 0.7;
+}
+.ls-chip button:hover { opacity: 1; }
+
+/* ── Canvas layout with panels ──────────────────────────────── */
+.pc-designer-layout {
+  display: flex;
+  height: calc(100vh - 220px);
+  min-height: 540px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+}
+
+/* ── Source Dataset config (SourceDatasetConfig.jsx) — scoped .sdc-* ── */
+.sdc-inline-warning, .sdc-error-text {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--color-warning-dark); margin-top: 4px; line-height: 1.4;
+}
+.sdc-error-text { color: var(--color-danger-dark); }
+
+.sdc-unsupported-note {
+  display: flex; align-items: flex-start; gap: 7px;
+  background: var(--color-warning-bg); color: var(--color-warning-dark);
+  border-radius: var(--radius-md); padding: 8px 10px; font-size: 11px; line-height: 1.5;
+  margin-bottom: 10px;
+}
+.sdc-unsupported-note svg { flex-shrink: 0; margin-top: 1px; }
+
+.sdc-search-box {
+  display: flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 6px 9px; color: var(--text-muted);
+}
+.sdc-search-box input {
+  border: none; outline: none; flex: 1; font-size: var(--fs-sm); color: var(--text-primary); background: none;
+}
+
+.sdc-secondary-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; color: var(--color-primary);
+  background: var(--color-primary-light); border: 1px solid var(--color-primary-mid);
+  border-radius: var(--radius-md); padding: 6px 10px; align-self: flex-start;
+  transition: var(--transition);
+}
+.sdc-secondary-btn:hover:not(:disabled) { background: var(--color-primary); color: white; }
+.sdc-secondary-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.sdc-icon-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: var(--radius-md); color: var(--text-muted); flex-shrink: 0;
+}
+.sdc-icon-btn:hover { background: var(--color-danger-bg); color: var(--color-danger-dark); }
+
+.sdc-spin { animation: sdc-spin 0.8s linear infinite; }
+@keyframes sdc-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+.sdc-uploaded-file-card {
+  border: 1px solid var(--border); border-radius: var(--radius-md); padding: 10px 12px;
+  background: var(--bg-body, #F8FAFC); display: flex; flex-direction: column; gap: 8px;
+}
+.sdc-uploaded-file-row { display: flex; align-items: center; gap: 8px; }
+.sdc-uploaded-file-name { font-size: 12.5px; font-weight: 600; color: var(--text-primary); flex: 1; word-break: break-all; }
+.sdc-uploaded-file-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; color: var(--text-secondary); }
+.sdc-uploaded-file-meta code { background: var(--color-primary-light); padding: 1px 5px; border-radius: 4px; }
+.sdc-uploaded-file-sheet { display: flex; flex-direction: column; gap: 2px; }
+.sdc-uploaded-file-note { font-size: 11px; color: var(--text-muted); }
+
+.sdc-row-count { font-size: 11px; color: var(--text-muted); margin: 8px 0 4px; }
+
+.sdc-columns-table-wrap, .sdc-preview-table-wrap {
+  margin-top: 8px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  overflow: auto; max-height: 220px;
+}
+.sdc-columns-table, .sdc-preview-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.sdc-columns-table thead th, .sdc-preview-table thead th {
+  position: sticky; top: 0; background: #F8FAFC; text-align: left; padding: 6px 8px;
+  font-weight: 700; color: var(--text-muted); border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.sdc-columns-table tbody td, .sdc-preview-table tbody td {
+  padding: 5px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; color: var(--text-secondary);
+}
+.sdc-columns-table tbody tr:last-child td, .sdc-preview-table tbody tr:last-child td { border-bottom: none; }
+.sdc-col-name { font-weight: 600; color: var(--text-primary); }
+.sdc-col-type { color: var(--text-muted); font-family: var(--font-mono); font-size: 11px; }
+.sdc-col-badges { display: flex; gap: 3px; }
+.sdc-badge {
+  font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: var(--radius-full);
+  border: 1px solid transparent;
+}
+.sdc-badge-pk { background: #EEF2FF; color: #4F46E5; border-color: #C7D2FE; }
+.sdc-badge-uq { background: #ECFDF5; color: #059669; border-color: #A7F3D0; }
+.sdc-badge-nn { background: #FEF2F2; color: #DC2626; border-color: #FECACA; }
+
+.sdc-param-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.sdc-param-row .pc-config-input { margin-bottom: 0; }
+
+.sdc-preview-controls { display: flex; gap: 8px; margin-bottom: 6px; }
+.sdc-null { color: var(--text-faint); font-style: italic; }
+.sdc-truncated-note { font-size: 10.5px; color: var(--text-muted); padding: 5px 8px; border-top: 1px solid var(--border); background: var(--bg-body); }
+
+/* ── Run Extraction (RunExtractionPanel.jsx) ─────────────────── */
+.sdc-run-section { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
+.sdc-run-field-row { display: flex; gap: 8px; margin: 6px 0; }
+.sdc-run-field { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.sdc-run-field-label { font-size: 10.5px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; }
+.sdc-advanced-toggle {
+  font-size: 11px; color: var(--color-primary); text-align: left; padding: 2px 0; margin-bottom: 4px; font-weight: 600;
+}
+.sdc-advanced-toggle:hover { text-decoration: underline; }
+
+.sdc-run-actions { display: flex; gap: 8px; margin-top: 6px; }
+.sdc-secondary-btn.sdc-danger { background: var(--color-danger-bg); color: var(--color-danger-dark); border-color: #FECACA; }
+.sdc-secondary-btn.sdc-danger:hover:not(:disabled) { background: var(--color-danger); color: white; }
+
+.sdc-run-progress {
+  margin-top: 10px; padding: 10px 12px; border-radius: var(--radius-md); font-size: 12px;
+}
+.sdc-run-progress.running   { background: var(--color-info-bg); color: var(--color-info-dark); }
+.sdc-run-progress.success   { background: var(--color-success-bg); color: var(--color-success-dark); }
+.sdc-run-progress.failure   { background: var(--color-danger-bg); color: var(--color-danger-dark); }
+.sdc-run-progress.unsupported { background: var(--color-warning-bg); color: var(--color-warning-dark); }
+
+.sdc-run-progress-header { display: flex; align-items: center; gap: 6px; font-weight: 700; }
+.sdc-run-progress-count { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.sdc-partition-bars { display: flex; gap: 2px; margin-top: 8px; }
+.sdc-partition-bar-track {
+  height: 6px; flex: 1; border-radius: 3px; background: rgba(255,255,255,0.5); overflow: hidden;
+}
+.sdc-partition-bar-track.status-complete { background: var(--color-success); }
+.sdc-partition-bar-track.status-running  { background: repeating-linear-gradient(45deg, var(--color-info), var(--color-info) 4px, rgba(255,255,255,0.4) 4px, rgba(255,255,255,0.4) 8px); }
+.sdc-partition-bar-track.status-failed   { background: var(--color-danger); }
+.sdc-partition-bar-track.status-cancelled { background: var(--text-faint); }
+.sdc-partition-bar-track.status-pending  { background: rgba(0,0,0,0.08); }
+
+.sdc-run-metrics { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 11px; opacity: 0.9; font-variant-numeric: tabular-nums; }
+
+/* ── Animations ─────────────────────────────────────────────── */
+@keyframes edgeDash {
+  from { stroke-dashoffset: 52; }
+  to   { stroke-dashoffset: 0; }
+}
+@keyframes barPulse {
+  0%,100% { opacity: 1; }
+  50%      { opacity: 0.5; }
+}
+@keyframes nodeAppear {
+  from { opacity: 0; transform: scale(0.85); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.pc-node { animation: nodeAppear 0.18s ease; }
+
+/* ── Minimap (optional) ─────────────────────────────────────── */
+.pc-minimap {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  width: 140px;
+  height: 90px;
+  background: rgba(255,255,255,0.92);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+/* ── Empty canvas hint ──────────────────────────────────────── */
+.pc-empty-hint {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+}
+.pc-empty-icon  { font-size: 40px; opacity: 0.2; margin-bottom: 10px; }
+.pc-empty-text  { font-size: 14px; color: var(--text-muted); opacity: 0.6; }
+
+/* ============================================================
+   JobLogDrawer — live pipeline job status/log view, scoped to .jld-*
+   ============================================================ */
+.jld-overlay {
+  position: fixed; inset: 0; z-index: 300;
+  background: rgba(15, 23, 42, 0.5);
+  display: flex; justify-content: flex-end;
+}
+.jld-panel {
+  width: min(640px, 100%); height: 100%;
+  background: var(--bg-card);
+  display: flex; flex-direction: column;
+  box-shadow: -8px 0 24px rgba(15, 23, 42, 0.15);
+  animation: jldSlideIn 0.16s ease;
+}
+@keyframes jldSlideIn {
+  from { transform: translateX(24px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+.jld-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.jld-title { font-size: var(--fs-md); font-weight: var(--fw-semibold); color: var(--text-primary); }
+.jld-close {
+  display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: var(--radius-md);
+  color: var(--text-muted); transition: var(--transition);
+}
+.jld-close:hover { background: var(--bg-body); color: var(--text-primary); }
+
+.jld-error-banner {
+  margin: 12px 18px 0; padding: 10px 14px;
+  background: var(--color-danger-bg); color: var(--color-danger-dark);
+  border: 1px solid var(--color-danger-100, #FEE2E2); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); flex-shrink: 0;
+}
+
+.jld-node-stats {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 12px 18px; border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.jld-node-chip {
+  display: flex; flex-direction: row; align-items: center; gap: 1px;
+  padding: 5px 10px; border-radius: var(--radius-md);
+  border: 1px solid var(--border); background: var(--bg-body);
+  font-size: 11px;
+}
+.jld-node-chip-label, .jld-node-chip-meta { display: block; }
+.jld-node-chip-label { font-weight: 600; color: var(--text-primary); }
+.jld-node-chip-meta  { color: var(--text-muted); }
+.jld-node-success .jld-node-chip-label { color: var(--color-success-dark); }
+.jld-node-error   { border-color: var(--color-danger); background: var(--color-danger-bg); }
+.jld-node-error   .jld-node-chip-label { color: var(--color-danger-dark); }
+.jld-node-warning .jld-node-chip-label { color: var(--color-warning-dark); }
+.jld-node-skipped .jld-node-chip-label { color: var(--text-muted); }
+
+.jld-node-chip-download {
+  display: inline-flex; align-items: center; justify-content: center;
+  margin-left: 8px; padding: 3px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--bg-card);
+  color: var(--color-primary); cursor: pointer; flex-shrink: 0;
+}
+.jld-node-chip-download:hover  { background: var(--bg-hover, var(--bg-body)); }
+.jld-node-chip-download:disabled { opacity: 0.5; cursor: default; }
+
+.jld-log-body {
+  flex: 1; overflow-y: auto; padding: 10px 18px;
+  font-family: var(--font-mono); font-size: 12px;
+}
+.jld-log-empty { padding: 32px 0; text-align: center; color: var(--text-muted); }
+.jld-log-line {
+  display: flex; gap: 8px; padding: 3px 0;
+  border-bottom: 1px solid #F8FAFC;
+  white-space: pre-wrap; word-break: break-word;
+}
+.jld-log-ts    { color: var(--text-faint); flex-shrink: 0; }
+.jld-log-level { font-weight: 700; flex-shrink: 0; width: 42px; }
+.jld-log-node  { color: var(--color-primary); flex-shrink: 0; }
+.jld-log-msg   { color: var(--text-secondary); }
+.jld-log-info  .jld-log-level { color: var(--text-muted); }
+.jld-log-warn  .jld-log-level { color: var(--color-warning-dark); }
+.jld-log-warn  .jld-log-msg   { color: var(--color-warning-dark); }
+.jld-log-error .jld-log-level { color: var(--color-danger-dark); }
+.jld-log-error .jld-log-msg   { color: var(--color-danger-dark); }
+.pc-empty-sub   { font-size: 12px; color: var(--text-faint); margin-top: 4px; opacity: 0.5; }

@@ -1,0 +1,98 @@
+/* ============================================================
+   Seller Portal — Customers — /app/seller/customers — scoped .sc-*
+   ============================================================ */
+
+.sc-page { padding-bottom: 40px; }
+
+.sc-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 18px; gap: 12px; flex-wrap: wrap; }
+.sc-header h1 { font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary); }
+.sc-subtitle { font-size: var(--fs-sm); color: var(--text-muted); margin-top: 2px; }
+.sc-header-actions { display: flex; gap: 8px; }
+
+/* ── KPIs ──────────────────────────────────────────────────── */
+.sc-kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 18px; }
+.sc-kpi-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 14px 16px; }
+.sc-kpi-val { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; color: var(--text-primary); line-height: 1.2; }
+.sc-kpi-val-success { color: var(--color-success-dark); }
+.sc-kpi-val-warning { color: var(--color-warning-dark); }
+.sc-kpi-val-danger  { color: var(--color-danger-dark); }
+.sc-kpi-label { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600; }
+@media (max-width: 1300px) { .sc-kpis { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 640px)  { .sc-kpis { grid-template-columns: repeat(2, 1fr); } }
+
+/* ── Search + filters ─────────────────────────────────────────── */
+.sc-search-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.sc-search-box { flex: 1; min-width: 220px; max-width: 480px; }
+.sc-input {
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); background: white; outline: none; color: var(--text-primary);
+}
+select.sc-input.sc-inline-filter { width: auto; min-width: 140px; }
+.sc-input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+.sc-clear-search-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--text-muted); font-weight: 600; padding: 6px 8px; }
+.sc-clear-search-btn:hover { color: var(--text-primary); }
+
+/* ── Table cells ───────────────────────────────────────────────── */
+.sc-org-cell { display: flex; flex-direction: column; }
+.sc-org-name { font-weight: 600; color: var(--text-primary); }
+.sc-org-legal { font-size: 11px; color: var(--text-faint); }
+.sc-contact-cell { display: flex; flex-direction: column; }
+.sc-contact-name { color: var(--text-secondary); font-size: 12.5px; }
+.sc-contact-email { font-size: 11px; color: var(--text-faint); }
+.sc-plan-pill {
+  background: var(--color-primary-light); color: var(--color-primary); font-size: 11px; font-weight: 700;
+  padding: 2px 8px; border-radius: var(--radius-full); text-transform: capitalize;
+}
+
+/* ── Row icon button + kebab menu (matches Administration -> Users) ── */
+.sc-icon-btn {
+  width: 26px; height: 26px; border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); border: 1px solid transparent; transition: var(--transition);
+}
+.sc-icon-btn:hover:not(:disabled) { background: var(--color-primary-light); color: var(--color-primary); border-color: var(--color-primary-mid); }
+.sc-row-actions { display: flex; gap: 4px; }
+.sc-row-menu { position: relative; }
+.sc-row-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
+.sc-row-menu-list {
+  position: absolute; z-index: 41; min-width: 200px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg); padding: 6px; display: flex; flex-direction: column;
+}
+.sc-row-menu-list button {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius-md);
+  font-size: var(--fs-sm); color: var(--text-secondary); text-align: left; transition: var(--transition);
+}
+.sc-row-menu-list button:hover:not(:disabled) { background: var(--bg-body); color: var(--text-primary); }
+.sc-row-menu-danger { color: var(--color-danger-dark) !important; }
+.sc-row-menu-danger:hover { background: var(--color-danger-bg) !important; color: var(--color-danger-dark) !important; }
+.sc-row-menu-warn { color: var(--color-warning-dark) !important; }
+.sc-row-menu-warn:hover { background: var(--color-warning-bg) !important; color: var(--color-warning-dark) !important; }
+
+/* ── Create Customer modal ───────────────────────────────────── */
+.sc-form-error { background: var(--color-danger-bg); color: var(--color-danger-dark); padding: 8px 12px; border-radius: var(--radius-md); font-size: 12.5px; margin-bottom: 12px; }
+.sc-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
+.sc-field { display: flex; flex-direction: column; gap: 5px; }
+.sc-field-full { grid-column: 1 / -1; }
+.sc-field-label { font-size: 11.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; }
+.sc-required { color: var(--color-danger); }
+.sc-section-divider { grid-column: 1 / -1; font-size: 11px; font-weight: 700; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.4px; margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border); }
+
+.sc-credential-box {
+  background: var(--color-primary-light); border: 1px solid var(--color-primary-mid);
+  border-radius: var(--radius-lg); padding: 14px 16px; margin-top: 4px;
+}
+.sc-credential-label { font-size: var(--fs-xs); font-weight: 700; color: var(--color-primary); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 6px; }
+.sc-credential-row { display: flex; align-items: center; gap: 8px; }
+.sc-credential-value {
+  font-family: var(--font-mono); font-size: var(--fs-md); font-weight: 700; color: var(--text-primary);
+  background: white; border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 6px 10px; flex: 1; overflow-x: auto; white-space: nowrap;
+}
+.sc-credential-note { font-size: 11px; color: var(--text-muted); margin-top: 8px; line-height: 1.5; }
+
+/* ── Impersonate confirm ─────────────────────────────────────── */
+.sc-impersonate-warning {
+  display: flex; gap: 10px; background: var(--color-warning-bg); color: var(--color-warning-dark);
+  padding: 12px 14px; border-radius: var(--radius-lg); font-size: 12.5px; line-height: 1.6;
+}

@@ -1,0 +1,67 @@
+fastapi==0.110.0
+uvicorn[standard]==0.27.1
+sqlalchemy==2.0.35
+greenlet==3.1.1
+pydantic==2.9.2
+pydantic-settings==2.5.2
+email-validator==2.2.0
+python-jose[cryptography]==3.3.0
+bcrypt==4.0.1
+python-multipart==0.0.9
+aiosqlite==0.20.0
+alembic==1.13.1
+httpx==0.27.0
+python-dotenv==1.0.1
+croniter==6.2.4
+openpyxl==3.1.5
+
+# Data integration — connectors/database (Phase 1: Connection Management)
+psycopg2-binary==2.9.12
+pymysql==1.2.0
+pymssql==2.3.13
+
+# Data integration — connectors/sftp (Phase 5: File/SFTP connectors)
+paramiko==5.0.0
+
+# Document Intelligence — real OCR engine (requires the `tesseract` binary
+# on PATH, e.g. `brew install tesseract` on macOS — not pip-installable)
+pytesseract==0.3.13
+Pillow==12.3.0
+pymupdf==1.28.2
+
+# Pipeline Jobs — real in-memory DAG executor (execution/pipeline_job_executor.py)
+pandas==2.2.3
+xlsxwriter==3.2.0
+
+# SQL Workspace — real streaming Parquet export (sql_export_writers.py)
+pyarrow==19.0.1
+
+# Data integration — connectors/database (Oracle/Snowflake bulk-load target).
+# oracledb runs in "thin mode" — pure Python, no Oracle Instant Client
+# install required. snowflake-sqlalchemy pulls in snowflake-connector-python,
+# which provides write_pandas() (the real Snowflake bulk-load primitive —
+# see loading/writers/snowflake.py).
+oracledb==4.0.2
+snowflake-sqlalchemy==1.11.0
+vertica-python==1.4.0             # Vertica (connectors/database/vertica.py)
+sqlalchemy-vertica-python==0.6.3  # SQLAlchemy dialect wrapping vertica-python
+
+# Data integration — real connectors for every remaining catalogue type
+# (see connectors/registry.py's docstring for what's live-verified vs
+# real-but-unverified-against-a-live-account for each of these).
+pyodbc==5.3.0              # NetSuite SuiteQL (ODBC DSN), Microsoft Fabric
+zeep==4.3.3                # generic SOAP + NetSuite SuiteTalk SOAP web services
+xmltodict==1.0.4           # XML/SOAP response flattening
+hdbcli==2.29.25            # SAP HANA (official SAP driver, wrapped by sqlalchemy-hana below)
+sqlalchemy-hana==4.6.1     # SAP HANA SQLAlchemy dialect (connectors/database/sap.py)
+simple-salesforce==1.12.10 # Salesforce SOQL/REST
+azure-storage-blob==12.30.0  # Azure Blob Storage
+azure-identity==1.25.3     # Azure AD auth — Azure Blob Service Principal + Microsoft Fabric token auth
+smbprotocol==1.17.0        # Network File (SMB/UNC share)
+boto3==1.43.72              # AWS (S3, and Textract — connectors/ocr/aws_textract.py)
+
+# Document Intelligence — cloud OCR providers (org's OCR Provider setting;
+# see connectors/ocr/*). Tesseract above remains the zero-config default —
+# these are only used when an OCR_PROVIDER connection is configured.
+google-cloud-vision==3.10.2            # Google Cloud Vision (connectors/ocr/google_vision.py)
+azure-ai-documentintelligence==1.0.2   # Azure Document Intelligence / Form Recognizer (connectors/ocr/azure_document_intelligence.py)

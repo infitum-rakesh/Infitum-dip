@@ -1,0 +1,83 @@
+/* ============================================================
+   Administration → Settings module styles — scoped to .stg-*
+   ============================================================ */
+
+.stg-page { padding-bottom: 24px; }
+
+/* ── Header ────────────────────────────────────────────────── */
+.stg-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 6px; gap: 16px; flex-wrap: wrap; }
+.stg-title    { font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary); }
+.stg-subtitle { font-size: var(--fs-md);  color: var(--text-muted); margin-top: 3px; }
+.stg-header-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
+.stg-meta-line { font-size: 11px; color: var(--text-faint); margin-bottom: 18px; }
+
+/* ── Tabs ──────────────────────────────────────────────────── */
+.stg-tab-nav { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 18px; gap: 2px; flex-wrap: wrap; }
+.stg-tab-btn {
+  padding: 10px 14px; font-size: var(--fs-sm); font-weight: var(--fw-medium);
+  color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent;
+  margin-bottom: -1px; transition: var(--transition); background: none;
+  display: flex; align-items: center; gap: 6px; white-space: nowrap;
+}
+.stg-tab-btn:hover  { color: var(--text-primary); }
+.stg-tab-btn.active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
+
+/* ── Card ──────────────────────────────────────────────────── */
+.stg-card {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl);
+  padding: 20px 22px; margin-bottom: 18px;
+}
+.stg-card-title { font-size: var(--fs-md); font-weight: 700; color: var(--text-primary); margin-bottom: 6px; }
+.stg-subsection-title {
+  font-size: var(--fs-sm); font-weight: 700; color: var(--text-primary);
+  margin-top: 20px; margin-bottom: 10px; padding-top: 16px; border-top: 1px solid var(--border);
+}
+.stg-secret-note {
+  display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted);
+  background: var(--bg-body); border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 8px 10px; margin-bottom: 16px;
+}
+
+/* ── Form grid / fields ────────────────────────────────────── */
+.stg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-top: 10px; }
+.stg-field { display: flex; flex-direction: column; gap: 6px; }
+.stg-field-label { font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; }
+.stg-field-hint { font-size: 11px; color: var(--text-faint); line-height: 1.4; }
+.stg-input {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); background: white; outline: none; transition: var(--transition); font-family: inherit;
+}
+.stg-input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+.stg-form-error {
+  padding: 10px 12px; margin-bottom: 14px; background: var(--color-danger-bg); color: var(--color-danger-dark);
+  border-radius: var(--radius-md); font-size: var(--fs-sm);
+}
+
+/* ── Checkboxes ────────────────────────────────────────────── */
+.stg-checkbox-list { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; }
+.stg-checkbox-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 4px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.stg-checkbox-row:last-child { border-bottom: none; }
+.stg-checkbox-row input[type="checkbox"] { margin-top: 2px; flex-shrink: 0; }
+.stg-checkbox-label { font-size: var(--fs-sm); font-weight: 600; color: var(--text-primary); }
+.stg-checkbox-desc  { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+
+/* ── IP restriction tags ───────────────────────────────────── */
+.stg-tag-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.stg-tag {
+  display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs); font-weight: 600;
+  padding: 5px 6px 5px 10px; border-radius: var(--radius-full); background: var(--bg-body);
+  border: 1px solid var(--border); color: var(--text-primary); font-family: var(--font-mono, monospace);
+}
+.stg-tag button { display: flex; align-items: center; justify-content: center; color: var(--text-muted); border-radius: 50%; width: 16px; height: 16px; }
+.stg-tag button:hover { background: var(--color-danger-bg); color: var(--color-danger-dark); }
+.stg-add-row { display: flex; gap: 8px; }
+.stg-add-row .stg-input { flex: 1; }
+
+/* ── Save bar ──────────────────────────────────────────────── */
+.stg-save-bar { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.stg-save-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.stg-readonly-note { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-faint); justify-content: flex-end; }
+
+@media (max-width: 640px) {
+  .stg-grid { grid-template-columns: 1fr; }
+}

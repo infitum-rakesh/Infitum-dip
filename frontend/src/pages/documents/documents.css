@@ -1,0 +1,260 @@
+/* ============================================================
+   Documents module styles — scoped to .doc-* (list) / .docd-* (details)
+   ============================================================ */
+
+.doc-page { padding-bottom: 24px; }
+
+/* ── Header ────────────────────────────────────────────────── */
+.doc-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  margin-bottom: 20px; gap: 16px; flex-wrap: wrap;
+}
+.doc-title    { font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary); }
+.doc-subtitle { font-size: var(--fs-md);  color: var(--text-muted); margin-top: 3px; }
+.doc-header-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
+
+/* ── KPI cards ─────────────────────────────────────────────── */
+.doc-kpis {
+  display: grid; grid-template-columns: repeat(6, 1fr);
+  gap: 12px; margin-bottom: 20px;
+}
+.doc-kpi-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-xl); padding: 14px 16px;
+}
+.doc-kpi-val   { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; color: var(--text-primary); line-height: 1.2; }
+.doc-kpi-val-info    { color: var(--color-info-dark); }
+.doc-kpi-val-success { color: var(--color-success-dark); }
+.doc-kpi-val-warning { color: var(--color-warning-dark); }
+.doc-kpi-val-danger  { color: var(--color-danger-dark); }
+.doc-kpi-label { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600; }
+
+/* ── Search ────────────────────────────────────────────────── */
+.doc-search-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.doc-search-box { flex: 1; max-width: 560px; }
+.doc-clear-search-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted);
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-full);
+  background: var(--bg-card); transition: var(--transition);
+}
+.doc-clear-search-btn:hover { color: var(--text-primary); border-color: var(--border-dark); }
+
+/* ── Bulk action bar ───────────────────────────────────────── */
+.doc-bulk-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 14px; margin-bottom: 14px;
+  background: var(--color-primary-light); border: 1px solid var(--color-primary-mid);
+  border-radius: var(--radius-lg); font-size: var(--fs-sm); font-weight: 600; color: var(--color-primary-dark);
+}
+.doc-bulk-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* ── Body layout ───────────────────────────────────────────── */
+.doc-body { display: grid; grid-template-columns: 240px 1fr; gap: 20px; align-items: start; }
+
+/* ── Filters panel ─────────────────────────────────────────── */
+.doc-filters {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-xl); padding: 16px; position: sticky; top: 12px;
+}
+.doc-filters-hdr {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: var(--fs-sm); font-weight: 700; color: var(--text-primary);
+  margin-bottom: 14px; text-transform: uppercase; letter-spacing: 0.3px;
+}
+.doc-filters-clear {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11px; font-weight: 600; color: var(--color-primary); text-transform: none;
+}
+.doc-filter-group { margin-bottom: 14px; }
+.doc-filter-label {
+  display: block; font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted);
+  margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.3px;
+}
+.doc-select {
+  width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); background: white; outline: none; transition: var(--transition);
+}
+.doc-select:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+.doc-date-range { display: flex; gap: 6px; margin-top: 6px; }
+
+.doc-pill-group { display: flex; flex-wrap: wrap; gap: 6px; }
+.doc-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 5px 10px; border-radius: var(--radius-full); font-size: 11px; font-weight: 600;
+  border: 1px solid var(--border); background: white; color: var(--text-muted); transition: var(--transition);
+}
+.doc-pill:hover { border-color: var(--border-dark); color: var(--text-primary); }
+.doc-pill.active { background: var(--color-primary); border-color: var(--color-primary); color: white; }
+
+/* ── Table panel ───────────────────────────────────────────── */
+.doc-table-panel {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-xl); overflow: hidden;
+}
+
+.doc-name-cell { display: flex; align-items: center; gap: 8px; }
+.doc-name-icon { color: var(--color-primary); flex-shrink: 0; }
+.doc-name-text { font-weight: 600; color: var(--text-primary); }
+.doc-name-sub { font-size: var(--fs-xs); color: var(--text-faint); }
+
+/* Accuracy/confidence cells (OCR %, Extraction %, Confidence columns) —
+   color-coded to the same thresholds the backend uses to auto-flag a
+   document for review (document_service.py: >=90 good, 80-89 borderline,
+   <80 needs a look), so the list surfaces which rows likely need action
+   without opening each one. */
+.doc-conf-cell { font-weight: 700; }
+.doc-conf-good    { color: var(--color-success-dark); }
+.doc-conf-warn    { color: var(--color-warning-dark); }
+.doc-conf-poor    { color: var(--color-danger-dark); }
+.doc-conf-empty   { color: var(--text-faint); font-weight: 400; }
+
+/* Fixed-width slots (View | Process-or-Reprocess | Download | Kebab), each
+   button explicitly placed by grid-column (see Documents.jsx) rather than
+   DOM order — Process only renders for UPLOADED and Reprocess only for
+   COMPLETED/FAILED, so without an explicit slot the Download/Kebab buttons
+   would shift left on rows missing that middle button, leaving the action
+   icons misaligned column-to-column between rows. */
+.doc-row-actions { display: grid; grid-template-columns: repeat(4, 26px); gap: 4px; align-items: center; position: relative; }
+.doc-icon-btn {
+  width: 26px; height: 26px; border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); border: 1px solid transparent; transition: var(--transition);
+  background: none; flex-shrink: 0;
+}
+.doc-icon-btn:hover:not(:disabled) { background: var(--color-primary-light); color: var(--color-primary); border-color: var(--color-primary-mid); }
+.doc-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Row kebab menu ────────────────────────────────────────── */
+.doc-row-menu { position: relative; }
+.doc-row-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
+.doc-row-menu-list {
+  position: absolute; right: 0; top: 30px; z-index: 41; min-width: 180px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg); padding: 6px; display: flex; flex-direction: column;
+}
+.doc-row-menu-list button {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius-md);
+  font-size: var(--fs-sm); color: var(--text-secondary); text-align: left; transition: var(--transition);
+}
+.doc-row-menu-list button:hover { background: var(--bg-body); color: var(--text-primary); }
+.doc-row-menu-list button:disabled { color: var(--text-faint); cursor: not-allowed; }
+.doc-row-menu-list button:disabled:hover { background: none; color: var(--text-faint); }
+.doc-row-menu-danger { color: var(--color-danger-dark) !important; }
+.doc-row-menu-danger:hover { background: var(--color-danger-bg) !important; color: var(--color-danger-dark) !important; }
+
+@media (max-width: 1200px) {
+  .doc-kpis { grid-template-columns: repeat(3, 1fr); }
+  .doc-body { grid-template-columns: 1fr; }
+  .doc-filters { position: static; }
+}
+@media (max-width: 640px) {
+  .doc-kpis { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ============================================================
+   Document Details — .docd-*
+   ============================================================ */
+
+.docd-header { margin-bottom: 16px; }
+.docd-back-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: var(--fs-sm); font-weight: 600; color: var(--text-muted);
+  margin-bottom: 12px; transition: var(--transition);
+}
+.docd-back-btn:hover { color: var(--color-primary); }
+
+.docd-header-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.docd-title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.docd-title { font-size: var(--fs-2xl); font-weight: var(--fw-bold); color: var(--text-primary); word-break: break-word; }
+.docd-subtitle { font-size: var(--fs-sm); color: var(--text-muted); margin-top: 4px; }
+
+/* Wraps .docd-actions (single-icon buttons) + .docd-extract-row
+   (RunExtractionControl — two dropdowns + a button) as two separate lines
+   instead of one mixed row. RunExtractionControl doesn't fit the same
+   "row of same-shaped buttons" pattern as its neighbors — folding it into
+   .docd-actions used to force the whole row into a cramped, unevenly-
+   wrapped jumble (a stale 640px max-width on .docd-actions made it worse
+   before this was split out — removed here). */
+.docd-actions-col { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.docd-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.docd-extract-row { display: flex; justify-content: flex-end; }
+
+.docd-tab-nav {
+  display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-top: 16px; flex-wrap: wrap;
+}
+.docd-tab-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 10px 14px; font-size: var(--fs-sm); font-weight: var(--fw-medium);
+  color: var(--text-muted); border-bottom: 2px solid transparent; transition: var(--transition);
+}
+.docd-tab-btn:hover { color: var(--text-primary); }
+.docd-tab-btn.active { color: var(--color-primary); border-bottom-color: var(--color-primary); font-weight: var(--fw-semibold); }
+
+.docd-tab-content { min-height: 200px; }
+.docd-tab-loading { padding: 40px; text-align: center; color: var(--text-muted); font-size: var(--fs-sm); }
+
+/* ── Overview: viewer + metadata ──────────────────────────── */
+.docd-overview { display: grid; grid-template-columns: 1fr 320px; gap: 20px; padding: 20px; align-items: start; }
+.docd-viewer {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); overflow: hidden;
+}
+.docd-viewer-toolbar {
+  display: flex; align-items: center; gap: 4px; padding: 8px 10px;
+  border-bottom: 1px solid var(--border); background: var(--bg-body); flex-wrap: wrap;
+}
+.docd-viewer-zoom { font-size: var(--fs-xs); color: var(--text-muted); font-weight: 600; margin: 0 4px; }
+.docd-viewer-page-nav { display: flex; align-items: center; gap: 4px; font-size: var(--fs-xs); color: var(--text-muted); margin-left: auto; }
+.docd-viewer-canvas {
+  min-height: 420px; max-height: 640px; overflow: auto;
+  display: flex; align-items: center; justify-content: center; padding: 16px; background: #F1F5F9;
+}
+.docd-viewer-canvas img { max-width: 100%; transition: transform 0.15s ease; }
+.docd-viewer-canvas iframe { width: 100%; height: 560px; border: none; background: white; }
+.docd-viewer-loading, .docd-viewer-fallback { color: var(--text-muted); font-size: var(--fs-sm); text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+
+.docd-meta-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-xl); padding: 16px;
+}
+.docd-meta-grid { display: flex; flex-direction: column; gap: 12px; }
+.docd-meta-item { display: flex; flex-direction: column; gap: 2px; }
+.docd-meta-label { font-size: var(--fs-xs); color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600; }
+.docd-meta-value { font-size: var(--fs-sm); color: var(--text-primary); font-weight: 500; }
+
+/* ── Timeline ──────────────────────────────────────────────── */
+.docd-timeline-step { display: flex; gap: 14px; position: relative; padding-bottom: 20px; }
+.docd-timeline-node { width: 12px; height: 12px; border-radius: 50%; background: var(--border-dark); margin-top: 4px; flex-shrink: 0; }
+.docd-timeline-node-completed { background: var(--color-success); }
+.docd-timeline-node-failed { background: var(--color-danger); }
+.docd-timeline-node-running { background: var(--color-info); }
+.docd-timeline-connector { position: absolute; left: 5px; top: 18px; bottom: 0; width: 2px; background: var(--border); }
+.docd-timeline-card { flex: 1; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 12px 14px; }
+.docd-timeline-card-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.docd-timeline-stage { font-weight: 700; color: var(--text-primary); font-size: var(--fs-sm); }
+.docd-timeline-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.docd-timeline-error {
+  display: flex; align-items: center; gap: 6px; margin-top: 10px; padding: 8px 10px;
+  background: var(--color-danger-bg); color: var(--color-danger-dark); border-radius: var(--radius-md); font-size: var(--fs-xs);
+}
+
+/* ── OCR ───────────────────────────────────────────────────── */
+.docd-ocr-hero { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 16px; margin-bottom: 16px; }
+.docd-ocr-conf { font-size: 28px; font-weight: 800; color: var(--color-primary); margin-top: 6px; }
+.docd-ocr-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.docd-profile-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 16px; }
+.docd-ocr-regions { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; max-height: 360px; overflow-y: auto; }
+.docd-ocr-region { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--radius-md); background: var(--bg-body); font-size: var(--fs-xs); }
+.docd-ocr-region-page { font-weight: 700; color: var(--color-primary); flex-shrink: 0; }
+.docd-ocr-region-text { flex: 1; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.docd-ocr-region-conf { color: var(--text-muted); flex-shrink: 0; }
+.docd-ocr-text { white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-secondary); background: var(--bg-body); border-radius: var(--radius-md); padding: 12px; margin-top: 10px; max-height: 400px; overflow: auto; }
+
+/* ── Dataset ───────────────────────────────────────────────── */
+.docd-dataset-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.docd-dataset-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+@media (max-width: 1100px) {
+  .docd-overview { grid-template-columns: 1fr; }
+  .docd-ocr-grid { grid-template-columns: 1fr; }
+}

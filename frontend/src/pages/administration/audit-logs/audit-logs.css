@@ -1,0 +1,61 @@
+/* ============================================================
+   Administration → Audit Logs module styles — scoped to .aud-*
+   ============================================================ */
+
+.aud-page { padding-bottom: 24px; }
+
+/* ── Header ────────────────────────────────────────────────── */
+.aud-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; gap: 16px; flex-wrap: wrap; }
+.aud-title    { font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary); }
+.aud-subtitle { font-size: var(--fs-md);  color: var(--text-muted); margin-top: 3px; }
+.aud-header-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
+
+/* ── Filters ───────────────────────────────────────────────── */
+.aud-filters-panel {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl);
+  padding: 14px 16px; margin-bottom: 16px;
+}
+.aud-search-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.aud-search-box { flex: 1; min-width: 220px; max-width: 420px; }
+.aud-filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.aud-input {
+  width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); background: white; outline: none; transition: var(--transition); font-family: inherit;
+}
+.aud-input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+.aud-field-label { font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; display: block; margin-bottom: 4px; }
+.aud-clear-filters-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted);
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-full);
+  background: var(--bg-card); transition: var(--transition); align-self: end;
+}
+.aud-clear-filters-btn:hover { color: var(--text-primary); border-color: var(--border-dark); }
+
+/* ── Table ─────────────────────────────────────────────────── */
+.aud-table-panel { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); overflow: hidden; }
+.aud-timestamp-cell { font-variant-numeric: tabular-nums; font-size: var(--fs-sm); color: var(--text-secondary); white-space: nowrap; }
+.aud-user-cell { font-weight: 600; color: var(--text-primary); font-size: var(--fs-sm); }
+.aud-module-pill {
+  font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: var(--radius-full);
+  background: var(--bg-body); color: var(--text-secondary); border: 1px solid var(--border); white-space: nowrap;
+}
+.aud-resource-cell { font-size: var(--fs-sm); color: var(--text-secondary); font-family: var(--font-mono); }
+.aud-ip-cell { font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
+.aud-details-cell { font-size: var(--fs-sm); color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; display: inline-block; }
+.aud-row-clickable { cursor: pointer; }
+
+/* ── Detail modal ──────────────────────────────────────────── */
+.aud-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+.aud-detail-item { display: flex; flex-direction: column; gap: 3px; }
+.aud-detail-label { font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; }
+.aud-detail-value { font-size: var(--fs-sm); font-weight: 600; color: var(--text-primary); word-break: break-word; }
+.aud-detail-value-mono { font-family: var(--font-mono); font-size: 12px; font-weight: 500; }
+.aud-detail-section-title { font-size: var(--fs-xs); font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; margin: 14px 0 6px; }
+.aud-value-box {
+  background: var(--bg-body); border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 10px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);
+  white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow: auto;
+}
+.aud-value-empty { color: var(--text-faint); font-style: italic; font-size: var(--fs-sm); }
+.aud-mask-note { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); margin-top: 6px; }

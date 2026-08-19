@@ -1,0 +1,67 @@
+/* ============================================================
+   Seller Portal — Seller Audit Logs — /app/seller/audit-logs — scoped .sal-*
+   ============================================================ */
+
+.sal-page { padding-bottom: 24px; }
+
+/* ── Header ────────────────────────────────────────────────── */
+.sal-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; gap: 16px; flex-wrap: wrap; }
+.sal-title    { font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary); }
+.sal-subtitle { font-size: var(--fs-md);  color: var(--text-muted); margin-top: 3px; }
+.sal-header-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
+
+/* ── KPIs ──────────────────────────────────────────────────── */
+.sal-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+.sal-kpi-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 14px 16px; }
+.sal-kpi-val { font-size: 22px; font-weight: 800; letter-spacing: -0.4px; color: var(--text-primary); line-height: 1.2; }
+.sal-kpi-label { font-size: 11px; color: var(--text-muted); margin-top: 3px; font-weight: 600; }
+@media (max-width: 900px) { .sal-kpis { grid-template-columns: repeat(2, 1fr); } }
+
+/* ── Filters ───────────────────────────────────────────────── */
+.sal-filters-panel {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl);
+  padding: 14px 16px; margin-bottom: 16px;
+}
+.sal-search-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.sal-search-box { flex: 1; min-width: 220px; max-width: 420px; }
+.sal-filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.sal-input {
+  width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); background: white; outline: none; transition: var(--transition); font-family: inherit;
+}
+.sal-input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+.sal-field-label { font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; display: block; margin-bottom: 4px; }
+.sal-clear-filters-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted);
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-full);
+  background: var(--bg-card); transition: var(--transition); align-self: end; cursor: pointer;
+}
+.sal-clear-filters-btn:hover { color: var(--text-primary); border-color: var(--border-dark); }
+
+/* ── Table ─────────────────────────────────────────────────── */
+.sal-table-panel { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); overflow: hidden; }
+.sal-timestamp-cell { font-variant-numeric: tabular-nums; font-size: var(--fs-sm); color: var(--text-secondary); white-space: nowrap; }
+.sal-user-cell { font-weight: 600; color: var(--text-primary); font-size: var(--fs-sm); }
+.sal-module-pill {
+  font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: var(--radius-full);
+  background: var(--bg-body); color: var(--text-secondary); border: 1px solid var(--border); white-space: nowrap;
+}
+.sal-resource-cell { font-size: var(--fs-sm); color: var(--text-secondary); font-family: var(--font-mono); }
+.sal-ip-cell { font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
+.sal-details-cell { font-size: var(--fs-sm); color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; display: inline-block; }
+
+/* ── Detail modal ──────────────────────────────────────────── */
+.sal-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+.sal-detail-item { display: flex; flex-direction: column; gap: 3px; }
+.sal-detail-label { font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; }
+.sal-detail-value { font-size: var(--fs-sm); font-weight: 600; color: var(--text-primary); word-break: break-word; }
+.sal-detail-value-mono { font-family: var(--font-mono); font-size: 12px; font-weight: 500; }
+.sal-detail-section-title { font-size: var(--fs-xs); font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; margin: 14px 0 6px; }
+.sal-value-box {
+  background: var(--bg-body); border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 10px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);
+  white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow: auto;
+}
+.sal-value-empty { color: var(--text-faint); font-style: italic; font-size: var(--fs-sm); }
+.sal-mask-note { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); margin-top: 6px; }

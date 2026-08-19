@@ -1,0 +1,179 @@
+/* ============================================================
+   Administration → Roles module styles — scoped to .rol-*
+   ============================================================ */
+
+.rol-page { padding-bottom: 24px; }
+
+/* ── Header ────────────────────────────────────────────────── */
+.rol-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px; gap: 16px; flex-wrap: wrap; }
+.rol-title    { font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary); }
+.rol-subtitle { font-size: var(--fs-md);  color: var(--text-muted); margin-top: 3px; }
+.rol-header-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
+
+/* ── Search ────────────────────────────────────────────────── */
+.rol-search-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.rol-search-box { flex: 1; min-width: 220px; max-width: 480px; }
+.rol-input {
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); background: white; outline: none; transition: var(--transition); font-family: inherit;
+}
+.rol-input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+
+/* ── Table ─────────────────────────────────────────────────── */
+.rol-table-panel { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); overflow: hidden; }
+.rol-name-cell { display: flex; align-items: center; gap: 8px; }
+.rol-name-text { font-weight: 600; color: var(--text-primary); }
+.rol-system-badge {
+  font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: var(--radius-full);
+  background: var(--color-primary-light); color: var(--color-primary); text-transform: uppercase; letter-spacing: 0.3px;
+}
+.rol-desc-text { color: var(--text-muted); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; display: inline-block; }
+.rol-count-pill {
+  font-size: 12px; font-weight: 700; color: var(--text-secondary);
+  background: var(--bg-body); border: 1px solid var(--border); border-radius: var(--radius-full);
+  padding: 2px 9px; display: inline-block;
+}
+
+.rol-row-actions { display: flex; gap: 4px; align-items: center; position: relative; }
+.rol-icon-btn {
+  width: 26px; height: 26px; border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); border: 1px solid transparent; transition: var(--transition);
+  background: none; flex-shrink: 0;
+}
+.rol-icon-btn:hover:not(:disabled) { background: var(--color-primary-light); color: var(--color-primary); border-color: var(--color-primary-mid); }
+.rol-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.rol-row-menu { position: relative; }
+.rol-row-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
+.rol-row-menu-list {
+  position: absolute; right: 0; top: 30px; z-index: 41; min-width: 170px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg); padding: 6px; display: flex; flex-direction: column;
+}
+.rol-row-menu-list button {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius-md);
+  font-size: var(--fs-sm); color: var(--text-secondary); text-align: left; transition: var(--transition);
+}
+.rol-row-menu-list button:hover:not(:disabled) { background: var(--bg-body); color: var(--text-primary); }
+.rol-row-menu-list button:disabled { opacity: 0.4; cursor: not-allowed; }
+.rol-row-menu-danger { color: var(--color-danger-dark) !important; }
+.rol-row-menu-danger:hover:not(:disabled) { background: var(--color-danger-bg) !important; color: var(--color-danger-dark) !important; }
+
+/* ============================================================
+   Permission matrix — shared by Create Role modal + Role Details
+   ============================================================ */
+
+.rol-matrix-wrap { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: auto; max-height: 420px; }
+.rol-matrix { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.rol-matrix thead th {
+  position: sticky; top: 0; z-index: 2; background: #F8FAFC;
+  padding: 8px 6px; text-align: center; font-size: 11px; font-weight: 700;
+  color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px;
+  border-bottom: 1px solid var(--border);
+}
+.rol-matrix thead th:first-child { text-align: left; padding-left: 12px; position: sticky; left: 0; z-index: 3; }
+.rol-matrix tbody td { padding: 7px 6px; text-align: center; border-bottom: 1px solid var(--border); }
+.rol-matrix tbody tr:last-child td { border-bottom: none; }
+.rol-matrix-cat-cell {
+  text-align: left !important; padding-left: 12px !important; font-weight: 600; color: var(--text-primary);
+  cursor: pointer; position: sticky; left: 0; background: var(--bg-card); z-index: 1;
+  white-space: nowrap;
+}
+.rol-matrix tr.unlicensed .rol-matrix-cat-cell { color: var(--text-faint); cursor: default; }
+.rol-matrix tr.unlicensed { background: var(--bg-body); opacity: 0.55; }
+.rol-matrix-lock { font-size: 10px; color: var(--text-faint); margin-left: 6px; font-weight: 500; text-transform: none; letter-spacing: 0; }
+.rol-matrix-na { color: var(--text-faint); font-size: 12px; user-select: none; }
+
+/* ============================================================
+   Create Role modal
+   ============================================================ */
+
+.rol-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.rol-field-label { font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; }
+.rol-required { color: var(--color-danger); margin-left: 2px; }
+.rol-textarea {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); resize: vertical; min-height: 56px; font-family: inherit; outline: none;
+}
+.rol-textarea:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+.rol-form-error {
+  padding: 10px 12px; margin-bottom: 14px; background: var(--color-danger-bg); color: var(--color-danger-dark);
+  border-radius: var(--radius-md); font-size: var(--fs-sm);
+}
+.rol-section-title { font-size: var(--fs-sm); font-weight: 700; color: var(--text-primary); margin-bottom: 8px; }
+.rol-hint { font-size: 11px; color: var(--text-muted); margin-bottom: 10px; line-height: 1.5; }
+
+@media (max-width: 640px) {
+  .rol-desc-text { max-width: 160px; }
+}
+
+/* ============================================================
+   Role Details — /app/admin/roles/:roleId
+   ============================================================ */
+
+.rold-back-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: var(--fs-sm); font-weight: 600; color: var(--text-muted);
+  padding: 6px 4px; margin-bottom: 10px; transition: var(--transition);
+}
+.rold-back-btn:hover { color: var(--color-primary); }
+
+.rold-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+.rold-title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.rold-title { font-size: var(--fs-2xl); font-weight: var(--fw-bold); color: var(--text-primary); }
+.rold-subtitle { font-size: var(--fs-sm); color: var(--text-muted); margin-top: 2px; }
+.rold-actions { display: flex; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
+
+.rold-tab-nav { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 18px; gap: 2px; flex-wrap: wrap; }
+.rold-tab-btn {
+  padding: 10px 14px; font-size: var(--fs-sm); font-weight: var(--fw-medium);
+  color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent;
+  margin-bottom: -1px; transition: var(--transition); background: none;
+  display: flex; align-items: center; gap: 6px;
+}
+.rold-tab-btn:hover  { color: var(--text-primary); }
+.rold-tab-btn.active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
+
+.rold-card {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl);
+  padding: 18px 20px; margin-bottom: 18px;
+}
+.rold-card-title { font-size: var(--fs-md); font-weight: 700; color: var(--text-primary); margin-bottom: 14px; }
+
+.rold-meta-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
+.rold-meta-item { display: flex; flex-direction: column; gap: 3px; }
+.rold-meta-label { font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; }
+.rold-meta-value { font-size: var(--fs-sm); font-weight: 600; color: var(--text-primary); }
+
+/* Users tab */
+.rold-user-row { display: flex; align-items: center; gap: 10px; padding: 10px 4px; border-bottom: 1px solid var(--border); }
+.rold-user-row:last-child { border-bottom: none; }
+.rold-user-avatar {
+  width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--color-primary-light); color: var(--color-primary); font-size: 12px; font-weight: 700;
+}
+.rold-user-name { font-weight: 600; color: var(--text-primary); font-size: var(--fs-sm); }
+.rold-user-email { font-size: 11px; color: var(--text-muted); }
+.rold-add-user-row { display: flex; gap: 8px; margin-top: 14px; }
+
+/* Modules tab */
+.rold-module-chip-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.rold-module-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: var(--fs-sm); font-weight: 600; padding: 6px 12px; border-radius: var(--radius-full);
+  background: var(--bg-body); border: 1px solid var(--border); color: var(--text-primary);
+}
+
+/* Audit history feed */
+.rold-feed { display: flex; flex-direction: column; }
+.rold-feed-item { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.rold-feed-item:last-child { border-bottom: none; }
+.rold-feed-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-primary); margin-top: 5px; flex-shrink: 0; }
+.rold-feed-body { flex: 1; min-width: 0; }
+.rold-feed-type { font-size: var(--fs-sm); font-weight: 700; color: var(--text-primary); }
+.rold-feed-msg { font-size: var(--fs-sm); color: var(--text-secondary); margin-top: 2px; }
+.rold-feed-meta { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+
+.rol-empty-inline { font-size: var(--fs-xs); color: var(--text-faint); }

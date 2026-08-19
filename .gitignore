@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+myenv/
+
+# Node / frontend build
+node_modules/
+frontend/dist/
+frontend/node_modules/
+
+# Env / secrets
+.env
+*.env
+!*.env.example
+
+# Runtime data / generated artifacts (not source)
+backend/*.db
+backend/uploads/
+backend/sql_exports/
+backend/staging_data/
+backend/pipeline_outputs/
+flask_session/
+
+# OS / editor cruft
+.DS_Store
+*.DS_Store
+
+# Stray non-project asset sitting in the repo root
+ChatGPT Image*.png

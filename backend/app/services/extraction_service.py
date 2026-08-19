@@ -1,0 +1,492 @@
+"""
+Real AI-based structured field extraction — Document Intelligence wizard
+Stage 3 (pages/document-intelligence/AIExtraction.jsx). Uses the
+document's own real OCR text (services/document_service.py + ocr/engine.py)
+and calls whichever AI Provider connection the caller selects (see
+connectors/ai/* — OpenAI/Anthropic/Ollama, all real HTTP calls). A
+different document, schema, or model genuinely produces a different
+prompt and a different real response — nothing here is canned.
+
+Schema auto-detection also calls the AI model for real, asking it to
+propose extraction fields from the document's actual OCR text, rather
+than always returning a fixed invoice template.
+
+Response parsing (_parse_json) is defensive because LLMs don't always
+obey "return only JSON": it strips markdown code fences and falls back
+to locating the first {...}/[...] block. A response that still can't be
+parsed raises ExtractionError with the raw text (truncated) rather than
+silently substituting a fabricated result.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.connectors.base import ConnectorError
+from app.models.document import Document
+from app.services import document_taxonomies
+from app.services.connection_service import build_connector, get_connection
+
+OCR_TEXT_CAP = 8000  # characters of OCR text sent per call — bounds prompt size/cost
+
+
+class ExtractionError(Exception):
+    pass
+
+
+def _repair_bracket_types(text: str) -> str:
+    """
+    Smaller local models (observed with llama3.2 via Ollama) sometimes emit
+    array elements as `[...]` instead of `{...}` — e.g.
+    `[..., "[\"name\": \"x\", ...],\n[\"name\": \"y\", ...]]"`. This is
+    unambiguous to detect for real (not a guess): a `"key":` pair is only
+    valid JSON grammar directly inside an object, never directly inside an
+    array. A single-pass bracket-matching scan retypes exactly those
+    brackets — genuinely correcting the model's real output, not
+    substituting different content for it.
+    """
+    out = []
+    stack = []  # 'brace' | 'bracket' per open delimiter, in the ORIGINAL sense
+    i, n = 0, len(text)
+    in_string = False
+    escape = False
+    while i < n:
+        c = text[i]
+        if in_string:
+            out.append(c)
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_string = False
+            i += 1
+            continue
+        if c == '"':
+            in_string = True
+            out.append(c)
+            i += 1
+            continue
+        if c == "{":
+            stack.append("brace")
+            out.append(c)
+        elif c == "[":
+            rest = text[i + 1:]
+            looks_like_object = re.match(r'\s*"[^"\\]*"\s*:', rest)
+            if looks_like_object:
+                stack.append("brace_from_bracket")
+                out.append("{")
+            else:
+                stack.append("bracket")
+                out.append(c)
+        elif c == "}":
+            if stack:
+                stack.pop()
+            out.append("}")
+        elif c == "]":
+            top = stack.pop() if stack else "bracket"
+            out.append("}" if top == "brace_from_bracket" else "]")
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _parse_json(text: str):
+    text = (text or "").strip()
+    fence_match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    if fence_match:
+        text = fence_match.group(1).strip()
+
+    candidates = [text]
+    brace_match = re.search(r"[\{\[].*[\}\]]", text, re.DOTALL)
+    if brace_match:
+        candidates.append(brace_match.group(0))
+
+    for candidate in list(candidates):
+        try:
+            candidate_repaired = _repair_bracket_types(candidate)
+        except Exception:
+            candidate_repaired = None
+        if candidate_repaired and candidate_repaired != candidate:
+            candidates.append(candidate_repaired)
+
+    # Last-resort fallback: some responses omit the enclosing array AND
+    # the separating commas entirely, coming back as adjacent objects —
+    # `{...}\n{...}\n{...}` or even `{...}{...}` with nothing between
+    # them (a real, observed small-model quirk, not a guess: this codec
+    # only ever runs after every stricter candidate has already failed
+    # to parse, so it can't silently corrupt an already-valid response).
+    # Inserting a comma between two top-level `}...{` / `]...[` boundaries
+    # and wrapping in `[...]` is a standard, safe JSON-repair heuristic.
+    for candidate in list(candidates):
+        joined = re.sub(r"\}\s*\{", "},{", candidate)
+        joined = re.sub(r"\]\s*\[", "],[", joined)
+        if joined != candidate:
+            candidates.append(joined)
+    for candidate in list(candidates):
+        stripped = candidate.strip()
+        if stripped and not stripped.startswith("["):
+            candidates.append(f"[{stripped}]")
+
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+    raise ExtractionError(f"The AI model's response wasn't valid JSON: {text[:400]!r}")
+
+
+def _ocr_text(doc: Document) -> str:
+    if not doc.ocr_result or not doc.ocr_result.get("full_text", "").strip():
+        raise ExtractionError("This document has no OCR text yet — run OCR first.")
+    return doc.ocr_result["full_text"]
+
+
+async def _get_connector(db: AsyncSession, connection_id: int, organization_id: int | None):
+    conn = await get_connection(db, connection_id, organization_id)
+    if conn is None:
+        raise ExtractionError("AI connection not found (it may have been deleted, or belongs to a different organization).")
+    if conn.category.value != "AI_PROVIDER":
+        raise ExtractionError(f"Connection '{conn.name}' is a {conn.category.value} connection, not an AI Provider — pick one from the AI Agent category.")
+    try:
+        return build_connector(conn)
+    except ConnectorError as exc:
+        raise ExtractionError(str(exc)) from exc
+
+
+async def _generate_json(connector, prompt: str, system: str, max_tokens: int):
+    """Calls the connector and parses its response as JSON, with ONE
+    corrective retry if the first response isn't valid JSON at all (not
+    even via _parse_json's fence-stripping/bracket-repair fallbacks) —
+    a real, observed failure mode with small local models (Ollama's
+    llama3.2 in particular) that sometimes ignore "respond with ONLY
+    JSON, no prose" entirely and write a plain-English narrative instead
+    (e.g. "Here is a possible annotated version of the invoice:..."). The
+    retry hands the model back its own bad response and asks it to
+    correct itself — recovers the common case without failing the whole
+    extraction outright on a model that just needs a second, sterner ask.
+    If the retry ALSO isn't valid JSON, this raises ExtractionError same
+    as before — a genuine final failure, not silently swallowed."""
+    try:
+        raw = await asyncio.to_thread(connector.generate, prompt, system=system, max_tokens=max_tokens)
+    except ConnectorError as exc:
+        raise ExtractionError(str(exc)) from exc
+    try:
+        return _parse_json(raw)
+    except ExtractionError:
+        pass  # fall through to the corrective retry below
+
+    repair_prompt = (
+        f"{prompt}\n\n---\nYour previous response was NOT valid JSON — it started with:\n"
+        f"{(raw or '')[:300]!r}\n\nRespond again with ONLY valid JSON exactly as instructed above. "
+        "No prose, no explanation, no markdown code fences — the response must start with { or [."
+    )
+    try:
+        raw2 = await asyncio.to_thread(connector.generate, repair_prompt, system=system, max_tokens=max_tokens)
+    except ConnectorError as exc:
+        raise ExtractionError(str(exc)) from exc
+    return _parse_json(raw2)
+
+
+DETECT_SCHEMA_SYSTEM = (
+    "You are a document data extraction assistant. Given the raw OCR text of a business "
+    "document, propose the most useful fields to extract as structured data. "
+    "Respond with ONLY a JSON array — no prose, no markdown fences. Most elements should have this "
+    'exact shape: {"name": "snake_case_field_name", "type": "string|number|date|boolean", '
+    '"required": true or false, "instruction": "short description of what this field means"}. '
+    "If — and only if — the document contains a genuine repeating table with multiple rows (e.g. "
+    "invoice line items, order items, transaction rows) — NOT a single one-off value like "
+    '"total" — propose ONE additional element of this shape instead: {"name": '
+    '"snake_case_field_name", "type": "table", "required": true or false, "instruction": "short '
+    'description", "columns": [{"name": "snake_case_column_name", "type": "string|number|date|'
+    'boolean"}, ...]}. List every column that actually appears per row (e.g. description, quantity, '
+    "unit_price, amount). Do not propose a table field for data that is really just one flat "
+    "value — only use it for genuinely repeating rows.\n\n"
+    "Propose between 5 and 12 fields total (the table field, if any, counts as one) that are "
+    "actually present or clearly implied in the text."
+)
+
+EXTRACT_SYSTEM = (
+    "You are a document data extraction assistant. Extract the requested fields from the "
+    "document's OCR text below, using ONLY what the text actually says — never invent, guess, or "
+    "compute/derive a value from other fields. If a field's value isn't literally stated in the "
+    "text as that specific concept, its value is null — do not calculate it from other numbers on "
+    "the page. Respond with ONLY a JSON object, no prose, no markdown fences.\n\n"
+    "For every field whose type is NOT \"table\": its value MUST be an object with exactly three "
+    'keys: "value", "confidence", "page" — never a bare string or number. "confidence" is an '
+    "integer 0-100: your genuine confidence this value is correctly read from the text (100 = "
+    'certain, 0 = pure guess). "page" is the page number if identifiable, otherwise 1. If the field '
+    "is genuinely not present in the text, set its value to null and confidence to 0. A field's "
+    "instruction describes ONE specific concept — do not put a document title, section heading, or "
+    "any other field's content into a field it doesn't literally describe.\n\n"
+    'For a field whose type IS "table": its value MUST be an object with exactly two keys: "rows" '
+    "and \"confidence\". \"rows\" is a JSON array with one element per row actually present in the "
+    "text — each element is an object keyed by that table field's column names (from the fields "
+    'list below), using ONLY what the text says for each cell. "confidence" is your overall '
+    "0-100 confidence across the whole table.\n\n"
+    "CRITICAL — a table field is ONLY for the document's genuine itemized rows (the products/"
+    "services actually being billed), almost always a SMALL number (most invoices have 1-5). A row "
+    "is NEVER any of: a section heading or label (\"From (Supplier)\", \"Name\", \"Address\", "
+    "\"Amount\"), a party's name or address, a tax ID/GST/account number on its own, a tax/subtotal/"
+    "total breakdown line, a page footnote, a signature line, or the document's own title (\"TAX "
+    "INVOICE\"). Do NOT create one row per OCR text line — that is always wrong. A document with "
+    "only ONE genuine item is a table with exactly ONE row; include it as a single-element array, "
+    "never omit it just because it doesn't repeat, and never split ONE item's own description "
+    "across multiple rows just because it wrapped onto several OCR lines — read the surrounding "
+    "context and combine wrapped lines belonging to the same item into that single row. Use an "
+    "empty array only when the document genuinely has no itemized rows — never invent rows, and "
+    "never repeat the same rows twice in your response.\n\n"
+    "Example response shape for fields \"invoice_number\" (string), \"total\" (number), and "
+    "\"line_items\" (table with columns description, quantity, unit_price, amount):\n"
+    '{"invoice_number": {"value": "INV-2024-001", "confidence": 97, "page": 1}, '
+    '"total": {"value": 1250.50, "confidence": 88, "page": 1}, '
+    '"line_items": {"confidence": 91, "rows": ['
+    '{"description": "Widget A", "quantity": 2, "unit_price": 10.5, "amount": 21.0}, '
+    '{"description": "Widget B", "quantity": 1, "unit_price": 5.0, "amount": 5.0}]}}'
+)
+
+
+async def detect_schema(
+    db: AsyncSession, doc: Document, connection_id: int, organization_id: int | None,
+    *, document_type: str | None = None, extra_field_names: set[str] | None = None,
+) -> list[dict]:
+    """When document_type names a known canonical taxonomy (e.g. "INVOICE"
+    — see document_taxonomies.py), skip the ad-hoc "guess 5-12 fields"
+    LLM call entirely and return the comprehensive canonical schema
+    instead (merged with extra_field_names, real field names mined from
+    this organization's own past documents of the type — see
+    document_service.discover_known_field_names()). extract_fields() below
+    still does the real per-field work of checking the actual OCR text —
+    this only changes WHAT it's asked to look for, from an LLM's one-shot
+    guess to a comprehensive, consistent candidate list. document_type=None
+    (the default) is the original ad-hoc behavior, unchanged."""
+    if document_type:
+        seed_schema = document_taxonomies.build_seed_schema(document_type, extra_field_names)
+        if seed_schema:
+            return seed_schema
+
+    text = _ocr_text(doc)
+    connector = await _get_connector(db, connection_id, organization_id)
+    prompt = f"Document type: {doc.doc_type.value}\n\nOCR TEXT:\n{text[:OCR_TEXT_CAP]}"
+    parsed = await _generate_json(connector, prompt, DETECT_SCHEMA_SYSTEM, 2500)
+    if not isinstance(parsed, list):
+        raise ExtractionError("The AI model's schema proposal wasn't a JSON array.")
+
+    fields = []
+    for f in parsed:
+        if not isinstance(f, dict) or not f.get("name"):
+            continue
+        entry = {
+            "name": str(f["name"]), "type": str(f.get("type") or "string"),
+            "required": bool(f.get("required", False)), "instruction": str(f.get("instruction") or ""),
+        }
+        if entry["type"] == "table":
+            # A table field's real shape is defined by its columns, not a
+            # single scalar type — carry them through so extract_fields()
+            # below knows what keys to ask the model for per row. A table
+            # field with no usable columns can't be extracted meaningfully,
+            # so it's demoted back to a plain string field rather than
+            # silently producing an empty table later.
+            cols = [
+                {"name": str(c["name"]), "type": str(c.get("type") or "string")}
+                for c in (f.get("columns") or [])
+                if isinstance(c, dict) and c.get("name")
+            ]
+            if cols:
+                entry["columns"] = cols
+            else:
+                entry["type"] = "string"
+        fields.append(entry)
+    if not fields:
+        raise ExtractionError("The AI model didn't propose any usable fields for this document.")
+    return fields
+
+
+async def extract_fields(
+    db: AsyncSession, doc: Document, schema: list[dict], connection_id: int, organization_id: int | None,
+) -> dict:
+    if not schema:
+        raise ExtractionError("No fields to extract.")
+    text = _ocr_text(doc)
+    connector = await _get_connector(db, connection_id, organization_id)
+
+    def _describe(f: dict) -> str:
+        if f.get("type") == "table":
+            cols = ", ".join(f"{c['name']} ({c.get('type', 'string')})" for c in f.get("columns", []))
+            return f"- {f['name']} (table — one row per {f['name'].rstrip('s')}; columns: {cols}): {f.get('instruction', '')}"
+        return f"- {f['name']} ({f.get('type', 'string')}){' [required]' if f.get('required') else ''}: {f.get('instruction', '')}"
+
+    schema_desc = "\n".join(_describe(f) for f in schema)
+    prompt = f"FIELDS TO EXTRACT:\n{schema_desc}\n\nOCR TEXT:\n{text[:OCR_TEXT_CAP]}"
+    # Scales with schema size — a real, observed failure with the comprehensive
+    # canonical INVOICE taxonomy (45+ fields): a fixed 3000-token budget let a
+    # smaller local model (llama3.2 via Ollama) run out of room mid-response and
+    # get cut off before closing its JSON, which _parse_json correctly can't
+    # recover from (that's a genuinely incomplete response, not a malformed
+    # one). ~120 tokens/field covers the {"value","confidence","page"} shape
+    # plus normal model verbosity, floored at the original 3000 for small
+    # ad-hoc schemas and capped so one call can't run away unbounded.
+    max_tokens = min(8000, max(3000, len(schema) * 120))
+    parsed = await _generate_json(connector, prompt, EXTRACT_SYSTEM, max_tokens)
+    if not isinstance(parsed, dict):
+        raise ExtractionError("The AI model's extraction response wasn't a JSON object.")
+
+    fields_out = []
+    for f in schema:
+        name = f["name"]
+        entry = parsed.get(name)
+
+        if f.get("type") == "table":
+            # A table field's real value is its rows, not a scalar — kept
+            # as a distinct shape ({name, type, columns, rows, confidence})
+            # rather than forced into the {value,confidence,page} shape
+            # every scalar field uses, since a row list isn't a "value" in
+            # the same sense. build_dataset() (document_service.py) is what
+            # expands these rows into real dataset rows.
+            columns = [c["name"] for c in f.get("columns", [])]
+            rows_raw = None
+            conf_raw = None
+            if isinstance(entry, dict):
+                rows_raw = entry.get("rows")
+                conf_raw = entry.get("confidence")
+            elif isinstance(entry, list):
+                rows_raw = entry  # tolerate a bare array instead of {"rows": [...]}
+            def _cell(raw):
+                # Tolerate a model wrapping a cell the same way it wraps a
+                # top-level scalar field — {"value": x, "confidence": ...,
+                # "page": ...} — instead of the bare value the prompt asks
+                # for per cell. Observed live with llama3.2: it sometimes
+                # applies the scalar-field pattern uniformly, including
+                # inside table rows. Unwrapping here keeps dataset cells as
+                # plain values either way, rather than leaking the wrapper
+                # object into the structured dataset table.
+                if isinstance(raw, dict) and "value" in raw:
+                    return raw.get("value") if raw.get("value") is not None else ""
+                return raw if raw is not None else ""
+
+            rows = []
+            seen_rows = set()
+            if isinstance(rows_raw, list):
+                for r in rows_raw:
+                    if not isinstance(r, dict):
+                        continue
+                    row = {c: _cell(r.get(c)) for c in columns}
+                    # Real, observed small-model failure mode (llama3.2): asked
+                    # to merge wrapped OCR lines into one row, it can instead
+                    # restate the whole table a second time inside the same
+                    # response, or emit a near-duplicate row per source line —
+                    # dropping an exact repeat of an already-accepted row is a
+                    # safe guard (a genuine table never needs the identical
+                    # row twice) without touching legitimately distinct rows.
+                    row_key = tuple(row.get(c) for c in columns)
+                    if row_key in seen_rows:
+                        continue
+                    seen_rows.add(row_key)
+                    rows.append(row)
+            try:
+                confidence = float(conf_raw) if conf_raw is not None else (75.0 if rows else 0.0)
+            except (TypeError, ValueError):
+                confidence = 75.0 if rows else 0.0
+            fields_out.append({
+                "name": name, "type": "table", "columns": columns, "rows": rows,
+                "confidence": round(confidence, 1),
+            })
+            continue
+
+        if not isinstance(entry, dict):
+            entry = {"value": entry} if entry is not None else {}
+        value = entry.get("value")
+        if f.get("type") == "number" and value is not None and not isinstance(value, (int, float)):
+            # A real, observed failure: the model sometimes returns raw OCR
+            # text instead of a parsed number for a "number" field (e.g.
+            # "INRO" for an amount the source prints as "INR O" — an OCR
+            # misread of a zero as the letter O). A non-numeric string in a
+            # number field is worse than missing — it looks like real data
+            # but isn't usable as one — so it's coerced to a real number
+            # (stripping currency symbols/commas/whitespace) or dropped to
+            # null, never surfaced as-is.
+            cleaned = re.sub(r"[^0-9.\-]", "", str(value))
+            try:
+                value = float(cleaned) if cleaned not in ("", "-", ".") else None
+            except ValueError:
+                value = None
+        try:
+            confidence = float(entry.get("confidence")) if entry.get("confidence") is not None else 0.0
+        except (TypeError, ValueError):
+            confidence = 0.0
+        try:
+            page = int(entry.get("page") or 1)
+        except (TypeError, ValueError):
+            page = 1
+        fields_out.append({"name": name, "type": "scalar", "value": value if value is not None else "", "confidence": round(confidence, 1), "page": page})
+
+    scored = [f for f in fields_out if f.get("type") != "table" or f.get("rows")]
+    overall = round(sum(f["confidence"] for f in scored) / len(scored), 1) if scored else 0.0
+    model_name = connector.config.get("model") or connector.connection_type
+    return {
+        "fields": fields_out,
+        "overallConfidence": overall,
+        "model": str(model_name),
+        "rawJson": json.dumps(
+            {f["name"]: (f["rows"] if f.get("type") == "table" else f["value"]) for f in fields_out},
+            indent=2, default=str,
+        ),
+    }
+
+
+GAP_FILL_SYSTEM = (
+    "You are a document data extraction assistant. A fixed set of fields has already been "
+    "extracted from this document's OCR text. Your job is ONLY to spot genuinely distinct pieces "
+    "of information actually present in the text that are NOT already covered by the list below — "
+    "never repeat, rename, or split an already-covered field. Respond with ONLY a JSON array, no "
+    'prose, no markdown fences. Each element: {"name": "snake_case_field_name", "type": '
+    '"string|number|date|boolean", "instruction": "short description of what this field means"}. '
+    "If nothing meaningful is missing, respond with an empty array []."
+)
+
+
+async def find_gap_fields(
+    db: AsyncSession, doc: Document, connection_id: int, organization_id: int | None,
+    covered_field_names: list[str],
+) -> list[dict]:
+    """Second-pass "did we miss anything" check — see detect_schema()'s
+    document_type path: extraction there starts from a comprehensive but
+    FIXED canonical taxonomy, which by construction can't know about
+    something unique to one specific document (e.g. a vendor-specific
+    surcharge line, a custom reference code). This asks the model, given
+    the document's real text and what's already covered, to name anything
+    else genuinely present — directly extending recall beyond the fixed
+    list rather than being capped by it. Returns a schema-shaped field
+    list (possibly empty) suitable for a follow-up extract_fields() call."""
+    text = _ocr_text(doc)
+    connector = await _get_connector(db, connection_id, organization_id)
+    covered = ", ".join(sorted(covered_field_names))
+    prompt = f"ALREADY COVERED FIELDS:\n{covered}\n\nOCR TEXT:\n{text[:OCR_TEXT_CAP]}"
+    try:
+        parsed = await _generate_json(connector, prompt, GAP_FILL_SYSTEM, 1200)
+    except ExtractionError:
+        # Gap-fill is optional best-effort enrichment on top of an already-
+        # extracted baseline — even after the corrective retry inside
+        # _generate_json(), a persistent bad response here shouldn't fail
+        # the whole extraction; just contribute nothing extra.
+        return []
+    if not isinstance(parsed, list):
+        return []
+
+    covered_lower = {c.lower() for c in covered_field_names}
+    fields = []
+    for f in parsed:
+        if not isinstance(f, dict) or not f.get("name"):
+            continue
+        name = str(f["name"])
+        if name.lower() in covered_lower:
+            continue
+        fields.append({
+            "name": name, "type": str(f.get("type") or "string"),
+            "required": False, "instruction": str(f.get("instruction") or ""),
+        })
+    return fields
