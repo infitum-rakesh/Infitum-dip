@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { ArrowRight, Play, Check, ChevronRight, ChevronDown } from 'lucide-react';
+import { ArrowRight, Play, Check, ChevronRight, ChevronDown, Sparkles } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth.js';
 import './home.css';
 
@@ -24,6 +24,9 @@ const FEATURES = [
   { icon: '✅', title: 'Data Quality',            desc: 'Automated validation with null, format, range, uniqueness and custom business rules. AI-generated rule suggestions.', color: '#10B981' },
   { icon: '⚖️', title: 'Reconciliation',         desc: 'Record-level, field-level and aggregate comparison between source and target. Downloadable exception reports.', color: '#F59E0B' },
   { icon: '🌐', title: 'Data Lineage',            desc: 'Full traceability from source document to target column. Dataset lineage, column lineage and impact analysis.', color: '#8B5CF6' },
+  { icon: '📊', title: 'Monitoring & SLA',        desc: 'Live pipeline run status, SLA breach detection, configurable alert rules and automatic incident creation on failure.', color: '#F59E0B' },
+  { icon: '💾', title: 'SQL Workspace',           desc: 'A real SQL editor with schema browser, AI-assisted query generation, query history and background exports.', color: '#0EA5E9' },
+  { icon: '🔗', title: '20+ Connectors',          desc: 'Postgres, MySQL, SQL Server, Oracle, Snowflake, Salesforce, NetSuite, SFTP/FTP, REST/SOAP APIs, Azure and AWS storage.', color: '#14B8A6' },
 ];
 
 const STATS = [
@@ -34,6 +37,69 @@ const STATS = [
 ];
 
 const TRUST = ['SOC 2 Type II', 'GDPR Ready', 'ISO 27001', 'Enterprise SSO'];
+
+// Real use-case groupings of the platform's actual modules — not a separate
+// product, just a different lens on the same capabilities listed in FEATURES.
+const SOLUTIONS = [
+  {
+    icon: '📥', title: 'Document & Invoice Processing', color: '#EF4444',
+    desc: 'Turn invoices, forms and scanned paperwork into clean, structured records without manual data entry.',
+    modules: ['Document Intelligence', 'OCR Engine', 'AI Extraction', 'Review Queue'],
+  },
+  {
+    icon: '🔄', title: 'Data Migration & Integration', color: '#3B82F6',
+    desc: 'Move and reshape data between databases, SaaS apps, files and APIs with a visual pipeline designer.',
+    modules: ['20+ Connectors', 'Transform Workspace', 'Column Mapping', 'SQL Workspace'],
+  },
+  {
+    icon: '🛡️', title: 'Data Quality & Governance', color: '#10B981',
+    desc: 'Catch bad data before it spreads — automated rules, source-to-target reconciliation and full column-level lineage.',
+    modules: ['Validation', 'Reconciliation', 'Data Lineage', 'Monitoring & SLA'],
+  },
+  {
+    icon: '🏢', title: 'Enterprise Operations', color: '#8B5CF6',
+    desc: 'Run it as a multi-tenant platform — scheduled pipelines, role-based access, audit trails and incident response.',
+    modules: ['Scheduling', 'Roles & Permissions', 'Audit Logs', 'Incident Management'],
+  },
+];
+
+// Mirrors the real seeded Plan catalog — backend/app/services/seller/plan_seed.py
+// (_STARTER_PLANS). Keep these two in sync manually, same convention that
+// file's own header comment already documents for its relationship to
+// frontend/src/utils/permissions.js's SUBSCRIPTION_PLANS.
+const PRICING = [
+  {
+    code: 'trial', name: 'Free Trial', price: 0, period: '14 days', highlight: false,
+    desc: 'Full access to get started — no credit card required.',
+    limits: ['5 users', '500 documents', '1,000 AI calls', '5 GB storage'],
+    modules: 'Document Intelligence, OCR, AI Extraction, Transformation, Validation',
+    cta: { label: 'Start Free Trial', to: '/register' },
+  },
+  {
+    code: 'basic', name: 'Basic', price: 199, period: '/month', highlight: false,
+    desc: 'For small teams automating their first document and data pipelines.',
+    limits: ['10 users', '5,000 documents', '10,000 AI calls', '50 GB storage'],
+    modules: 'Document Intelligence, OCR, AI Extraction, Transformation, Validation',
+    // Paid plans are provisioned by a Seller (see seller/customer_service.create_customer)
+    // — self-registration always creates a Trial org (auth_service.register_user), so
+    // routing this to /register would silently sign someone up for the wrong plan.
+    cta: { label: 'Contact Sales', href: 'mailto:demo@dip.ai' },
+  },
+  {
+    code: 'professional', name: 'Professional', price: 999, period: '/month', highlight: true,
+    desc: 'Adds reconciliation, lineage and scheduling for production data teams.',
+    limits: ['50 users', '50,000 documents', '100,000 AI calls', '500 GB storage'],
+    modules: 'Everything in Basic, plus Reconciliation, Data Catalog, Lineage, Scheduling',
+    cta: { label: 'Contact Sales', href: 'mailto:demo@dip.ai' },
+  },
+  {
+    code: 'enterprise', name: 'Enterprise', price: null, period: 'month', highlight: false,
+    desc: 'Unlimited scale, SQL Workspace, monitoring and incident management.',
+    limits: ['Unlimited users', 'Unlimited documents', 'Unlimited AI calls', 'Unlimited storage'],
+    modules: 'Everything in Professional, plus SQL Workspace, Monitoring, Incidents',
+    cta: { label: 'Talk to Sales', href: 'mailto:demo@dip.ai' },
+  },
+];
 
 // ── Pipeline visualization ─────────────────────────────────────
 
@@ -224,9 +290,10 @@ export default function Home() {
           </Link>
 
           <ul className="hnav-links">
-            {['Features', 'Solutions', 'Pricing', 'Docs'].map((l) => (
-              <li key={l}><a className="hnav-link">{l}</a></li>
-            ))}
+            <li><a className="hnav-link" href="#features">Features</a></li>
+            <li><a className="hnav-link" href="#solutions">Solutions</a></li>
+            <li><a className="hnav-link" href="#pricing">Pricing</a></li>
+            <li><Link className="hnav-link" to="/docs">Docs</Link></li>
           </ul>
 
           <div className="hnav-actions">
@@ -255,7 +322,7 @@ export default function Home() {
         <div className="hero-content">
           <div className="hero-badge">
             <span className="hero-badge-dot" />
-            Now with GPT-4o powered extraction
+            Now with AI powered extraction
           </div>
 
           <h1 className="hero-h1">
@@ -325,8 +392,35 @@ export default function Home() {
         </div>
       </section>
 
+      {/* ══ Solutions ══════════════════════════════════════════ */}
+      <section id="solutions" className="section solutions-section">
+        <div className="section-inner">
+          <div className="section-eyebrow">Solutions</div>
+          <h2 className="section-h2">Built for how your team actually uses data</h2>
+          <p className="section-sub">
+            The same platform, four ways in — pick the entry point that matches what you're solving today.
+          </p>
+          <div className="solutions-grid">
+            {SOLUTIONS.map((s) => (
+              <div key={s.title} className="solution-card">
+                <div className="solution-card-icon" style={{ background: `${s.color}18`, color: s.color }}>
+                  {s.icon}
+                </div>
+                <h4 className="solution-card-title">{s.title}</h4>
+                <p className="solution-card-desc">{s.desc}</p>
+                <div className="solution-card-modules">
+                  {s.modules.map((m) => (
+                    <span key={m} className="solution-module-chip" style={{ borderColor: `${s.color}40`, color: s.color }}>{m}</span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* ══ Features ═══════════════════════════════════════════ */}
-      <section className="section features-section">
+      <section id="features" className="section features-section">
         <div className="section-inner">
           <div className="section-eyebrow">Capabilities</div>
           <h2 className="section-h2">Everything in one platform</h2>
@@ -347,6 +441,46 @@ export default function Home() {
                 <div className="feature-card-link" style={{ color: f.color }}>
                   Learn more <ChevronRight size={13} />
                 </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ══ Pricing ════════════════════════════════════════════ */}
+      <section id="pricing" className="section pricing-section">
+        <div className="section-inner">
+          <div className="section-eyebrow">Pricing</div>
+          <h2 className="section-h2">Simple, module-based pricing</h2>
+          <p className="section-sub">
+            Every plan starts with a full 14-day trial. No credit card required to try it.
+          </p>
+          <div className="pricing-grid">
+            {PRICING.map((p) => (
+              <div key={p.code} className={`pricing-card ${p.highlight ? 'pricing-card-highlight' : ''}`}>
+                {p.highlight && <div className="pricing-badge"><Sparkles size={11} /> Most popular</div>}
+                <h4 className="pricing-card-name">{p.name}</h4>
+                <p className="pricing-card-desc">{p.desc}</p>
+                <div className="pricing-card-price">
+                  {p.price == null ? <span className="pricing-price-custom">Custom</span> : (
+                    <><span className="pricing-price-amount">${p.price.toLocaleString()}</span><span className="pricing-price-period">{p.period}</span></>
+                  )}
+                </div>
+                <ul className="pricing-card-limits">
+                  {p.limits.map((l) => (
+                    <li key={l}><Check size={13} strokeWidth={2.5} /> {l}</li>
+                  ))}
+                </ul>
+                <p className="pricing-card-modules">{p.modules}</p>
+                {p.cta.to ? (
+                  <Link to={p.cta.to} className={p.highlight ? 'hero-cta-primary' : 'hero-cta-secondary'} style={{ width: '100%', justifyContent: 'center' }}>
+                    {p.cta.label} <ArrowRight size={14} />
+                  </Link>
+                ) : (
+                  <a href={p.cta.href} className="hero-cta-secondary" style={{ width: '100%', justifyContent: 'center' }}>
+                    {p.cta.label}
+                  </a>
+                )}
               </div>
             ))}
           </div>
