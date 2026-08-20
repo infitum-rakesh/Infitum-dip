@@ -17,12 +17,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Building2, Database, FileScan, Sparkles, Bell, ShieldCheck, ScrollText,
-  Workflow, Save, Plus, X, Lock, RefreshCcw,
+  Workflow, Save, Plus, X, Lock, RefreshCcw, Fingerprint, Copy, Check,
+  CheckCircle2, ExternalLink,
 } from 'lucide-react';
 import { Button, PermissionGate, FullPageSpinner, EmptyState } from '@/components/common/index.js';
-import { SETTINGS_PERMISSIONS } from '@/utils/constants.js';
+import { SETTINGS_PERMISSIONS, SSO_PERMISSIONS } from '@/utils/constants.js';
 import { formatDateTime } from '@/utils/formatters.js';
 import { settingsApi } from '@/services/api/settingsApi.js';
+import { ssoApi } from '@/services/api/ssoApi.js';
 import './settings.css';
 
 const TABS = [
@@ -32,6 +34,7 @@ const TABS = [
   { id: 'ai', label: 'AI', icon: Sparkles },
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'security', label: 'Security', icon: ShieldCheck },
+  { id: 'sso', label: 'Single Sign-On', icon: Fingerprint },
   { id: 'audit', label: 'Audit', icon: ScrollText },
   { id: 'pipelines', label: 'Pipelines', icon: Workflow },
 ];
@@ -123,6 +126,7 @@ export default function Settings() {
         {tab === 'ai' && <AITab settings={settings} onSave={save} />}
         {tab === 'notifications' && <NotificationsTab settings={settings} onSave={save} />}
         {tab === 'security' && <SecurityTab settings={settings} onSave={save} />}
+        {tab === 'sso' && <SsoTab />}
         {tab === 'audit' && <AuditRetentionTab settings={settings} onSave={save} />}
         {tab === 'pipelines' && <PipelinesTab settings={settings} onSave={save} />}
       </div>
@@ -470,6 +474,141 @@ function SecurityTab({ settings, onSave }) {
       </div>
 
       <SaveBar permission={SETTINGS_PERMISSIONS.SETTINGS_SECURITY} dirty={dirty} saving={saving} error={error} onSave={handleSave} onReset={reset} />
+    </div>
+  );
+}
+
+// ── Single Sign-On (SAML 2.0) ────────────────────────────────
+// Independent of the OrganizationSettings JSON blob the other tabs share
+// — SSO config is its own model/table (models/sso_configuration.py) with
+// its own API (ssoApi.js -> /api/admin/sso), so this tab loads/saves on
+// its own rather than going through the `settings`/`onSave` props above.
+
+function CopyableRow({ label, value }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard?.writeText(value).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
+  };
+  return (
+    <div className="stg-sp-row">
+      <span className="stg-sp-label">{label}</span>
+      <span className="stg-sp-value">{value}</span>
+      <button type="button" className="stg-sp-copy-btn" title="Copy" onClick={copy}>
+        {copied ? <Check size={13} /> : <Copy size={13} />}
+      </button>
+    </div>
+  );
+}
+
+function SsoTab() {
+  const [cfg, setCfg] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+
+  const load = useCallback(() => {
+    setLoading(true); setLoadError('');
+    ssoApi.get().then(setCfg).catch((err) => setLoadError(err?.message ?? 'Failed to load SSO configuration.')).finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  if (loading) return <div className="stg-card"><div className="stg-card-title">Single Sign-On</div><p className="stg-field-hint">Loading…</p></div>;
+  if (loadError || !cfg) return <div className="stg-card"><div className="stg-form-error">{loadError || 'Could not load SSO configuration.'}</div></div>;
+
+  return <SsoForm cfg={cfg} onSaved={setCfg} />;
+}
+
+function SsoForm({ cfg, onSaved }) {
+  const initial = {
+    enabled: cfg.enabled, enforce_sso: cfg.enforce_sso,
+    idp_entity_id: cfg.idp_entity_id, idp_sso_url: cfg.idp_sso_url, idp_slo_url: cfg.idp_slo_url,
+    email_attribute: cfg.email_attribute, name_attribute: cfg.name_attribute,
+  };
+  const { draft, set, dirty: fieldsDirty, reset: resetFields } = useSectionDraft(initial);
+  const [certInput, setCertInput] = useState(''); // blank = leave stored cert unchanged
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const dirty = fieldsDirty || certInput.trim().length > 0;
+  const reset = () => { resetFields(); setCertInput(''); };
+
+  const handleSave = async () => {
+    setSaving(true); setError('');
+    try {
+      const body = { ...draft };
+      if (certInput.trim()) body.idp_x509_cert = certInput.trim();
+      const updated = await ssoApi.update(body);
+      onSaved(updated);
+      setCertInput('');
+    } catch (err) { setError(err?.message ?? 'Could not save SSO settings.'); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="stg-card">
+      <div className="stg-card-title">Single Sign-On</div>
+      <p className="stg-secret-note">
+        Real SAML 2.0 — configure your Identity Provider (Okta, Azure AD, OneLogin, etc.) to trust this application
+        using the Service Provider values below, then paste your IdP's details here.
+      </p>
+
+      <div className="stg-subsection-title" style={{ marginTop: 0, paddingTop: 0, borderTop: 'none' }}>Service Provider (give these to your IdP admin)</div>
+      <div className="stg-sp-info">
+        <CopyableRow label="Entity ID" value={cfg.sp_entity_id} />
+        <CopyableRow label="ACS URL" value={cfg.sp_acs_url} />
+        <div className="stg-sp-row">
+          <span className="stg-sp-label">Metadata</span>
+          <a className="stg-sp-value" href={cfg.sp_metadata_url} target="_blank" rel="noreferrer" style={{ display: 'flex', alignItems: 'center', gap: 6, textDecoration: 'none' }}>
+            {cfg.sp_metadata_url} <ExternalLink size={11} />
+          </a>
+        </div>
+      </div>
+
+      <div className="stg-subsection-title">Identity Provider</div>
+      <div className="stg-grid">
+        <Field label="IdP Entity ID">
+          <TextInput value={draft.idp_entity_id} onChange={(e) => set('idp_entity_id')(e.target.value)} placeholder="https://idp.example.com/metadata" />
+        </Field>
+        <Field label="IdP SSO URL" hint="Where the browser is redirected to sign in.">
+          <TextInput value={draft.idp_sso_url} onChange={(e) => set('idp_sso_url')(e.target.value)} placeholder="https://idp.example.com/sso" />
+        </Field>
+        <Field label="IdP Logout URL (optional)">
+          <TextInput value={draft.idp_slo_url} onChange={(e) => set('idp_slo_url')(e.target.value)} placeholder="https://idp.example.com/slo" />
+        </Field>
+      </div>
+
+      <Field label="IdP X.509 Certificate" hint="PEM format (with or without the BEGIN/END lines) — used to verify every sign-in is really from your IdP.">
+        <div className={`stg-cert-status ${cfg.cert_set ? 'set' : 'not-set'}`}>
+          {cfg.cert_set ? <CheckCircle2 size={12} /> : null} {cfg.cert_set ? 'A certificate is currently configured.' : 'No certificate configured yet.'}
+        </div>
+        <textarea
+          className="stg-textarea" rows={5} value={certInput} onChange={(e) => setCertInput(e.target.value)}
+          placeholder={cfg.cert_set ? 'Leave blank to keep the current certificate, or paste a new one to replace it.' : '-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----'}
+        />
+      </Field>
+
+      <div className="stg-subsection-title">Attribute Mapping</div>
+      <div className="stg-grid">
+        <Field label="Email Attribute" hint="SAML assertion attribute name that carries the user's email.">
+          <TextInput value={draft.email_attribute} onChange={(e) => set('email_attribute')(e.target.value)} />
+        </Field>
+        <Field label="Name Attribute">
+          <TextInput value={draft.name_attribute} onChange={(e) => set('name_attribute')(e.target.value)} />
+        </Field>
+      </div>
+
+      <div className="stg-subsection-title">Access</div>
+      <div className="stg-checkbox-list">
+        <CheckboxRow
+          label="Enable Single Sign-On" checked={draft.enabled} onChange={set('enabled')}
+          description="Lets users at this organization sign in with your IdP from the login page."
+        />
+        <CheckboxRow
+          label="Require SSO for non-admin users" checked={draft.enforce_sso} onChange={set('enforce_sso')}
+          description="Blocks password sign-in for everyone except Org Admins, so a misconfigured or unreachable IdP can never lock every admin out."
+        />
+      </div>
+
+      <SaveBar permission={SSO_PERMISSIONS.SSO_EDIT} dirty={dirty} saving={saving} error={error} onSave={handleSave} onReset={reset} />
     </div>
   );
 }

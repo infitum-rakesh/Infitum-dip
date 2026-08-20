@@ -13,6 +13,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Play, Square, Loader2, CheckCircle2, XCircle, AlertTriangle, UploadCloud } from 'lucide-react';
 import { loadApi } from '@/services/api/loadApi.js';
+import { RejectedRecordsModal } from '@/components/common/index.js';
 
 const POLL_MS = 700;
 const TERMINAL = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED']);
@@ -45,6 +46,7 @@ export function RunLoadPanel({ mappingId, mappingDirty, targetColumns, mappedTar
   const [starting, setStarting] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [error, setError] = useState('');
+  const [rejectsOpen, setRejectsOpen] = useState(false);
   const pollRef = useRef(null);
   const pollFailures = useRef(0);
 
@@ -161,9 +163,22 @@ export function RunLoadPanel({ mappingId, mappingDirty, targetColumns, mappedTar
               {metrics.elapsed_seconds != null && <span>{metrics.elapsed_seconds.toFixed(1)}s elapsed</span>}
             </div>
           )}
+          {run.records_rejected > 0 && (
+            <button type="button" className="ocm-inline-warning" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }} onClick={() => setRejectsOpen(true)}>
+              <AlertTriangle size={11} /> {run.records_rejected.toLocaleString()} row(s) rejected — click to view
+            </button>
+          )}
           {run.error_message && <div className="ocm-error-text">{run.error_message}</div>}
         </div>
       )}
+
+      <RejectedRecordsModal
+        open={rejectsOpen}
+        onClose={() => setRejectsOpen(false)}
+        title="Rejected records"
+        exportFilename={`load_${runId}_rejected.csv`}
+        fetchPage={(page, pageSize) => loadApi.getRejectedRecords(runId, { page, page_size: pageSize })}
+      />
     </div>
   );
 }

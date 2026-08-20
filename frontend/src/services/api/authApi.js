@@ -22,4 +22,13 @@ export const authApi = {
 
   me: () =>
     apiClient.get('/auth/me').then((r) => r.data),
+
+  /**
+   * Real SAML 2.0 SSO handoff (see backend app/api/sso.py's POST /acs
+   * redirect -> this exchange). `code` is a short-lived, single-use token
+   * — never the JWTs themselves — so the actual access/refresh tokens
+   * never sit in a URL/browser history.
+   */
+  ssoExchange: (code) =>
+    apiClient.post('/auth/sso/exchange', null, { params: { code } }).then((r) => r.data),
 };

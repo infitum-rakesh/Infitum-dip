@@ -228,12 +228,14 @@ async def create_customer(db: AsyncSession, *, body, actor: User, ip_address: st
     db.add(sub)
 
     temp_password = None
+    admin_email = None
     if body.primary_contact_email:
         exists_user = await db.execute(select(User).where(User.email == body.primary_contact_email.lower()))
         if not exists_user.scalar_one_or_none():
             temp_password = _generate_temp_password()
+            admin_email = body.primary_contact_email.lower()
             contact_user = User(
-                email=body.primary_contact_email.lower(),
+                email=admin_email,
                 full_name=body.primary_contact_name or body.primary_contact_email,
                 hashed_password=hash_password(temp_password),
                 role=UserRole.ORG_ADMIN,
@@ -256,7 +258,60 @@ async def create_customer(db: AsyncSession, *, body, actor: User, ip_address: st
         resource=org.name, resource_id=str(org.id), ip_address=ip_address,
         after_value={"name": org.name, "plan": org.plan, "status": org.license_status.value},
     )
-    return org, temp_password
+
+    email_result = None
+    if temp_password and admin_email:
+        from app.core.config import get_settings
+        from app.services import email_service
+        subject, body_text = email_service.build_welcome_email(
+            org_name=org.name, full_name=body.primary_contact_name or admin_email,
+            email=admin_email, temp_password=temp_password,
+            login_url=f"{get_settings().frontend_base_url}/login",
+        )
+        email_result = await email_service.send_email(db, to=admin_email, subject=subject, body=body_text)
+        await record_seller_event(
+            db, seller_user_id=actor.id, customer_id=org.id, action="Customer Admin Welcome Email",
+            resource=admin_email, resource_id=str(org.id), ip_address=ip_address,
+            details=email_result.detail, after_value={"delivered": email_result.delivered},
+        )
+
+    return org, temp_password, admin_email, email_result
+
+
+async def resend_admin_welcome_email(db: AsyncSession, org: Organization, actor: User, ip_address: str | None = None):
+    """No plaintext temp password is ever persisted (it's shown once, same
+    as user_admin_service.invite_user), so a genuine resend must issue a
+    NEW one — the org's org_admin user gets their password reset and a
+    fresh email sent. Picks the org's primary_contact_email if it matches
+    a real org_admin user, else the first org_admin found."""
+    from app.services import email_service
+
+    stmt = select(User).where(User.organization_id == org.id, User.role == UserRole.ORG_ADMIN)
+    admins = list((await db.execute(stmt)).scalars().all())
+    if not admins:
+        raise CustomerServiceError("This organization has no Admin user to resend credentials to.")
+    target = next((u for u in admins if org.primary_contact_email and u.email == org.primary_contact_email.lower()), admins[0])
+
+    temp_password = _generate_temp_password()
+    target.hashed_password = hash_password(temp_password)
+    db.add(UserActivityLog(
+        user_id=target.id, event_type=UserActivityType.INVITED,
+        message="Password reset and welcome email resent by Seller",
+    ))
+    await db.commit()
+
+    from app.core.config import get_settings
+    subject, body_text = email_service.build_welcome_email(
+        org_name=org.name, full_name=target.full_name, email=target.email,
+        temp_password=temp_password, login_url=f"{get_settings().frontend_base_url}/login",
+    )
+    email_result = await email_service.send_email(db, to=target.email, subject=subject, body=body_text)
+    await record_seller_event(
+        db, seller_user_id=actor.id, customer_id=org.id, action="Customer Admin Welcome Email",
+        resource=target.email, resource_id=str(org.id), ip_address=ip_address,
+        details=f"Resent: {email_result.detail}", after_value={"delivered": email_result.delivered},
+    )
+    return target.email, temp_password, email_result
 
 
 async def update_customer(db: AsyncSession, org: Organization, body, actor: User, ip_address: str | None = None) -> Organization:

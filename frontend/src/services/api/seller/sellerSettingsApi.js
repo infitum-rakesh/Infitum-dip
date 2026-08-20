@@ -13,4 +13,9 @@ export const sellerSettingsApi = {
 
   /** body: { name?, legal_name?, support_email?, billing_email?, website?, branding?, default_trial_days? } */
   update: (body) => apiClient.put('/seller/settings', body).then((r) => r.data),
+
+  /** body: { host?, port?, username?, password?, from_address?, use_tls? } — omit/blank password to leave it unchanged */
+  updateSmtp: (body) => apiClient.put('/seller/settings/smtp', body).then((r) => r.data),
+
+  sendTestEmail: (to) => apiClient.post('/seller/settings/smtp/test', { to }).then((r) => r.data),
 };

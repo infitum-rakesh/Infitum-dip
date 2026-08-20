@@ -19,6 +19,9 @@ from app.api.schedules import router as schedules_router
 from app.api.pipelines import router as pipelines_router
 from app.api.incidents import router as incidents_router
 from app.api.user_admin import router as user_admin_router
+from app.api.sessions import router as sessions_router
+from app.api.sso import router as sso_router
+from app.api.sso_admin import router as sso_admin_router
 from app.api.roles import router as roles_router
 from app.api.licenses import router as licenses_router
 from app.api.audit_logs import router as audit_logs_router
@@ -43,6 +46,8 @@ from app.api.pipeline_files import router as pipeline_files_router
 from app.api.pipeline_jobs import router as pipeline_jobs_router
 from app.api.dashboard import router as dashboard_router
 from app.api.extraction import router as extraction_router
+from app.api.monitoring import router as monitoring_router
+from app.api.lineage import router as lineage_router
 from app.models.pipeline_source_file import PipelineSourceFile  # noqa: F401 — string FK to pipelines.id needs this imported before init_db()
 from app.models.pipeline_job import PipelineJob, PipelineJobLog  # noqa: F401 — new tables, need registering before init_db()
 # Seller/Plan are only referenced by string FK ("sellers.id") from
@@ -55,6 +60,9 @@ from app.models.seller import Seller  # noqa: F401
 from app.models.seller_audit_log import SellerAuditLog  # noqa: F401
 from app.models.query_execution_log import QueryExecutionLog  # noqa: F401 — new table, needs registering before init_db()
 from app.models.sql_export_job import SqlWorkspaceExportJob  # noqa: F401 — new table, needs registering before init_db()
+from app.models.monitoring import SlaDefinition, AlertRule, AlertEvent  # noqa: F401 — new tables, need registering before init_db()
+from app.models.user_session import UserSession  # noqa: F401 — new table, needs registering before init_db()
+from app.models.sso_configuration import SsoConfiguration  # noqa: F401 — new table, needs registering before init_db()
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -176,6 +184,9 @@ app.include_router(schedules_router, prefix="/api")
 app.include_router(pipelines_router, prefix="/api")
 app.include_router(incidents_router, prefix="/api")
 app.include_router(user_admin_router, prefix="/api")
+app.include_router(sessions_router, prefix="/api")
+app.include_router(sso_router, prefix="/api")
+app.include_router(sso_admin_router, prefix="/api")
 app.include_router(roles_router, prefix="/api")
 app.include_router(licenses_router, prefix="/api")
 app.include_router(audit_logs_router, prefix="/api")
@@ -200,6 +211,8 @@ app.include_router(pipeline_files_router, prefix="/api")
 app.include_router(pipeline_jobs_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api")
 app.include_router(extraction_router, prefix="/api")
+app.include_router(monitoring_router, prefix="/api")
+app.include_router(lineage_router, prefix="/api")
 
 
 @app.get("/api/health")

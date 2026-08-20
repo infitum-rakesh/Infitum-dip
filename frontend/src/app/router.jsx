@@ -3,6 +3,7 @@ import { createBrowserRouter } from 'react-router-dom';
 
 // Home / Landing page
 import Home from '@/pages/home/Home.jsx';
+import Docs from '@/pages/docs/Docs.jsx';
 
 // Layouts
 import { AuthLayout }  from '@/layouts/AuthLayout.jsx';
@@ -12,6 +13,7 @@ import { MainLayout }  from '@/layouts/MainLayout.jsx';
 import Login          from '@/pages/auth/Login.jsx';
 import Register       from '@/pages/auth/Register.jsx';
 import ForgotPassword from '@/pages/auth/ForgotPassword.jsx';
+import SsoCallback    from '@/pages/auth/SsoCallback.jsx';
 
 // Dashboard (implemented)
 import Dashboard from '@/pages/dashboard/Dashboard.jsx';
@@ -40,6 +42,7 @@ import IncidentDetails  from '@/pages/incidents/IncidentDetails.jsx';
 
 // Administration → Users (implemented)
 import Users             from '@/pages/administration/users/Users.jsx';
+import ActiveSessions    from '@/pages/administration/sessions/ActiveSessions.jsx';
 import UserDetails       from '@/pages/administration/users/UserDetails.jsx';
 
 // Administration → Roles (implemented)
@@ -60,6 +63,12 @@ import Transformation from '@/pages/transformation/Transformation.jsx';
 
 // Object & Column Mapping (implemented)
 import ObjectColumnMapping from '@/pages/mapping/ObjectColumnMapping.jsx';
+
+// Monitoring (implemented)
+import Monitoring from '@/pages/monitoring/Monitoring.jsx';
+
+// Lineage (implemented)
+import Lineage from '@/pages/lineage/Lineage.jsx';
 
 // Data Quality (implemented)
 import Validation     from '@/pages/validation/Validation.jsx';
@@ -134,6 +143,7 @@ const ph = (title, icon, description, phase) => (
 export const router = createBrowserRouter([
   // Landing page — public, visible to all (authenticated users see dashboard link)
   { path: '/', element: <Home /> },
+  { path: '/docs', element: <Docs /> },
 
   // Public auth routes
   {
@@ -145,6 +155,7 @@ export const router = createBrowserRouter([
           { path: '/login',           element: <Login /> },
           { path: '/register',        element: <Register /> },
           { path: '/forgot-password', element: <ForgotPassword /> },
+          { path: '/sso/callback',    element: <SsoCallback /> },
         ],
       },
     ],
@@ -188,8 +199,8 @@ export const router = createBrowserRouter([
           { path: 'reconciliation/:jobId',   element: <Reconciliation /> },
 
           // Observability
-          { path: 'lineage',    element: ph('Data Lineage', '🌐', 'Trace data from source document to final target.', 'Phase 12') },
-          { path: 'monitoring', element: ph('Monitoring',   '📊', 'Monitor pipeline health, freshness and anomalies.', 'Phase 12') },
+          { path: 'lineage',    element: <Lineage /> },
+          { path: 'monitoring', element: <Monitoring /> },
           { path: 'incidents',              element: <Incidents /> },
           { path: 'incidents/:incidentId',  element: <IncidentDetails /> },
 
@@ -200,6 +211,7 @@ export const router = createBrowserRouter([
           // Admin
           { path: 'admin/users',            element: <Users /> },
           { path: 'admin/users/:userId',    element: <UserDetails /> },
+          { path: 'admin/sessions',         element: <ActiveSessions /> },
           { path: 'admin/roles',            element: <Roles /> },
           { path: 'admin/roles/:roleId',    element: <RoleDetails /> },
           { path: 'admin/orgs',     element: ph('Organization Management', '🏢', 'Manage organizations and tenants.', 'Phase 10') },

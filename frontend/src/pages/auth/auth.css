@@ -89,6 +89,15 @@
 .pwd-toggle { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--text-faint); cursor: pointer; transition: var(--transition); }
 .pwd-toggle:hover { color: var(--text-primary); }
 
+/* SSO / password mode toggle (Login page) */
+.auth-mode-toggle {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  width: 100%; margin-top: 14px; padding: 8px 0;
+  font-size: var(--fs-sm); font-weight: 500; color: var(--text-secondary);
+  border-top: 1px solid var(--border); transition: var(--transition);
+}
+.auth-mode-toggle:hover { color: var(--color-primary); }
+
 /* Terms */
 .terms-row { display: flex; align-items: flex-start; gap: 8px; font-size: var(--fs-sm); color: var(--text-muted); margin-bottom: 16px; }
 .terms-row a { color: var(--color-primary); }

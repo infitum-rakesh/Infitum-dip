@@ -10,6 +10,18 @@ class SellerBrandingOut(BaseModel):
     primary_color: str | None = None
 
 
+class SmtpConfigOut(BaseModel):
+    """Never carries the real password — `password_set` just tells the UI
+    whether one is already stored, same convention as Connection's masked
+    secret fields (see connection_service._masked_config)."""
+    host: str | None = None
+    port: int | None = None
+    username: str | None = None
+    password_set: bool = False
+    from_address: str | None = None
+    use_tls: bool = True
+
+
 class SellerSettingsOut(BaseModel):
     id: int
     name: str
@@ -19,6 +31,7 @@ class SellerSettingsOut(BaseModel):
     website: str | None
     branding: dict
     default_trial_days: int
+    smtp: SmtpConfigOut
     created_at: datetime
     updated_at: datetime
 
@@ -33,3 +46,16 @@ class UpdateSellerSettingsRequest(BaseModel):
     website: str | None = None
     branding: dict | None = None
     default_trial_days: int | None = None
+
+
+class UpdateSmtpConfigRequest(BaseModel):
+    host: str | None = None
+    port: int | None = None
+    username: str | None = None
+    password: str | None = None  # plaintext in, encrypted before storage; omit/blank = leave unchanged
+    from_address: str | None = None
+    use_tls: bool | None = None
+
+
+class SendTestEmailRequest(BaseModel):
+    to: str

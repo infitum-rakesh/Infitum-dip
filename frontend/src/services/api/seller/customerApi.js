@@ -33,4 +33,8 @@ export const customerApi = {
   impersonate: (id) => apiClient.post(`/seller/customers/${id}/impersonate`).then((r) => r.data),
 
   getAudit: (id, params = {}) => apiClient.get(`/seller/customers/${id}/audit`, { params: cleanParams(params) }).then((r) => r.data),
+
+  /** Issues the org's Admin a fresh temp password and emails it — the
+   * original is never recoverable (see CreateCustomerModal). */
+  resendWelcomeEmail: (id) => apiClient.post(`/seller/customers/${id}/resend-welcome-email`).then((r) => r.data),
 };

@@ -308,6 +308,10 @@ class _PyodbcSqlStream(SqlStream):
         self._cursor = cursor
         self._columns = [d[0] for d in cursor.description]
 
+    @property
+    def columns(self) -> list[str]:
+        return self._columns
+
     def fetch_chunk(self, size: int) -> list[dict]:
         rows = self._cursor.fetchmany(size)
         return [dict(zip(self._columns, r)) for r in rows]

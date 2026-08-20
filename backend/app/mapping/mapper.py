@@ -105,6 +105,49 @@ def validate_mapping(mappings: list[dict], source_columns: list[dict], target_co
     return {"issues": issues, "row_status": row_status, "overall_status": overall}
 
 
+def validate_key_range_mapping(mappings: list[dict]) -> None:
+    """KEY_RANGE Run Load mode (JJ3/JJ4 — execution/load_executor.py) reads
+    rows via a plain key-range chunk fetch (connectors' read_key_range_chunk),
+    not a real SQL engine — for a source like Salesforce that has no SQL
+    engine to begin with. A mapping row needing one (a lookup JOIN, or a
+    raw SQL transformation expression) can't be honored there. Raises a
+    clear, disclosed error naming the offending column(s) rather than
+    silently dropping the lookup/transformation or evaluating it wrong."""
+    offenders = [m["target_column"] for m in mappings if m.get("lookup") or m.get("transformation")]
+    if offenders:
+        raise MapperValidationError(
+            "This mapping uses a lookup or transformation on: " + ", ".join(offenders) + " — those need a "
+            "real SQL engine to evaluate and aren't supported for a source that only supports key-range "
+            "reads (e.g. Salesforce). Use a plain column mapping for those columns, or run this load "
+            "against a SQL-capable source instead."
+        )
+
+
+def build_row_transform(mappings: list[dict]):
+    """Builds a plain-Python per-row transform for the KEY_RANGE load path
+    (execution/load_worker.py's run_key_range_partition) — no SQL engine
+    involved, so this does in Python what build_preview_sql's generated
+    SQL's column aliasing/COALESCE does server-side for the SQL_STREAM
+    path: renames each fetched source field to its mapped target column,
+    substitutes constant_value, and falls back to default_value when the
+    source value is NULL. Every mapping row must already have passed
+    validate_key_range_mapping() (no lookup/transformation) before this
+    is used."""
+    def _transform(row: dict) -> dict:
+        out = {}
+        for m in mappings:
+            target = m["target_column"]
+            if m.get("constant_value") is not None:
+                out[target] = m["constant_value"]
+                continue
+            value = row.get(m["source_columns"][0]) if m.get("source_columns") else None
+            if value is None and m.get("default_value") is not None:
+                value = m["default_value"]
+            out[target] = value
+        return out
+    return _transform
+
+
 def build_preview_sql(quote_object, quote_ident, source_schema: str | None, source_object: str, mappings: list[dict]) -> str:
     """
     quote_object(object_name, schema) / quote_ident(name) — dialect-aware

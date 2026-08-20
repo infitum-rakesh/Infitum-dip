@@ -146,6 +146,13 @@ export default function IncidentDetails() {
           <div className="incd-sla-banner"><AlertTriangle size={15} /> SLA breached — this incident has been open longer than its severity's response window.</div>
         )}
 
+        {incident.pipeline_id && (
+          <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
+            <button className="incd-back-btn" onClick={() => navigate(`/app/monitoring?tab=pipeline_runs`)}>View Pipeline Runs</button>
+            <button className="incd-back-btn" onClick={() => navigate(`/app/lineage?tab=pipeline&pipelineId=${incident.pipeline_id}`)}>View Lineage</button>
+          </div>
+        )}
+
         {/* Meta grid */}
         <div className="incd-meta-grid">
           <MetaItem label="Incident ID" value={incident.incident_number} />

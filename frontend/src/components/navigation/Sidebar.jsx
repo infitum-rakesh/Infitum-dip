@@ -5,7 +5,7 @@ import {
   GitBranch, Shuffle, Terminal, ShieldCheck, Scale, Network, Activity,
   AlertTriangle, PlayCircle, Clock, Users, Shield, Building2, Key,
   ScrollText, Settings, ChevronRight, LogOut, BarChart3, ArrowLeftRight,
-  CreditCard, Puzzle, Gauge, UserCog,
+  CreditCard, Puzzle, Gauge, UserCog, Monitor,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth.js';
 import { usePermission } from '@/hooks/usePermission.js';
@@ -74,6 +74,7 @@ const NAV = [
     role: ROLES.ORG_ADMIN,
     items: [
       { to: '/app/admin/users',    label: 'Users',          icon: Users },
+      { to: '/app/admin/sessions', label: 'Active Sessions',icon: Monitor },
       { to: '/app/admin/roles',    label: 'Roles',          icon: Shield },
       { to: '/app/admin/orgs',     label: 'Organizations',  icon: Building2, role: ROLES.SUPER_ADMIN },
       { to: '/app/admin/licenses', label: 'Licenses',       icon: Key },
@@ -106,8 +107,21 @@ const NAV = [
 
 export function Sidebar({ collapsed, onToggle }) {
   const { user, organization, logout } = useAuth();
-  const { hasRole, hasModule } = usePermission();
+  const { hasRole, hasModule, isTrialing, trialDaysLeft } = usePermission();
   const location = useLocation();
+
+  // Real trial progress: % of the trial elapsed since the org was created,
+  // through to trial_expires_at — never a hardcoded fill. Falls back to null
+  // (bar hidden) if either date is missing rather than guessing.
+  const trialPercentElapsed = (() => {
+    if (!organization?.created_at || !organization?.trial_expires_at) return null;
+    const start = new Date(organization.created_at).getTime();
+    const end = new Date(organization.trial_expires_at).getTime();
+    const totalMs = end - start;
+    if (totalMs <= 0) return 100;
+    const elapsedMs = Date.now() - start;
+    return Math.min(100, Math.max(0, (elapsedMs / totalMs) * 100));
+  })();
 
   // Review Queue's sidebar badge must reflect the real pending count from
   // the API — never hardcoded. Polled so it stays fresh as items are
@@ -149,11 +163,14 @@ export function Sidebar({ collapsed, onToggle }) {
         )}
       </div>
 
-      {/* Trial banner */}
-      {!collapsed && organization?.license_status === 'trial' && (
+      {/* Trial banner — real days-remaining from organization.trial_expires_at,
+          never hardcoded (see getTrialDaysLeft() in utils/permissions.js). */}
+      {!collapsed && isTrialing && trialDaysLeft != null && (
         <div className="sidebar-trial">
-          <span className="trial-label">🕐 Trial — 14 days remaining</span>
-          <div className="trial-bar"><div className="trial-fill" style={{ width: '57%' }} /></div>
+          <span className="trial-label">🕐 Trial — {trialDaysLeft} day{trialDaysLeft === 1 ? '' : 's'} remaining</span>
+          {trialPercentElapsed != null && (
+            <div className="trial-bar"><div className="trial-fill" style={{ width: `${trialPercentElapsed}%` }} /></div>
+          )}
         </div>
       )}
 

@@ -6,16 +6,18 @@ executions.py's Phase 3 routes). Route handlers here only create/read
 TargetLoadRun rows and kick off the background asyncio task; the actual
 streamed read + bulk write happens in that task, never inside a request.
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_action
 from app.database.connection import get_db
 from app.execution import load_executor
+from app.models.rejected_record import RejectSourceType
 from app.models.user import User, UserRole
 from app.schemas.loads import LoadListOut, LoadMetricsOut, LoadRunOut, StartLoadRequest
+from app.schemas.rejected_records import RejectedRecordListOut, RejectedRecordOut
 from app.services import load_service as svc
-from app.services import mapping_service
+from app.services import mapping_service, reject_service
 
 router = APIRouter(tags=["loads"])
 
@@ -45,6 +47,8 @@ async def start_load(mapping_id: int, body: StartLoadRequest, user: User = Depen
         run = await svc.create_load(
             db, organization_id=user.organization_id, mapping=mapping,
             write_mode=body.write_mode, chunk_size=body.chunk_size, created_by=user.id,
+            create_table=body.create_table, recreate_table=body.recreate_table,
+            worker_count=body.worker_count, partition_count=body.partition_count,
         )
     except svc.LoadValidationError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
@@ -73,3 +77,21 @@ async def get_metrics(run_id: int, user: User = Depends(_view), db: AsyncSession
 async def cancel_load(run_id: int, user: User = Depends(_execute), db: AsyncSession = Depends(get_db)):
     run = await _get_run_or_404(db, run_id, user)
     return await svc.cancel_load(db, run)
+
+
+@router.get("/loads/{run_id}/rejected-records", response_model=RejectedRecordListOut)
+async def list_rejected_records(
+    run_id: int, page: int = Query(1, ge=1), page_size: int = Query(100, ge=1, le=500),
+    user: User = Depends(_view), db: AsyncSession = Depends(get_db),
+):
+    """Real per-row failures from this load (KK2/KK3) — each one's actual
+    row data and the real error the target gave, not a summary count.
+    A bulk-insert failure on a batch falls back to row-by-row so good
+    rows still land; the ones that still fail end up here so a user can
+    see and fix them (see loading/writers/base.py's write_batch_with_fallback())."""
+    await _get_run_or_404(db, run_id, user)  # 404s / org-scopes before touching rejects
+    items, total = await reject_service.list_rejects(
+        db, source_type=RejectSourceType.TARGET_LOAD, source_id=run_id,
+        organization_id=_effective_org_id(user), limit=page_size, offset=(page - 1) * page_size,
+    )
+    return RejectedRecordListOut(items=[RejectedRecordOut.model_validate(r) for r in items], total=total)

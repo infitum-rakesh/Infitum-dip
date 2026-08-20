@@ -250,6 +250,12 @@ export const pipelineJobApi = {
 
   cancel: (jobId) => apiClient.post(`/pipeline-jobs/${jobId}/cancel`).then((r) => r.data),
 
+  /** Real per-row rejects from this job's dataset target node(s) — each
+   * one's actual row data and the real target error (see backend's
+   * loading/writers/base.py write_batch_with_fallback / KK2-KK4). */
+  getRejectedRecords: (jobId, params = {}) =>
+    apiClient.get(`/pipeline-jobs/${jobId}/rejected-records`, { params }).then((r) => r.data),
+
   /** Downloads the real file a File-target node wrote during this job run
    * (backend/app/api/pipeline_jobs.py's /nodes/{node_id}/download — the
    * exact path recorded on the job, not just "whatever's newest on disk"). */

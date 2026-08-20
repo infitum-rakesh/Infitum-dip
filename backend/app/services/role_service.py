@@ -43,6 +43,8 @@ CATEGORY_MODULE_MAP: dict[str, str | None] = {
     "SQL Workspace": "SQL_WORKSPACE",
     "Schedules": None,
     "Incidents": None,
+    "Monitoring": "OBSERVABILITY",
+    "Lineage": "LINEAGE",
     "Users": None,
     "Roles": None,
     "Licenses": None,

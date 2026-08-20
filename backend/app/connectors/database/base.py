@@ -184,6 +184,10 @@ class SqlAlchemyDatabaseConnector(BaseConnector):
                 indexed=c["name"] in indexed_cols,
                 default=str(c["default"]) if c.get("default") is not None else None,
                 foreign_key=fk_by_col.get(c["name"]),
+                # SQLAlchemy's own reflected String/VARCHAR types carry a
+                # real .length; anything else (INTEGER, unbounded TEXT, ...)
+                # has none — genuine metadata, not a guess.
+                max_length=getattr(c["type"], "length", None),
             )
             for c in cols
         ]
@@ -462,6 +466,10 @@ class _SqlAlchemySqlStream(SqlStream):
         self._conn = conn
         self._result = result
         self._columns = list(result.keys())
+
+    @property
+    def columns(self) -> list[str]:
+        return self._columns
 
     def fetch_chunk(self, size: int) -> list[dict]:
         rows = self._result.fetchmany(size)

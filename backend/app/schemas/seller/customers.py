@@ -67,7 +67,15 @@ class CreateCustomerOut(BaseModel):
     id: int
     name: str
     slug: str
-    temp_password: str | None = None  # returned once — same "no real mailer" pattern as user_admin_service.invite_user
+    # Still returned once so the Seller can copy/share it manually even
+    # when email delivery fails or SMTP isn't configured — never the sole
+    # way to get it now that email_delivered/email_detail report whether
+    # services/email_service.py actually sent it too (see customer_service
+    # .create_customer).
+    temp_password: str | None = None
+    admin_email: str | None = None
+    email_delivered: bool | None = None
+    email_detail: str | None = None
 
 
 class SubscriptionOut(BaseModel):

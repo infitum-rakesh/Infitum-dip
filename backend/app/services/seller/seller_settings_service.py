@@ -16,9 +16,29 @@ Phase 5; the same mistake is deliberately avoided here from the start.
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import crypto
 from app.models.seller import Seller
 from app.models.seller_audit_log import record_seller_event
 from app.models.user import User
+
+
+def to_out(seller: Seller) -> dict:
+    """Shapes the ORM row into SellerSettingsOut's dict — smtp_config's
+    password_encrypted is never included, only a password_set boolean
+    (same masking convention as Connection's secret fields)."""
+    smtp = seller.smtp_config or {}
+    return {
+        "id": seller.id, "name": seller.name, "legal_name": seller.legal_name,
+        "support_email": seller.support_email, "billing_email": seller.billing_email,
+        "website": seller.website, "branding": seller.branding,
+        "default_trial_days": seller.default_trial_days,
+        "smtp": {
+            "host": smtp.get("host"), "port": smtp.get("port"), "username": smtp.get("username"),
+            "password_set": bool(smtp.get("password_encrypted")),
+            "from_address": smtp.get("from_address"), "use_tls": smtp.get("use_tls", True),
+        },
+        "created_at": seller.created_at, "updated_at": seller.updated_at,
+    }
 
 
 async def get_settings(db: AsyncSession) -> Seller:
@@ -64,5 +84,34 @@ async def update_settings(db: AsyncSession, seller: Seller, body, actor: User, i
         db, seller_user_id=actor.id, customer_id=None, action="Seller Settings Updated",
         resource=seller.name, resource_id=str(seller.id), ip_address=ip_address,
         details=f"Updated {', '.join(changed)}", before_value=before, after_value=after,
+    )
+    return seller
+
+
+async def update_smtp_config(db: AsyncSession, seller: Seller, body, actor: User, ip_address: str | None = None) -> Seller:
+    provided = body.model_fields_set
+    current = dict(seller.smtp_config or {})
+    before_masked = {k: v for k, v in current.items() if k != "password_encrypted"}
+
+    for field in ("host", "port", "username", "from_address", "use_tls"):
+        if field in provided:
+            value = getattr(body, field)
+            if value is None:
+                current.pop(field, None)
+            else:
+                current[field] = value
+    if "password" in provided and body.password:
+        current["password_encrypted"] = crypto.encrypt_secret(body.password)
+
+    seller.smtp_config = current
+    await db.commit()
+    await db.refresh(seller)
+
+    after_masked = {k: v for k, v in current.items() if k != "password_encrypted"}
+    after_masked["password_set"] = bool(current.get("password_encrypted"))
+    await record_seller_event(
+        db, seller_user_id=actor.id, customer_id=None, action="Seller Settings Updated",
+        resource=seller.name, resource_id=str(seller.id), ip_address=ip_address,
+        details="Updated SMTP configuration", before_value=before_masked, after_value=after_masked,
     )
     return seller

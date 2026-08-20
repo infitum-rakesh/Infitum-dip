@@ -18,4 +18,10 @@ export const loadApi = {
   getMetrics: (runId) => apiClient.get(`/loads/${runId}/metrics`).then((r) => r.data),
 
   cancel: (runId) => apiClient.post(`/loads/${runId}/cancel`).then((r) => r.data),
+
+  /** Real per-row rejects from this load — each one's actual row data and
+   * the real target error (see backend's loading/writers/base.py
+   * write_batch_with_fallback / KK2-KK4). */
+  getRejectedRecords: (runId, params = {}) =>
+    apiClient.get(`/loads/${runId}/rejected-records`, { params }).then((r) => r.data),
 };

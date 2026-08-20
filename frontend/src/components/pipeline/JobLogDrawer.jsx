@@ -6,8 +6,8 @@
  * Builder's Run action and from the global Pipeline Runs page.
  */
 import { useEffect, useRef, useState } from 'react';
-import { X, Square, Download } from 'lucide-react';
-import { Button, StatusBadge } from '@/components/common/index.js';
+import { X, Square, Download, AlertTriangle } from 'lucide-react';
+import { Button, StatusBadge, RejectedRecordsModal } from '@/components/common/index.js';
 import { pipelineJobApi } from '@/services/api/pipelineApi.js';
 import './pipeline.css';
 
@@ -74,6 +74,7 @@ export function JobLogDrawer({ jobId, onClose, onStatusChange }) {
   const isRunning = job && !TERMINAL.has(job.status);
   const nodeEntries = job ? Object.entries(job.node_stats || {}) : [];
   const [downloadingNode, setDownloadingNode] = useState(null);
+  const [rejectsNode, setRejectsNode] = useState(null); // {nodeId, label} — which node's rejects modal is open
 
   const handleDownload = async (nodeId, outputFile) => {
     setDownloadingNode(nodeId);
@@ -118,6 +119,15 @@ export function JobLogDrawer({ jobId, onClose, onStatusChange }) {
                     {s.status === 'error' ? 'failed' : `${s.rows_in ?? 0}→${s.rows_out ?? 0} rows · ${s.duration_ms ?? 0}ms`}
                   </span>
                 </span>
+                {s.rows_rejected > 0 && (
+                  <button
+                    className="jld-node-chip-rejected"
+                    title={`${s.rows_rejected} row(s) rejected writing to this target — click to view`}
+                    onClick={() => setRejectsNode({ nodeId, label: s.label ?? nodeId })}
+                  >
+                    <AlertTriangle size={11} /> {s.rows_rejected}
+                  </button>
+                )}
                 {s.output_file && (
                   <button
                     className="jld-node-chip-download"
@@ -132,6 +142,16 @@ export function JobLogDrawer({ jobId, onClose, onStatusChange }) {
             ))}
           </div>
         )}
+
+        <RejectedRecordsModal
+          open={!!rejectsNode}
+          onClose={() => setRejectsNode(null)}
+          title={rejectsNode ? `Rejected records — ${rejectsNode.label}` : ''}
+          exportFilename={`job_${jobId}_${rejectsNode?.nodeId}_rejected.csv`}
+          fetchPage={(page, pageSize) =>
+            pipelineJobApi.getRejectedRecords(jobId, { node_id: rejectsNode?.nodeId, page, page_size: pageSize })
+          }
+        />
 
         <div className="jld-log-body">
           {logs.length === 0 ? (

@@ -9,3 +9,4 @@ export { LoadingSpinner, FullPageSpinner } from './LoadingSpinner.jsx';
 export { EmptyState }    from './EmptyState.jsx';
 export { PermissionGate, LicenseBadge } from './PermissionGate.jsx';
 export { FileUploader } from './FileUploader.jsx';
+export { RejectedRecordsModal } from './RejectedRecordsModal.jsx';

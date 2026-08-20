@@ -65,6 +65,13 @@ class OrgOut(BaseModel):
     plan: str = "trial"
     licensed_modules: list[str]
     max_users: int
+    # Needed by the frontend's getTrialDaysLeft()/trial banner (utils/permissions.js,
+    # components/navigation/Sidebar.jsx) to compute real days-remaining and
+    # progress-bar fill instead of a hardcoded value — previously omitted here,
+    # so trial_expires_at was always undefined on the client no matter what
+    # the org row actually held.
+    trial_expires_at: datetime | None = None
+    created_at: datetime
 
     model_config = {"from_attributes": True}
 

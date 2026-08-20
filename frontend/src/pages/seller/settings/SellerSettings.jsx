@@ -10,7 +10,7 @@
  * only *reads* the plan list for its change-plan dropdown.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Building2, Palette, KeyRound, Layers, Save, Lock, RefreshCcw, Plus, Pencil, Power, PowerOff } from 'lucide-react';
+import { Building2, Palette, KeyRound, Layers, Save, Lock, RefreshCcw, Plus, Pencil, Power, PowerOff, Mail, Send, CheckCircle2, XCircle } from 'lucide-react';
 import { Button, StatusBadge, PermissionGate, FullPageSpinner, EmptyState } from '@/components/common/index.js';
 import { SELLER_PERMISSIONS } from '@/utils/constants.js';
 import { MODULE_META } from '@/utils/permissions.js';
@@ -23,6 +23,7 @@ import './seller-settings.css';
 const TABS = [
   { id: 'company', label: 'Company', icon: Building2 },
   { id: 'branding', label: 'Branding', icon: Palette },
+  { id: 'email', label: 'Email', icon: Mail },
   { id: 'plans', label: 'Plans', icon: Layers },
   { id: 'defaults', label: 'Default License Settings', icon: KeyRound },
 ];
@@ -110,6 +111,7 @@ export default function SellerSettings() {
 
         {tab === 'company' && <CompanyTab settings={settings} onSave={save} />}
         {tab === 'branding' && <BrandingTab settings={settings} onSave={save} />}
+        {tab === 'email' && <EmailTab settings={settings} onReload={load} />}
         {tab === 'plans' && <PlansTab />}
         {tab === 'defaults' && <DefaultsTab settings={settings} onSave={save} />}
       </div>
@@ -254,6 +256,102 @@ function DefaultsTab({ settings, onSave }) {
         </div>
       </div>
       <SaveBar dirty={dirty} saving={saving} error={error} onSave={handleSave} onReset={reset} />
+    </div>
+  );
+}
+
+// ── Email (SMTP) ──────────────────────────────────────────────
+
+function EmailTab({ settings, onReload }) {
+  const smtp = settings.smtp || {};
+  const initial = {
+    host: smtp.host ?? '', port: smtp.port ?? 587, username: smtp.username ?? '',
+    password: '', from_address: smtp.from_address ?? '', use_tls: smtp.use_tls ?? true,
+  };
+  const { draft, set, dirty, reset } = useSectionDraft(initial);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [testTo, setTestTo] = useState(smtp.username ?? '');
+  const [testResult, setTestResult] = useState(null);
+  const [testing, setTesting] = useState(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError('');
+    try {
+      const body = {
+        host: draft.host || null, port: draft.port ? Number(draft.port) : null,
+        username: draft.username || null, from_address: draft.from_address || null,
+        use_tls: draft.use_tls,
+      };
+      if (draft.password) body.password = draft.password;
+      const updated = await sellerSettingsApi.updateSmtp(body);
+      onReload();
+      return updated;
+    } catch (err) { setError(err?.message ?? 'Could not save.'); }
+    finally { setSaving(false); }
+  };
+
+  const handleTest = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await sellerSettingsApi.sendTestEmail(testTo);
+      setTestResult(result);
+    } catch (err) {
+      setTestResult({ delivered: false, detail: err?.message ?? 'Test send failed.' });
+    } finally { setTesting(false); }
+  };
+
+  return (
+    <div className="sst-card">
+      <div className="sst-card-title">Email (SMTP)</div>
+      <p className="sst-card-hint">
+        Used to email a new customer's Admin their login credentials when you create their organization
+        (see the Customers page), and to resend them later. Nothing is sent until this is configured.
+      </p>
+      <div className="sst-grid">
+        <div className="sst-field">
+          <label className="sst-field-label">SMTP Host</label>
+          <input className="sst-input" value={draft.host} onChange={(e) => set('host')(e.target.value)} placeholder="smtp.yourprovider.com" />
+        </div>
+        <div className="sst-field">
+          <label className="sst-field-label">Port</label>
+          <input type="number" className="sst-input" value={draft.port} onChange={(e) => set('port')(e.target.value)} placeholder="587" />
+        </div>
+        <div className="sst-field">
+          <label className="sst-field-label">Username</label>
+          <input className="sst-input" value={draft.username} onChange={(e) => set('username')(e.target.value)} placeholder="apikey or account username" />
+        </div>
+        <div className="sst-field">
+          <label className="sst-field-label">Password {smtp.password_set && <span style={{ fontWeight: 400, color: 'var(--text-faint)' }}>(already set — leave blank to keep)</span>}</label>
+          <input type="password" className="sst-input" value={draft.password} onChange={(e) => set('password')(e.target.value)} placeholder={smtp.password_set ? '••••••••' : ''} />
+        </div>
+        <div className="sst-field">
+          <label className="sst-field-label">From Address</label>
+          <input type="email" className="sst-input" value={draft.from_address} onChange={(e) => set('from_address')(e.target.value)} placeholder="no-reply@yourcompany.com" />
+        </div>
+        <div className="sst-field">
+          <label className="sst-field-label">Use TLS</label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+            <input type="checkbox" checked={draft.use_tls} onChange={(e) => set('use_tls')(e.target.checked)} /> STARTTLS
+          </label>
+        </div>
+      </div>
+      <SaveBar dirty={dirty} saving={saving} error={error} onSave={handleSave} onReset={reset} />
+
+      <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border-color, #E2E8F0)' }}>
+        <div className="sst-card-title" style={{ fontSize: 13 }}>Send a test email</div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+          <input type="email" className="sst-input" style={{ maxWidth: 280 }} value={testTo} onChange={(e) => setTestTo(e.target.value)} placeholder="you@example.com" />
+          <Button variant="secondary" size="sm" icon={<Send size={13} />} loading={testing} disabled={!testTo} onClick={handleTest}>Send Test</Button>
+        </div>
+        {testResult && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 12, color: testResult.delivered ? 'var(--success, #10B981)' : 'var(--danger, #DC2626)' }}>
+            {testResult.delivered ? <CheckCircle2 size={13} /> : <XCircle size={13} />} {testResult.detail}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

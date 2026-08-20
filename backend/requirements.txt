@@ -65,3 +65,9 @@ boto3==1.43.72              # AWS (S3, and Textract — connectors/ocr/aws_textr
 # these are only used when an OCR_PROVIDER connection is configured.
 google-cloud-vision==3.10.2            # Google Cloud Vision (connectors/ocr/google_vision.py)
 azure-ai-documentintelligence==1.0.2   # Azure Document Intelligence / Form Recognizer (connectors/ocr/azure_document_intelligence.py)
+
+# Single Sign-On — real SAML 2.0 (services/saml_service.py). Needs the
+# libxmlsec1 native library on the host (macOS: `brew install libxmlsec1`;
+# Debian/Ubuntu: `apt-get install libxmlsec1-dev`) for the `xmlsec` wheel's
+# signature verification to work — not pip-installable on its own.
+python3-saml==1.16.0

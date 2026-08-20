@@ -30,6 +30,11 @@ class Seller(Base):
     # {logo_url, primary_color} — Seller Settings -> Branding (Phase 9)
     branding: Mapped[dict] = mapped_column(JSON, default=dict)
     default_trial_days: Mapped[int] = mapped_column(Integer, default=14)
+    # {host, port, username, password_encrypted, from_address, use_tls} —
+    # Seller Settings -> Email. password_encrypted is Fernet-encrypted via
+    # app.core.crypto (same mechanism as Connection.encrypted_secrets) —
+    # never stored or returned in plaintext. See services/email_service.py.
+    smtp_config: Mapped[dict] = mapped_column(JSON, default=dict)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

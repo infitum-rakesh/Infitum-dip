@@ -8,16 +8,25 @@ This is a SEPARATE, smaller-scope engine from execution/pipeline_executor.py
 (which does bounded-memory, checkpointed, resumable CHUNKED extraction of
 ONE Source Dataset node to a staging file — built for very large single
 tables). This engine instead runs an entire multi-node graph end-to-end
-for real, but loads each source into memory up to SOURCE_ROW_CAP rows.
-That's a genuine, disclosed limitation — appropriate for the size
-pipelines are actually authored/tested at in this build, not a
-distributed big-data engine — and every source node's log line says so
-when the cap is hit, never applied silently.
+for real, in one in-memory pandas DataFrame per source. For SQL-database
+connections (Postgres/MySQL/SQL Server/Oracle/Snowflake/SAP/Vertica/
+Fabric/NetSuite SuiteQL) a TABLE/VIEW/QUERY source now reads EXHAUSTIVELY
+via the same chunked open_sql_stream()/fetch_chunk() primitive
+execution/worker.py's "Run Extraction" engine uses — no silent 50K-row
+truncation — up to SOURCE_ROW_HARD_CAP as an in-memory safety ceiling
+(this engine still isn't a distributed/spilling engine, so *some* ceiling
+has to exist, but it's 40x the old cap). Connectors that don't support
+streaming (Salesforce, generic SOAP/REST, files) fall back to the older
+single-shot bounded preview, capped at SOURCE_ROW_CAP — every truncation,
+at either cap, is disclosed via the source node's log line, never applied
+silently.
 
 Node types executed for real:
-  source              TABLE/VIEW/QUERY on a saved connection (via the
-                       connector's real preview_object/preview_sql,
-                       capped at SOURCE_ROW_CAP), or an uploaded
+  source              TABLE/VIEW/QUERY on a saved connection — real
+                       exhaustive chunked read for SQL databases (see
+                       _stream_all_rows), or the connector's bounded
+                       preview_object/preview_sql for connectors that
+                       don't support streaming — or an uploaded
                        PipelineSourceFile (CSV/TSV/Excel/JSON read
                        directly with pandas).
   filter, select, rename, cast, sort, deduplicate, calculated,
@@ -89,17 +98,26 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.connectors.base import ConnectorError
+from app.connectors.base import ConnectorError, ConnectorUnsupportedError
 from app.database.connection import AsyncSessionLocal
 from app.loading import scd
+from app.loading.writers.base import write_batch_with_fallback
 from app.loading.writers.registry import get_bulk_writer
 from app.models.connection import Connection
 from app.models.pipeline import PipelineVersion
 from app.models.pipeline_job import JobStatus, PipelineJob, PipelineJobLog
-from app.services import pipeline_file_service
+from app.models.rejected_record import RejectSourceType
+from app.services import pipeline_file_service, reject_service
 from app.services.connection_service import build_connector, get_connection
 
-SOURCE_ROW_CAP = 50_000
+SOURCE_ROW_CAP = 50_000  # bounded single-shot preview cap — only still used as a
+# fallback for connectors that don't support open_sql_stream (Salesforce, generic
+# SOAP/REST, files); see _stream_all_rows below for the real path.
+SOURCE_ROW_HARD_CAP = 2_000_000  # in-memory safety ceiling for the streamed path —
+# this engine loads a whole source into one pandas DataFrame (it isn't a
+# spilling/distributed engine), so some ceiling has to exist, but this one is
+# 40x SOURCE_ROW_CAP and disclosed via the same WARN log line if it's ever hit.
+SOURCE_STREAM_CHUNK_SIZE = 20_000
 OUTPUT_BASE_PATH = "pipeline_outputs"  # relative to the backend process cwd
 
 DI_NODE_TYPES = {"doc_input", "image_scanner", "ocr_engine", "ai_extraction", "structured_dataset"}
@@ -164,6 +182,13 @@ async def _finish(job_id: int, status: JobStatus, *, error_message: str | None =
             job.records_out = records_out
         await db.commit()
 
+    # Monitoring integration seam — SLA evaluation, alert rules, and
+    # auto-Incident-on-failure all hang off this one call. Runs in its own
+    # session and never raises (see on_job_finished's own try/except), so a
+    # monitoring bug can never turn a real pipeline result into a failure.
+    from app.monitoring.service import on_job_finished
+    await on_job_finished(job_id)
+
 
 async def _fail(job_id: int, message: str) -> None:
     await _log(job_id, "ERROR", message)
@@ -224,6 +249,44 @@ async def _resolve_connector(connection_id: int, organization_id: int | None, ca
 
 # ── Node executors ─────────────────────────────────────────────
 
+async def _stream_all_rows(connector, sql: str, parameters: dict) -> tuple[list[list], list[str], bool]:
+    """Real, chunked, exhaustive read of a SELECT via the same
+    open_sql_stream()/fetch_chunk() primitive execution/worker.py's "Run
+    Extraction" engine already uses for genuinely unbounded reads — this
+    replaces the old single-shot preview_object()/preview_sql() call,
+    which opened one cursor, called fetchmany() exactly ONCE, and threw
+    the rest of the real result set away (the actual cause of the
+    "only pulls the first 50,000 rows" bug). Raises ConnectorUnsupportedError
+    for connectors that don't implement streaming (Salesforce, generic
+    SOAP/REST, files) — callers fall back to the old bounded preview path
+    for those. Still enforces SOURCE_ROW_HARD_CAP as a safety ceiling since
+    this engine loads the whole source into one in-memory pandas
+    DataFrame — but that ceiling is far above SOURCE_ROW_CAP, and hitting
+    it is disclosed via `truncated` exactly like the old cap was, never
+    applied silently."""
+    stream = await asyncio.to_thread(connector.open_sql_stream, sql, parameters or {})
+    try:
+        columns = list(stream.columns)
+        rows: list[list] = []
+        truncated = False
+        while True:
+            chunk = await asyncio.to_thread(stream.fetch_chunk, SOURCE_STREAM_CHUNK_SIZE)
+            if not chunk:
+                break
+            rows.extend([r.get(c) for c in columns] for r in chunk)
+            if len(rows) >= SOURCE_ROW_HARD_CAP:
+                del rows[SOURCE_ROW_HARD_CAP:]
+                # peek one more row to know whether the cap actually cut anything off
+                extra = await asyncio.to_thread(stream.fetch_chunk, 1)
+                truncated = bool(extra)
+                break
+            if len(chunk) < SOURCE_STREAM_CHUNK_SIZE:
+                break
+        return rows, columns, truncated
+    finally:
+        await asyncio.to_thread(stream.close)
+
+
 async def _run_source(job_id, node_id, cfg, organization_id, cache):
     uploaded_file_id = cfg.get("uploadedFileId")
     if uploaded_file_id:
@@ -258,6 +321,7 @@ async def _run_source(job_id, node_id, cfg, organization_id, cache):
         raise NodeExecutionError("Source Dataset node has no connection and no uploaded file configured.")
     conn, connector = await _resolve_connector(connection_id, organization_id, cache)
 
+    cap_note = SOURCE_ROW_CAP
     try:
         if cfg.get("objectType") == "API":
             endpoint = cfg.get("apiEndpoint")
@@ -274,19 +338,39 @@ async def _run_source(job_id, node_id, cfg, organization_id, cache):
                 limit=SOURCE_ROW_CAP,
                 rate_limit_delay=float(cfg.get("apiRateLimitDelay") or 0),
             )
+            columns, rows, truncated = result.columns, result.rows, result.truncated
         elif cfg.get("customSql"):
-            result = await asyncio.to_thread(connector.preview_sql, cfg["customSql"], {p["name"]: p["value"] for p in cfg.get("parameters", []) if p.get("name")}, SOURCE_ROW_CAP)
+            params = {p["name"]: p["value"] for p in cfg.get("parameters", []) if p.get("name")}
+            try:
+                rows, columns, truncated = await _stream_all_rows(connector, cfg["customSql"], params)
+                cap_note = SOURCE_ROW_HARD_CAP
+            except ConnectorUnsupportedError:
+                result = await asyncio.to_thread(connector.preview_sql, cfg["customSql"], params, SOURCE_ROW_CAP)
+                columns, rows, truncated = result.columns, result.rows, result.truncated
         else:
             object_name = cfg.get("object")
             if not object_name:
                 raise NodeExecutionError("Source Dataset node has no object/table selected.")
-            result = await asyncio.to_thread(connector.preview_object, object_name, cfg.get("schema") or None, SOURCE_ROW_CAP)
+            schema = cfg.get("schema") or None
+            quote_object = getattr(connector, "quote_object", None)
+            streamed = False
+            if quote_object is not None:
+                try:
+                    select_sql = f"SELECT * FROM {quote_object(object_name, schema)}"
+                    rows, columns, truncated = await _stream_all_rows(connector, select_sql, {})
+                    cap_note = SOURCE_ROW_HARD_CAP
+                    streamed = True
+                except ConnectorUnsupportedError:
+                    pass
+            if not streamed:
+                result = await asyncio.to_thread(connector.preview_object, object_name, schema, SOURCE_ROW_CAP)
+                columns, rows, truncated = result.columns, result.rows, result.truncated
     except ConnectorError as exc:
         raise NodeExecutionError(connector._scrub(str(exc))) from exc
 
-    if result.truncated:
-        await _log(job_id, "WARN", f"Source has more than {SOURCE_ROW_CAP} rows — truncated to the first {SOURCE_ROW_CAP} (this engine's per-source cap).", node_id)
-    df = pd.DataFrame(result.rows, columns=result.columns)
+    if truncated:
+        await _log(job_id, "WARN", f"Source has more than {cap_note} rows — truncated to the first {cap_note} (this engine's per-source cap).", node_id)
+    df = pd.DataFrame(rows, columns=columns)
     return df, connection_id
 
 
@@ -525,13 +609,18 @@ def _file_ext(file_type: str) -> str:
 
 
 async def _run_target(job_id, node_id, df, cfg, organization_id, primary_connection_id, cache, pipeline_id, job_id_for_path):
-    """Returns (df, output_file) — output_file is the path of the file
-    just written, RELATIVE to OUTPUT_BASE_PATH (e.g. '3/node_xyz/out.csv'),
-    for file targets; None for dataset/sftp/api targets (sftp writes to a
-    remote host, api writes over HTTP — neither has a local download).
-    Recorded onto the job's node_stats by the caller so the Pipeline
-    Builder job log can offer a real download of the exact file this run
-    produced (api/pipeline_jobs.py)."""
+    """Returns (df, output_file, rejected) — output_file is the path of
+    the file just written, RELATIVE to OUTPUT_BASE_PATH (e.g.
+    '3/node_xyz/out.csv'), for file targets; None for dataset/sftp/api
+    targets (sftp writes to a remote host, api writes over HTTP — neither
+    has a local download). Recorded onto the job's node_stats by the
+    caller so the Pipeline Builder job log can offer a real download of
+    the exact file this run produced (api/pipeline_jobs.py). rejected is
+    [{"row": dict, "error": str}, ...] — only ever non-empty for the
+    dataset full-load path below (KK3); every other target type returns
+    an empty list (a bad file write/SFTP upload/API POST fails the whole
+    node, same as before — there's no per-row bulk-then-fallback concept
+    for those transports)."""
     df = df if df is not None else pd.DataFrame()
     target_type = cfg.get("targetType", "dataset")
 
@@ -549,7 +638,7 @@ async def _run_target(job_id, node_id, df, cfg, organization_id, primary_connect
         except Exception as exc:
             raise NodeExecutionError(f"Could not write output file: {exc}") from exc
         await _log(job_id, "INFO", f"Wrote {len(df)} row(s) to {out_path}", node_id)
-        return df, f"{pipeline_id}/{node_id}/{out_path.name}"
+        return df, f"{pipeline_id}/{node_id}/{out_path.name}", []
 
     if target_type == "sftp":
         connection_id = cfg.get("connectionId")
@@ -568,7 +657,7 @@ async def _run_target(job_id, node_id, df, cfg, organization_id, primary_connect
         except ConnectorError as exc:
             raise NodeExecutionError(connector._scrub(str(exc))) from exc
         await _log(job_id, "INFO", f"Uploaded {len(df)} row(s) ({written} bytes) to {conn.name}:{remote_path}", node_id)
-        return df, None
+        return df, None, []
 
     if target_type == "api":
         connection_id = cfg.get("connectionId")
@@ -595,7 +684,7 @@ async def _run_target(job_id, node_id, df, cfg, organization_id, primary_connect
             f"POSTed {stats['records_sent']} record(s) to {conn.name}:{endpoint} across {stats['batches_sent']} batch(es) (HTTP {stats['last_status']}).",
             node_id,
         )
-        return df, None
+        return df, None, []
 
     # dataset target — the node's OWN connection picker (cfg.connectionId)
     # takes priority when set; falling back to the pipeline's PRIMARY
@@ -666,7 +755,7 @@ async def _run_target(job_id, node_id, df, cfg, organization_id, primary_connect
             raise NodeExecutionError(connector._scrub(str(exc))) from exc
         except Exception as exc:
             raise NodeExecutionError(f"SCD merge failed for target table '{dataset_name}': {connector._scrub(str(exc))}") from exc
-        return df, None
+        return df, None, []
 
     # ── Full load ──────────────────────────────────────────────────
     # fullLoadStrategy (new Load Strategy panel) maps onto the same two
@@ -722,14 +811,35 @@ async def _run_target(job_id, node_id, df, cfg, organization_id, primary_connect
     columns = list(df.columns)
     rows = df.to_dict(orient="records")
     written = 0
+    rejected: list[dict] = []
     try:
         for i in range(0, len(rows), 5000):
             batch = rows[i:i + 5000]
-            written += await asyncio.to_thread(writer.write_batch, None, dataset_name, columns, batch)
+            # write_batch_with_fallback (KK2/KK3): tries the writer's real
+            # bulk insert for the whole batch first, exactly as before;
+            # only on failure does it retry row-by-row, so one bad row in
+            # a 5,000-row batch no longer fails the other 4,999 — each row
+            # that still fails on its own comes back with its own real
+            # error instead of the batch-level one.
+            batch_written, batch_rejects = await asyncio.to_thread(
+                write_batch_with_fallback, writer, None, dataset_name, columns, batch
+            )
+            written += batch_written
+            rejected.extend(batch_rejects)
     except ConnectorError as exc:
         raise NodeExecutionError(f"Could not write to target table '{dataset_name}': {connector._scrub(str(exc))}") from exc
+    if rejected:
+        await reject_service.record_rejects(
+            organization_id=organization_id, source_type=RejectSourceType.PIPELINE_JOB, source_id=job_id,
+            node_id=node_id, target_object=dataset_name, rejects=rejected,
+        )
+        await _log(
+            job_id, "WARN",
+            f"{len(rejected)} row(s) rejected writing to '{dataset_name}' — see Rejected Records for each row and its real error.",
+            node_id,
+        )
     await _log(job_id, "INFO", f"Wrote {written} row(s) to '{dataset_name}' ({mode}).", node_id)
-    return df, None
+    return df, None, rejected
 
 
 async def _run_notification(job_id, node_id, cfg):
@@ -778,13 +888,31 @@ async def _execute(job_id: int) -> None:
 
     try:
         order = _topo_sort(nodes, edges)
+
+        # Deliberately strict (bracket access, not .get()) — every real
+        # edge this app itself ever saves always has both keys, so a
+        # missing one means the definition is genuinely corrupt and
+        # should fail loudly here, not be silently reinterpreted as "no
+        # edge" (which would run src1/tgt1 as disconnected — a target
+        # node quietly getting an empty DataFrame instead of its real
+        # upstream input is a far worse outcome than a clear failure).
+        incoming: dict[str, list[str]] = {}
+        for e in edges:
+            incoming.setdefault(e["targetId"], []).append(e["sourceId"])
     except ValueError as exc:
         await _fail(job_id, str(exc))
         return
-
-    incoming: dict[str, list[str]] = {}
-    for e in edges:
-        incoming.setdefault(e["targetId"], []).append(e["sourceId"])
+    except Exception as exc:
+        # Defense in depth: this setup step runs BEFORE the node loop's
+        # own try/except below, and start_job() fires _execute() via
+        # asyncio.create_task() without ever awaiting it or checking its
+        # result — an exception raised here previously had nowhere to go
+        # but a silently-dropped "Task exception was never retrieved"
+        # warning, leaving the job stuck RUNNING forever with no error a
+        # user could ever see. Never again: any failure here is now a
+        # real, visible FAILED status with a real message.
+        await _fail(job_id, f"Could not prepare this job's node graph: {exc}"[:300])
+        return
 
     dataframes: dict[str, pd.DataFrame] = {}
     connector_cache: dict[int, tuple] = {}
@@ -810,6 +938,7 @@ async def _execute(job_id: int) -> None:
             await _log(job_id, "INFO", f"Running '{label}' ({ntype})…", node_id)
             status = "success"
             output_file = None
+            rejected = []
 
             try:
                 if ntype in DI_NODE_TYPES:
@@ -847,7 +976,7 @@ async def _execute(job_id: int) -> None:
                 elif ntype == "reconciliation_step":
                     df, status = await _run_reconciliation(job_id, node_id, input_df, cfg, organization_id, primary_connection_id, connector_cache)
                 elif ntype == "target":
-                    df, output_file = await _run_target(job_id, node_id, input_df, cfg, organization_id, primary_connection_id, connector_cache, job.pipeline_id, job_id)
+                    df, output_file, rejected = await _run_target(job_id, node_id, input_df, cfg, organization_id, primary_connection_id, connector_cache, job.pipeline_id, job_id)
                 elif ntype == "notification":
                     df = input_df
                     await _run_notification(job_id, node_id, cfg)
@@ -870,6 +999,8 @@ async def _execute(job_id: int) -> None:
             }
             if output_file:
                 stats_patch["output_file"] = output_file
+            if rejected:
+                stats_patch["rows_rejected"] = len(rejected)
             await _update_node_stats(job_id, node_id, stats_patch)
             await _log(job_id, "INFO", f"'{label}' finished — {rows_in} in / {rows_out} out ({duration_ms} ms).", node_id)
             if total_in is None:

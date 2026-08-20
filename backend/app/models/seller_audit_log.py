@@ -25,6 +25,7 @@ from app.database.connection import Base
 # can add new action strings without a migration.
 SELLER_AUDIT_ACTIONS = [
     "Customer Created", "Customer Updated", "Customer Activated", "Customer Suspended",
+    "Customer Admin Welcome Email",
     "Subscription Created", "Subscription Changed",
     "Module Purchased", "Module Enabled", "Module Disabled",
     "License Created", "License Activated", "License Suspended", "License Extended",

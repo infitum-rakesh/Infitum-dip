@@ -27,6 +27,8 @@ DEFAULT_CHUNK_SIZE = 5000
 async def create_load(
     db: AsyncSession, *, organization_id: int | None, mapping: ColumnMapping,
     write_mode: str | None, chunk_size: int | None, created_by: int | None,
+    create_table: bool = False, recreate_table: bool = False,
+    worker_count: int | None = None, partition_count: int | None = None,
 ) -> TargetLoadRun:
     if not mapping.mappings:
         raise LoadValidationError("This mapping has no column mapping rows to load — add at least one in the Mapping page first.")
@@ -43,6 +45,10 @@ async def create_load(
         mapping_id=mapping.id,
         write_mode=mode,
         chunk_size=chunk_size or DEFAULT_CHUNK_SIZE,
+        create_table=create_table,
+        recreate_table=recreate_table,
+        worker_count=worker_count or 4,
+        partition_count=partition_count or 4,
         status=LoadStatus.PENDING,
         created_by=created_by,
     )
@@ -101,6 +107,7 @@ def compute_metrics(run: TargetLoadRun) -> dict:
         "status": run.status.value,
         "records_read": run.records_read,
         "records_written": run.records_written,
+        "records_rejected": run.records_rejected,
         "throughput_rps": throughput,
         "elapsed_seconds": elapsed,
     }

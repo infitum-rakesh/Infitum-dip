@@ -13,10 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_action
 from app.database.connection import get_db
+from app.models.rejected_record import RejectSourceType
 from app.models.user import User, UserRole
 from app.schemas.pipeline_jobs import PipelineJobListOut, PipelineJobLogsOut, PipelineJobOut
+from app.schemas.rejected_records import RejectedRecordListOut, RejectedRecordOut
 from app.services import pipeline_job_service as svc
-from app.services import pipeline_service
+from app.services import pipeline_service, reject_service
 from app.execution import pipeline_job_executor
 from app.execution.pipeline_job_executor import OUTPUT_BASE_PATH
 
@@ -107,3 +109,24 @@ async def cancel_job(job_id: int, user: User = Depends(_create), db: AsyncSessio
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Job is not currently running in this process (it may have been interrupted by a server restart) — it cannot be cancelled, only re-run.")
     name_map = await svc.user_name_map(db, {job.created_by})
     return svc.job_to_out(job, name_map)
+
+
+@router.get("/{job_id}/rejected-records", response_model=RejectedRecordListOut)
+async def list_rejected_records(
+    job_id: int, node_id: str | None = Query(None), page: int = Query(1, ge=1), page_size: int = Query(100, ge=1, le=500),
+    user: User = Depends(_view), db: AsyncSession = Depends(get_db),
+):
+    """Real per-row failures from this job's dataset target node(s) (KK2/
+    KK3) — each one's actual row data and the real error the target gave.
+    A bulk-insert failure on a batch falls back to row-by-row so good rows
+    still land; the ones that still fail end up here, tagged with which
+    target node rejected them (node_id) since one job can have more than
+    one target — pass node_id to narrow to just one."""
+    job = await svc.get_job(db, job_id, _effective_org_id(user))
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
+    items, total = await reject_service.list_rejects(
+        db, source_type=RejectSourceType.PIPELINE_JOB, source_id=job_id, node_id=node_id,
+        organization_id=_effective_org_id(user), limit=page_size, offset=(page - 1) * page_size,
+    )
+    return RejectedRecordListOut(items=[RejectedRecordOut.model_validate(r) for r in items], total=total)

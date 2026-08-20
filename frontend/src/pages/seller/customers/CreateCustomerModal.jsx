@@ -6,7 +6,7 @@
  * password once" pattern as Administration -> Users' Invite User modal.
  */
 import { useState } from 'react';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, Mail, CheckCircle2, XCircle } from 'lucide-react';
 import { Modal, Button } from '@/components/common/index.js';
 import { customerApi } from '@/services/api/seller/customerApi.js';
 import './customers.css';
@@ -83,9 +83,15 @@ export function CreateCustomerModal({ open, onClose, onCreated }) {
                 {copied ? 'Copied' : 'Copy'}
               </Button>
             </div>
+            {result.email_delivered != null && (
+              <p className="sc-credential-note" style={{ display: 'flex', alignItems: 'center', gap: 6, color: result.email_delivered ? 'var(--success, #10B981)' : 'var(--danger, #DC2626)' }}>
+                {result.email_delivered ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
+                <Mail size={13} /> {result.email_delivered ? `Emailed to ${result.admin_email}.` : result.email_detail}
+              </p>
+            )}
             <p className="sc-credential-note">
-              No email service is configured yet — share this password with the customer's contact yourself.
-              It won't be shown again.
+              This password won't be shown again — copy it now, or use "Resend Welcome Email" from the customer's
+              detail page later (that issues a fresh one).
             </p>
           </div>
         ) : (

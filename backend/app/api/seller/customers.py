@@ -54,10 +54,27 @@ async def list_customers(
 @router.post("", response_model=CreateCustomerOut, status_code=status.HTTP_201_CREATED)
 async def create_customer(body: CreateCustomerRequest, request: Request, user: User = Depends(_create), db: AsyncSession = Depends(get_db)):
     try:
-        org, temp_password = await svc.create_customer(db, body=body, actor=user, ip_address=_client_ip(request))
+        org, temp_password, admin_email, email_result = await svc.create_customer(db, body=body, actor=user, ip_address=_client_ip(request))
     except svc.CustomerServiceError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
-    return CreateCustomerOut(id=org.id, name=org.name, slug=org.slug, temp_password=temp_password)
+    return CreateCustomerOut(
+        id=org.id, name=org.name, slug=org.slug, temp_password=temp_password, admin_email=admin_email,
+        email_delivered=email_result.delivered if email_result else None,
+        email_detail=email_result.detail if email_result else None,
+    )
+
+
+@router.post("/{customer_id}/resend-welcome-email", response_model=CreateCustomerOut)
+async def resend_welcome_email(customer_id: int, request: Request, user: User = Depends(_edit), db: AsyncSession = Depends(get_db)):
+    org = await _get_org_or_404(db, customer_id)
+    try:
+        admin_email, temp_password, email_result = await svc.resend_admin_welcome_email(db, org, user, _client_ip(request))
+    except svc.CustomerServiceError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    return CreateCustomerOut(
+        id=org.id, name=org.name, slug=org.slug, temp_password=temp_password, admin_email=admin_email,
+        email_delivered=email_result.delivered, email_detail=email_result.detail,
+    )
 
 
 @router.get("/{customer_id}", response_model=CustomerDetailOut)

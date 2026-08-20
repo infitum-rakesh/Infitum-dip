@@ -1,0 +1,78 @@
+.lin-page { display: flex; flex-direction: column; gap: 16px; padding: 20px; height: calc(100vh - 40px); box-sizing: border-box; }
+.lin-page.lin-fullscreen { padding: 0; height: 100vh; }
+
+.lin-header { display: flex; align-items: center; justify-content: space-between; }
+.lin-title { font-size: 20px; font-weight: 700; margin: 0; }
+.lin-subtitle { font-size: 13px; color: var(--text-secondary, #64748B); margin: 2px 0 0; }
+
+.lin-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border-color, #E2E8F0); flex-wrap: wrap; }
+.lin-tab-btn {
+  padding: 9px 14px; font-size: 13px; font-weight: 500; border: none; background: none; cursor: pointer;
+  color: var(--text-secondary, #64748B); border-bottom: 2px solid transparent; white-space: nowrap;
+}
+.lin-tab-btn.active { color: var(--primary, #4F46E5); border-bottom-color: var(--primary, #4F46E5); }
+.lin-tab-btn:hover:not(.active) { color: var(--text-primary, #1E293B); }
+
+.lin-card { background: var(--surface, #fff); border: 1px solid var(--border-color, #E2E8F0); border-radius: 10px; padding: 16px; }
+.lin-card-title { font-size: 14px; font-weight: 600; margin: 0 0 10px; }
+.lin-muted { color: var(--text-secondary, #64748B); font-size: 12px; }
+.lin-error-text { color: #DC2626; font-size: 12px; }
+
+.lin-kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.lin-kpi-card { background: var(--surface, #fff); border: 1px solid var(--border-color, #E2E8F0); border-radius: 10px; padding: 14px 16px; }
+.lin-kpi-label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-secondary, #64748B); display: block; }
+.lin-kpi-value { font-size: 24px; font-weight: 700; }
+
+.lin-select, .lin-input { font-size: 12px; padding: 6px 10px; border: 1px solid var(--border-color, #E2E8F0); border-radius: 6px; background: var(--surface, #fff); }
+.lin-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+
+.lin-pipeline-list { display: flex; flex-direction: column; gap: 4px; }
+.lin-pipeline-item {
+  display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-radius: 6px; cursor: pointer;
+  border: 1px solid transparent;
+}
+.lin-pipeline-item:hover { background: var(--bg-secondary, #F8FAFC); border-color: var(--border-color, #E2E8F0); }
+
+/* ── Graph ── */
+.lin-graph-shell { display: flex; flex: 1; min-height: 480px; border: 1px solid var(--border-color, #E2E8F0); border-radius: 10px; overflow: hidden; background: var(--surface, #fff); }
+.lin-graph-main { flex: 1; position: relative; overflow: hidden; background: repeating-linear-gradient(0deg, transparent, transparent 23px, rgba(100,116,139,0.06) 24px), repeating-linear-gradient(90deg, transparent, transparent 23px, rgba(100,116,139,0.06) 24px); cursor: grab; }
+.lin-graph-main:active { cursor: grabbing; }
+.lin-graph-toolbar { position: absolute; top: 10px; left: 10px; z-index: 5; display: flex; gap: 6px; background: var(--surface, #fff); border: 1px solid var(--border-color, #E2E8F0); border-radius: 8px; padding: 4px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+.lin-graph-toolbar button { border: none; background: none; cursor: pointer; padding: 6px; border-radius: 5px; display: flex; }
+.lin-graph-toolbar button:hover { background: var(--bg-secondary, #F1F5F9); }
+.lin-graph-search { position: absolute; top: 10px; right: 10px; z-index: 5; }
+.lin-graph-search input { width: 200px; }
+
+.lin-graph-canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+.lin-node {
+  position: absolute; width: 168px; border-radius: 8px; border: 1.5px solid var(--nc); background: var(--nb);
+  padding: 8px 10px; font-size: 11px; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.08); user-select: none;
+}
+.lin-node.selected { outline: 2px solid var(--primary, #4F46E5); outline-offset: 2px; }
+.lin-node.dim { opacity: 0.25; }
+.lin-node-head { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.lin-node-type { font-size: 9px; opacity: .65; text-transform: uppercase; letter-spacing: .03em; }
+.lin-node-sub { font-size: 10px; color: var(--text-secondary, #64748B); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lin-node-exec { margin-top: 4px; font-size: 9px; padding: 2px 5px; border-radius: 4px; display: inline-block; }
+.lin-node-exec.success { background: #ECFDF5; color: #10B981; }
+.lin-node-exec.error { background: #FEF2F2; color: #DC2626; }
+
+.lin-props-panel { width: 300px; border-left: 1px solid var(--border-color, #E2E8F0); padding: 16px; overflow-y: auto; flex-shrink: 0; }
+.lin-props-empty { color: var(--text-secondary, #64748B); font-size: 12px; text-align: center; margin-top: 40px; }
+.lin-props-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.lin-props-close { background: none; border: none; cursor: pointer; }
+.lin-field-row { margin-bottom: 10px; }
+.lin-field-label { font-size: 10px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-secondary, #64748B); display: block; margin-bottom: 2px; }
+.lin-field-value { font-size: 12px; word-break: break-word; }
+
+/* ── Column lineage table ── */
+.lin-col-table { width: 100%; font-size: 12px; }
+.lin-col-table th, .lin-col-table td { padding: 6px 8px; border-bottom: 1px solid var(--border-color, #E2E8F0); text-align: left; }
+.lin-expr { font-family: ui-monospace, monospace; font-size: 11px; background: var(--bg-secondary, #F8FAFC); padding: 2px 6px; border-radius: 4px; }
+.lin-mtype-chip { font-size: 10px; padding: 2px 7px; border-radius: 10px; background: #EEF2FF; color: #4F46E5; }
+
+.lin-search-results { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.lin-search-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border: 1px solid var(--border-color, #E2E8F0); border-radius: 8px; cursor: pointer; }
+.lin-search-row:hover { background: var(--bg-secondary, #F8FAFC); }
+
+.lin-warning-banner { background: #FFFBEB; border: 1px solid #FDE68A; color: #92400E; padding: 10px 12px; border-radius: 8px; font-size: 12px; margin-bottom: 12px; }

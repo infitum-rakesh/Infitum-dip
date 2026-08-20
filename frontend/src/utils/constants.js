@@ -167,6 +167,27 @@ export const USER_PERMISSIONS = {
 };
 
 /**
+ * Administration → Active Sessions — who's currently signed in (password
+ * or SSO) and seat usage against Organization.max_users. Mirrored
+ * server-side by /admin/sessions/* requiring the ADMIN action tier (see
+ * api/sessions.py) — both viewing and revoking need it, since seeing who
+ * holds a seat is itself sensitive.
+ */
+export const SESSION_PERMISSIONS = {
+  SESSION_VIEW:   { role: ROLES.ORG_ADMIN, action: ACTIONS.ADMIN },
+  SESSION_REVOKE: { role: ROLES.ORG_ADMIN, action: ACTIONS.ADMIN },
+};
+
+/**
+ * Settings -> Single Sign-On (SAML 2.0) tab. Mirrored server-side by
+ * /admin/sso/* requiring the ADMIN action tier (see api/sso_admin.py).
+ */
+export const SSO_PERMISSIONS = {
+  SSO_VIEW: { role: ROLES.ORG_ADMIN, action: ACTIONS.ADMIN },
+  SSO_EDIT: { role: ROLES.ORG_ADMIN, action: ACTIONS.ADMIN },
+};
+
+/**
  * Administration → Roles — centralized permission map. Same reasoning as
  * USER_PERMISSIONS: every entry carries `role: ROLES.ORG_ADMIN` so an
  * action check alone can't be satisfied by a lower tier that happens to

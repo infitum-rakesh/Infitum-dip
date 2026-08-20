@@ -23,11 +23,8 @@ it returns a deterministic "not yet supported" result — never a random
 simulated outcome.
 """
 import asyncio
-import base64
-import hashlib
 from datetime import datetime, timezone
 
-from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
@@ -35,11 +32,9 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.connectors.base import BaseConnector, ConnectorUnsupportedError, ConnectorValidationError, PreviewResult
 from app.connectors.database.pool_manager import evict as evict_pool
 from app.connectors.registry import get_connector, is_registered_connector
-from app.core.config import get_settings
+from app.core import crypto
 from app.models.connection import Connection, ConnectionStatus
 from app.models.user import User
-
-settings = get_settings()
 
 MASK = "••••••••"  # ••••••••
 
@@ -396,32 +391,18 @@ def secret_keys_for(connection_type: str) -> set[str]:
 
 
 # ── Encryption ─────────────────────────────────────────────────────
-# Fernet key is derived from the app's existing secret_key (sha256 -> base64)
-# rather than requiring a second secret to be provisioned. In production,
-# rotate via a dedicated CONNECTION_ENCRYPTION_KEY env var if the app secret
-# ever needs to change independently of stored credentials.
+# Delegates to app.core.crypto (shared Fernet-over-secret_key impl — see
+# that module's docstring; extracted from here so Seller SMTP credentials
+# can reuse the same encryption instead of a second copy).
 
-def _fernet() -> Fernet:
-    key = base64.urlsafe_b64encode(hashlib.sha256(settings.secret_key.encode()).digest())
-    return Fernet(key)
-
-
-def _encrypt(value: str) -> str:
-    return _fernet().encrypt(value.encode()).decode()
-
-
-def _decrypt(token: str) -> str | None:
-    try:
-        return _fernet().decrypt(token.encode()).decode()
-    except (InvalidToken, ValueError):
-        return None
+_encrypt = crypto.encrypt_secret
 
 
 def decrypt_secret(conn: Connection, field_key: str) -> str | None:
     """The ONLY way to recover a plaintext secret — used solely by
     test_connection(); never exposed through an API response."""
     token = (conn.encrypted_secrets or {}).get(field_key)
-    return _decrypt(token) if token else None
+    return crypto.decrypt_secret(token) if token else None
 
 
 def _split_config(connection_type: str, raw_config: dict) -> tuple[dict, dict]:

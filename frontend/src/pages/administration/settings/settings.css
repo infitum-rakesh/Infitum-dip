@@ -78,6 +78,30 @@
 .stg-save-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .stg-readonly-note { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-faint); justify-content: flex-end; }
 
+/* ── SSO — SP info (read-only, IdP admin needs these values) ─── */
+.stg-sp-info { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.stg-sp-row { display: flex; align-items: center; gap: 10px; }
+.stg-sp-label { font-size: 11px; font-weight: 600; color: var(--text-muted); width: 110px; flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.3px; }
+.stg-sp-value {
+  flex: 1; font-family: var(--font-mono, monospace); font-size: 12px; color: var(--text-primary);
+  background: var(--bg-body); border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 6px 10px; overflow-x: auto; white-space: nowrap;
+}
+.stg-sp-copy-btn {
+  flex-shrink: 0; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--text-muted); transition: var(--transition);
+}
+.stg-sp-copy-btn:hover { color: var(--color-primary); border-color: var(--color-primary); }
+.stg-textarea {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: 12px; font-family: var(--font-mono, monospace); background: white; outline: none;
+  transition: var(--transition); resize: vertical; min-height: 90px;
+}
+.stg-textarea:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+.stg-cert-status { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; margin-bottom: 6px; }
+.stg-cert-status.set     { color: var(--color-success-dark); }
+.stg-cert-status.not-set { color: var(--text-faint); }
+
 @media (max-width: 640px) {
   .stg-grid { grid-template-columns: 1fr; }
 }

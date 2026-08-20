@@ -108,6 +108,13 @@ export function AuthProvider({ children }) {
     setOrg(sessionData.organization);
   }, [user, organization]);
 
+  // Real SAML SSO (SS5) — the /sso/callback page exchanges its one-time
+  // handoff code for a normal TokenResponse (see authApi.ssoExchange) and
+  // hands it here; this is a genuine new sign-in, not impersonation, so it
+  // just calls the same _setSession() login()/register() use rather than
+  // impersonate()'s stash-and-swap.
+  const completeSsoLogin = useCallback((data) => { _setSession(data); }, [_setSession]);
+
   const isImpersonating = !!_load(STORAGE_KEYS.IMPERSONATION_ORIGINAL);
 
   const exitImpersonation = useCallback(() => {
@@ -132,6 +139,7 @@ export function AuthProvider({ children }) {
     register,
     logout,
     impersonate,
+    completeSsoLogin,
     exitImpersonation,
     isImpersonating,
     isAuthenticated: !!user,

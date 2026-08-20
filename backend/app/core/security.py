@@ -27,8 +27,8 @@ def create_access_token(subject: str, extra: dict[str, Any] | None = None) -> st
     return _create_token(data, timedelta(minutes=settings.access_token_expire_minutes))
 
 
-def create_refresh_token(subject: str) -> str:
-    data = {"sub": subject, "type": "refresh"}
+def create_refresh_token(subject: str, extra: dict[str, Any] | None = None) -> str:
+    data = {"sub": subject, "type": "refresh", **(extra or {})}
     return _create_token(data, timedelta(days=settings.refresh_token_expire_days))
 
 

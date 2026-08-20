@@ -1,5 +1,6 @@
 """Auth router — /api/auth/..."""
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.connection import get_db
@@ -21,10 +22,17 @@ from app.services.auth_service import (
     refresh_access_token,
     register_user,
 )
+from app.services import session_service
+from app.services.session_service import SeatLimitError
 from app.core.security import decode_token
 from jose import JWTError
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# Same tokenUrl as core/deps.oauth2_scheme; kept separate here so this
+# module doesn't have to import the full deps.get_current_user chain just
+# to read an optional bearer token for /logout.
+_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 
 def _http_401(detail: str) -> HTTPException:
@@ -33,6 +41,10 @@ def _http_401(detail: str) -> HTTPException:
 
 def _http_400(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+
+def _http_403(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -44,7 +56,10 @@ async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends
     except AuthError as exc:
         raise _http_401(str(exc))
 
-    tokens = issue_tokens(user)
+    try:
+        tokens = await issue_tokens(db, user, ip_address=ip_address, user_agent=user_agent)
+    except SeatLimitError as exc:
+        raise _http_403(str(exc))
     org = await get_org_by_id(db, user.organization_id) if user.organization_id else None
     return TokenResponse(
         **tokens,
@@ -54,13 +69,17 @@ async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
+async def register(body: RegisterRequest, request: Request, db: AsyncSession = Depends(get_db)):
     try:
         user, org = await register_user(db, body)
     except AuthError as exc:
         raise _http_400(str(exc))
 
-    tokens = issue_tokens(user)
+    ip_address = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    # Brand-new org/user — never exceeds a fresh org's max_users, but goes
+    # through the same real session-creation path as every other login.
+    tokens = await issue_tokens(db, user, ip_address=ip_address, user_agent=user_agent)
     return TokenResponse(
         **tokens,
         user=UserOut.model_validate(user),
@@ -95,8 +114,23 @@ async def forgot_password(body: ForgotPasswordRequest):
 
 
 @router.post("/logout", response_model=MessageResponse)
-async def logout():
-    # Token invalidation handled client-side; server-side blacklist can be added later
+async def logout(token: str | None = Depends(_oauth2_scheme), db: AsyncSession = Depends(get_db)):
+    """
+    Real server-side logout: revokes the UserSession tied to this access
+    token's `sid` claim, which immediately frees the seat it was holding
+    (see services/session_service.revoke_session). Tolerant of missing/
+    stale/pre-TT tokens (no sid claim, already revoked, already expired) —
+    logout always reports success since the client is discarding its
+    tokens either way; there's nothing the caller needs to retry.
+    """
+    if token:
+        try:
+            payload = decode_token(token)
+            sid = payload.get("sid")
+            if sid:
+                await session_service.revoke_session(db, sid)
+        except JWTError:
+            pass
     return MessageResponse(message="Logged out successfully.")
 
 

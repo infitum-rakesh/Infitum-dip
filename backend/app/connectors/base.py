@@ -112,6 +112,16 @@ class ColumnInfo:
     # see connectors/database/base.py's get_columns()); None otherwise.
     # Used by the SQL Workspace database explorer's relationship view.
     foreign_key: dict | None = None
+    # Real max character length for a string-ish column, when the source
+    # actually knows it — the reflected SQLAlchemy String/VARCHAR type's own
+    # .length (database/base.py) or Salesforce field describe()'s own real
+    # "length" (application/salesforce.py). None for non-string columns, or
+    # for a string type with no fixed length (e.g. Postgres TEXT). Used by
+    # loading/writers/base.py's ensure_table_from_columns() to create a
+    # properly-sized VARCHAR2/VARCHAR target column instead of a blanket
+    # CLOB/TEXT for every string field — the difference matters enormously
+    # at large-row-count bulk-insert scale (see JJ1).
+    max_length: int | None = None
 
 
 @dataclass
@@ -171,6 +181,15 @@ class SqlStream(abc.ABC):
     """A single open, bounded-memory streaming cursor over a custom SELECT
     — see open_sql_stream(). Callers MUST call close() when done (or on
     error) to release the underlying connection back to the pool."""
+
+    @property
+    @abc.abstractmethod
+    def columns(self) -> list[str]:
+        """Column names, known as soon as the stream is opened — lets a
+        caller build a correctly-headered empty result (e.g. an empty
+        pandas DataFrame) even when the query matches zero rows, without
+        needing a first fetch_chunk() call to find out."""
+        raise NotImplementedError
 
     @abc.abstractmethod
     def fetch_chunk(self, size: int) -> list[dict]:

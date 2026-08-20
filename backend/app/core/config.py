@@ -18,6 +18,24 @@ class Settings(BaseSettings):
 
     allowed_origins: str = "http://localhost:5173,http://localhost:3000"
 
+    # Where the frontend actually lives — used to build real links inside
+    # outbound emails (Seller-created-customer welcome email; later SSO
+    # ACS/metadata URLs). Override via env in any real deployment.
+    frontend_base_url: str = "http://localhost:5173"
+
+    # Where the backend's /api/* routes are externally reachable from —
+    # used to build the SAML SP entity ID / ACS / metadata URLs an IdP
+    # admin configures (services/saml_service.py). Defaults to
+    # frontend_base_url because the dev Vite server proxies /api to this
+    # backend, making them the same effective origin; in a real deployment
+    # behind a reverse proxy they're typically still the same origin, but
+    # override independently if /api is ever split to its own host.
+    backend_public_base_url: str = ""
+
+    @property
+    def api_public_base_url(self) -> str:
+        return self.backend_public_base_url or self.frontend_base_url
+
     first_superadmin_email: str = "admin@dip.local"
     first_superadmin_password: str = "Admin@1234!"
 

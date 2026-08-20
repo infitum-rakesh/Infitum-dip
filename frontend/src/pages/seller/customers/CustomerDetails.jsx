@@ -8,6 +8,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowLeft, Pencil, Power, PowerOff, ShieldAlert, Building2, Users as UsersIcon,
   CreditCard, Puzzle, Gauge, Receipt, Activity as ActivityIcon, ScrollText,
+  Mail, Copy, Check, CheckCircle2, XCircle,
 } from 'lucide-react';
 import { Button, StatusBadge, EmptyState, PermissionGate, FullPageSpinner, Modal } from '@/components/common/index.js';
 import { SELLER_PERMISSIONS } from '@/utils/constants.js';
@@ -42,6 +43,9 @@ export default function CustomerDetails() {
   const [tab, setTab] = useState('overview');
   const [impersonateOpen, setImpersonateOpen] = useState(false);
   const [impersonating, setImpersonating] = useState(false);
+  const [resendResult, setResendResult] = useState(null);
+  const [resending, setResending] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -56,6 +60,22 @@ export default function CustomerDetails() {
     if (!window.confirm(`Suspend "${detail.name}"? Their users will lose access immediately.`)) return;
     await customerApi.suspend(customerId); load();
   };
+  const runResendWelcome = async () => {
+    if (!window.confirm(`Reset the password for ${detail.name}'s Admin and email them a new one?`)) return;
+    setResending(true);
+    try {
+      const result = await customerApi.resendWelcomeEmail(customerId);
+      setResendResult(result);
+    } catch (err) {
+      window.alert(err?.message ?? 'Could not resend welcome email.');
+    } finally {
+      setResending(false);
+    }
+  };
+  const copyResendPassword = () => {
+    navigator.clipboard?.writeText(resendResult.temp_password).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
+  };
+
   const confirmImpersonate = async () => {
     setImpersonating(true);
     try {
@@ -100,6 +120,7 @@ export default function CustomerDetails() {
             {suspended
               ? <Button variant="secondary" size="sm" icon={<Power size={13} />} onClick={runActivate}>Activate</Button>
               : <Button variant="secondary" size="sm" icon={<PowerOff size={13} />} onClick={runSuspend}>Suspend</Button>}
+            <Button variant="secondary" size="sm" icon={<Mail size={13} />} loading={resending} onClick={runResendWelcome}>Resend Welcome Email</Button>
             <Button variant="secondary" size="sm" icon={<ShieldAlert size={13} />} onClick={() => setImpersonateOpen(true)}>Impersonate</Button>
           </div>
         </div>
@@ -145,6 +166,30 @@ export default function CustomerDetails() {
             a timestamp.
           </span>
         </div>
+      </Modal>
+
+      <Modal
+        open={!!resendResult}
+        onClose={() => setResendResult(null)}
+        title="Welcome Email Resent"
+        size="sm"
+        footer={<Button variant="primary" onClick={() => setResendResult(null)}>Done</Button>}
+      >
+        {resendResult && (
+          <div className="sc-credential-box">
+            <div className="sc-credential-label">New temporary password for {resendResult.admin_email}</div>
+            <div className="sc-credential-row">
+              <span className="sc-credential-value">{resendResult.temp_password}</span>
+              <Button variant="ghost" size="sm" icon={copied ? <Check size={13} /> : <Copy size={13} />} onClick={copyResendPassword}>
+                {copied ? 'Copied' : 'Copy'}
+              </Button>
+            </div>
+            <p className="sc-credential-note" style={{ display: 'flex', alignItems: 'center', gap: 6, color: resendResult.email_delivered ? 'var(--success, #10B981)' : 'var(--danger, #DC2626)' }}>
+              {resendResult.email_delivered ? <CheckCircle2 size={13} /> : <XCircle size={13} />} {resendResult.email_delivered ? 'Emailed successfully.' : resendResult.email_detail}
+            </p>
+            <p className="sc-credential-note">Their old password no longer works — this won't be shown again.</p>
+          </div>
+        )}
       </Modal>
     </PermissionGate>
   );

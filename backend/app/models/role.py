@@ -52,8 +52,8 @@ class PermissionAction(str, enum.Enum):
 PERMISSION_CATEGORIES = [
     "Dashboard", "Data Catalog", "Connections", "Documents", "Document Intelligence",
     "Review Queue", "Transformation", "Validation", "Reconciliation", "Pipeline",
-    "SQL Workspace", "Schedules", "Incidents", "Users", "Roles", "Licenses",
-    "Audit Logs", "Settings",
+    "SQL Workspace", "Schedules", "Incidents", "Monitoring", "Lineage", "Users",
+    "Roles", "Licenses", "Audit Logs", "Settings",
 ]
 
 

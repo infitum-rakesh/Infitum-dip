@@ -1,0 +1,59 @@
+/**
+ * Monitoring API service — wraps /api/monitoring/*. Real data throughout:
+ * pipeline runs, job detail, data quality, performance and system health
+ * are all read live off the existing execution tables (see backend
+ * app/monitoring/service.py) — nothing here is mocked.
+ */
+import apiClient from './apiClient.js';
+
+export const monitoringApi = {
+  getOverview: (days = 7) => apiClient.get('/monitoring/overview', { params: { days } }).then((r) => r.data),
+
+  listPipelineRuns: (params = {}) => apiClient.get('/monitoring/pipeline-runs', { params }).then((r) => r.data),
+
+  listScheduleRuns: (params = {}) => apiClient.get('/monitoring/schedule-runs', { params }).then((r) => r.data),
+
+  getJobRun: (jobId) => apiClient.get(`/monitoring/job-runs/${jobId}`).then((r) => r.data),
+
+  getDataQuality: (params = {}) => apiClient.get('/monitoring/data-quality', { params }).then((r) => r.data),
+
+  getPerformance: (days = 7) => apiClient.get('/monitoring/performance', { params: { days } }).then((r) => r.data),
+
+  getSystemHealth: () => apiClient.get('/monitoring/system-health').then((r) => r.data),
+
+  // ── SLA Definitions ──
+  listSla: () => apiClient.get('/monitoring/sla').then((r) => r.data.items),
+  createSla: (body) => apiClient.post('/monitoring/sla', body).then((r) => r.data),
+  updateSla: (id, body) => apiClient.put(`/monitoring/sla/${id}`, body).then((r) => r.data),
+  deleteSla: (id) => apiClient.delete(`/monitoring/sla/${id}`),
+
+  // ── Alert Rules ──
+  listAlertRules: () => apiClient.get('/monitoring/alert-rules').then((r) => r.data.items),
+  getAvailableChannels: () => apiClient.get('/monitoring/alert-rules/channels').then((r) => r.data.types),
+  createAlertRule: (body) => apiClient.post('/monitoring/alert-rules', body).then((r) => r.data),
+  updateAlertRule: (id, body) => apiClient.put(`/monitoring/alert-rules/${id}`, body).then((r) => r.data),
+  deleteAlertRule: (id) => apiClient.delete(`/monitoring/alert-rules/${id}`),
+
+  // ── Alert Events (fired alerts / incidents feed) ──
+  listAlertEvents: (params = {}) => apiClient.get('/monitoring/alert-events', { params }).then((r) => r.data),
+  acknowledgeAlertEvent: (id) => apiClient.post(`/monitoring/alert-events/${id}/acknowledge`).then((r) => r.data),
+  resolveAlertEvent: (id) => apiClient.post(`/monitoring/alert-events/${id}/resolve`).then((r) => r.data),
+};
+
+export const ALERT_CONDITIONS = [
+  { value: 'JOB_FAILED', label: 'Pipeline job failed' },
+  { value: 'SLA_BREACHED', label: 'SLA breached' },
+  { value: 'SLA_WARNING', label: 'SLA warning' },
+  { value: 'REJECT_RATE_ABOVE', label: 'Reject rate above threshold (%)' },
+  { value: 'DURATION_ABOVE_MINUTES', label: 'Duration above threshold (minutes)' },
+  { value: 'VALIDATION_FAILED', label: 'Validation run failed' },
+  { value: 'RECONCILIATION_MISMATCH', label: 'Reconciliation mismatch' },
+  { value: 'CONSECUTIVE_FAILURES', label: 'Consecutive failures ≥ threshold' },
+];
+
+export const SLA_STATUS_META = {
+  MET: { label: 'Met', variant: 'success' },
+  WARNING: { label: 'Warning', variant: 'warning' },
+  BREACHED: { label: 'Breached', variant: 'danger' },
+  NOT_EVALUATED: { label: 'Not evaluated', variant: 'gray' },
+};
