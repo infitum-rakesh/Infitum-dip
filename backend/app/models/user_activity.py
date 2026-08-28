@@ -11,7 +11,7 @@ from datetime import datetime
 from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import PlatformBase
 
 
 class UserActivityType(str, enum.Enum):
@@ -26,7 +26,7 @@ class UserActivityType(str, enum.Enum):
     DELETED = "DELETED"
 
 
-class UserActivityLog(Base):
+class UserActivityLog(PlatformBase):
     __tablename__ = "user_activity_log"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)

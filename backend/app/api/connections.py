@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors.base import ConnectorError, ConnectorUnsupportedError, ConnectorValidationError
 from app.core.deps import ROLE_ACTIONS, require_action
-from app.database.connection import get_db
+from app.database.tenant_routing import get_tenant_db
 from app.models.user import User, UserRole
 from app.schemas.connections import (
     ApiPreviewRequest,
@@ -81,7 +81,7 @@ def _require_secret_permission(user: User, connection_type: str, raw_config: dic
 # /types would otherwise be captured as a connection_id and 422.
 
 @router.get("/stats", response_model=ConnectionStatsOut)
-async def stats(user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def stats(user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     return await svc.get_stats(db, _effective_org_id(user))
 
 
@@ -105,7 +105,7 @@ async def list_connections(
     sort_by: str = Query("created_at"),
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
     user: User = Depends(_view),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     conns, total, name_map = await svc.list_connections(
         db, organization_id=_effective_org_id(user), search=q, category=category,
@@ -117,7 +117,7 @@ async def list_connections(
 
 
 @router.get("/{connection_id}", response_model=ConnectionOut)
-async def get_connection(connection_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_connection(connection_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     conn = await _get_or_404(db, connection_id, user)
     name_map = await svc.owner_name_map(db, {conn.owner_id} if conn.owner_id else set())
     return svc.to_out(conn, name_map.get(conn.owner_id))
@@ -129,7 +129,7 @@ async def get_connection(connection_id: int, user: User = Depends(_view), db: As
 async def create_connection(
     body: ConnectionCreateRequest,
     user: User = Depends(_create),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     try:
         conn = await svc.create_connection(
@@ -147,7 +147,7 @@ async def update_connection(
     connection_id: int,
     body: ConnectionUpdateRequest,
     user: User = Depends(_edit),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     conn = await _get_or_404(db, connection_id, user)
     if body.config:
@@ -158,7 +158,7 @@ async def update_connection(
 
 
 @router.delete("/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_connection(connection_id: int, user: User = Depends(_delete), db: AsyncSession = Depends(get_db)):
+async def delete_connection(connection_id: int, user: User = Depends(_delete), db: AsyncSession = Depends(get_tenant_db)):
     conn = await _get_or_404(db, connection_id, user)
     await svc.delete_connection(db, conn)
 
@@ -166,14 +166,14 @@ async def delete_connection(connection_id: int, user: User = Depends(_delete), d
 # ── Actions ───────────────────────────────────────────────────────
 
 @router.post("/{connection_id}/test", response_model=TestConnectionResult)
-async def test_connection(connection_id: int, user: User = Depends(_execute), db: AsyncSession = Depends(get_db)):
+async def test_connection(connection_id: int, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
     conn = await _get_or_404(db, connection_id, user)
     result = await svc.test_connection(db, conn)
     return TestConnectionResult(**result)
 
 
 @router.post("/{connection_id}/disable", response_model=ConnectionOut)
-async def disable_connection(connection_id: int, user: User = Depends(_edit), db: AsyncSession = Depends(get_db)):
+async def disable_connection(connection_id: int, user: User = Depends(_edit), db: AsyncSession = Depends(get_tenant_db)):
     conn = await _get_or_404(db, connection_id, user)
     conn = await svc.toggle_disabled(db, conn)
     name_map = await svc.owner_name_map(db, {conn.owner_id} if conn.owner_id else set())
@@ -181,7 +181,7 @@ async def disable_connection(connection_id: int, user: User = Depends(_edit), db
 
 
 @router.post("/{connection_id}/clone", response_model=ConnectionOut, status_code=status.HTTP_201_CREATED)
-async def clone_connection(connection_id: int, user: User = Depends(_create), db: AsyncSession = Depends(get_db)):
+async def clone_connection(connection_id: int, user: User = Depends(_create), db: AsyncSession = Depends(get_tenant_db)):
     conn = await _get_or_404(db, connection_id, user)
     clone = await svc.clone_connection(db, conn, user.id)
     return svc.to_out(clone, user.full_name)
@@ -192,7 +192,7 @@ async def clone_connection(connection_id: int, user: User = Depends(_create), db
 # stored Connection metadata), so gated the same as Test Connection.
 
 @router.get("/{connection_id}/schemas", response_model=SchemaListOut)
-async def get_schemas(connection_id: int, user: User = Depends(_execute), db: AsyncSession = Depends(get_db)):
+async def get_schemas(connection_id: int, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
     conn = await _get_or_404(db, connection_id, user)
     try:
         schemas = await svc.list_schemas(conn)
@@ -209,7 +209,7 @@ async def get_objects(
     schema: str | None = Query(None),
     q: str | None = Query(None, description="Search object names"),
     user: User = Depends(_execute),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     conn = await _get_or_404(db, connection_id, user)
     try:
@@ -228,7 +228,7 @@ async def get_columns(
     schema: str | None = Query(None),
     include_row_count: bool = Query(False, description="Runs a COUNT(*) — off by default, can be slow on large tables"),
     user: User = Depends(_execute),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     conn = await _get_or_404(db, connection_id, user)
     try:
@@ -248,7 +248,7 @@ async def preview_connection_data(
     connection_id: int,
     body: PreviewRequest,
     user: User = Depends(_execute),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     conn = await _get_or_404(db, connection_id, user)
     try:
@@ -268,7 +268,7 @@ async def preview_api_connection_data(
     connection_id: int,
     body: ApiPreviewRequest,
     user: User = Depends(_execute),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     """Real preview for an API-category (REST) Source Dataset node — see
     services/connection_service.py's preview_api()."""

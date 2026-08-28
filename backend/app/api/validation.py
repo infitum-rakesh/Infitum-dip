@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_action
-from app.database.connection import get_db
+from app.database.tenant_routing import get_tenant_db
 from app.models.user import User, UserRole
 from app.schemas.validation import (
     FailedRecordsOut,
@@ -54,18 +54,19 @@ async def _get_rule_set_or_404(db: AsyncSession, rule_set_id: int, user: User):
 # ── Rule set CRUD ────────────────────────────────────────────────
 
 @router.get("/rulesets", response_model=RuleSetListOut)
-async def list_rule_sets(user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def list_rule_sets(user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     rows, total = await svc.list_rule_sets(db, _effective_org_id(user))
     items = [await _to_out(db, r) for r in rows]
     return RuleSetListOut(items=items, total=total)
 
 
 @router.post("/rulesets", response_model=RuleSetOut, status_code=status.HTTP_201_CREATED)
-async def create_rule_set(body: RuleSetCreateRequest, user: User = Depends(_create), db: AsyncSession = Depends(get_db)):
+async def create_rule_set(body: RuleSetCreateRequest, user: User = Depends(_create), db: AsyncSession = Depends(get_tenant_db)):
     try:
         row = await svc.create_rule_set(
             db, organization_id=user.organization_id, name=body.name, connection_id=body.connection_id,
-            schema_name=body.schema_name, object_name=body.object_name, rules=body.rules, created_by=user.id,
+            schema_name=body.schema_name, object_name=body.object_name, uploaded_file_id=body.uploaded_file_id,
+            rules=body.rules, created_by=user.id,
         )
     except svc.ValidationServiceError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
@@ -73,20 +74,23 @@ async def create_rule_set(body: RuleSetCreateRequest, user: User = Depends(_crea
 
 
 @router.get("/rulesets/{rule_set_id}", response_model=RuleSetOut)
-async def get_rule_set(rule_set_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_rule_set(rule_set_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     row = await _get_rule_set_or_404(db, rule_set_id, user)
     return await _to_out(db, row)
 
 
 @router.put("/rulesets/{rule_set_id}", response_model=RuleSetOut)
-async def update_rule_set(rule_set_id: int, body: RuleSetUpdateRequest, user: User = Depends(_edit), db: AsyncSession = Depends(get_db)):
+async def update_rule_set(rule_set_id: int, body: RuleSetUpdateRequest, user: User = Depends(_edit), db: AsyncSession = Depends(get_tenant_db)):
     row = await _get_rule_set_or_404(db, rule_set_id, user)
-    row = await svc.update_rule_set(db, row, name=body.name, rules=body.rules, updated_by=user.id)
+    try:
+        row = await svc.update_rule_set(db, row, name=body.name, rules=body.rules, updated_by=user.id)
+    except svc.ValidationServiceError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
     return await _to_out(db, row)
 
 
 @router.delete("/rulesets/{rule_set_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_rule_set(rule_set_id: int, user: User = Depends(_delete), db: AsyncSession = Depends(get_db)):
+async def delete_rule_set(rule_set_id: int, user: User = Depends(_delete), db: AsyncSession = Depends(get_tenant_db)):
     row = await _get_rule_set_or_404(db, rule_set_id, user)
     await svc.delete_rule_set(db, row)
 
@@ -94,7 +98,7 @@ async def delete_rule_set(rule_set_id: int, user: User = Depends(_delete), db: A
 # ── Run ──────────────────────────────────────────────────────────
 
 @router.post("/rulesets/{rule_set_id}/run", response_model=ValidationRunOut, status_code=status.HTTP_201_CREATED)
-async def run_rule_set(rule_set_id: int, user: User = Depends(_execute), db: AsyncSession = Depends(get_db)):
+async def run_rule_set(rule_set_id: int, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
     rule_set = await _get_rule_set_or_404(db, rule_set_id, user)
     if not rule_set.rules:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This rule set has no rules to run — add at least one first.")
@@ -109,7 +113,7 @@ async def run_rule_set(rule_set_id: int, user: User = Depends(_execute), db: Asy
 
 
 @router.get("/rulesets/{rule_set_id}/runs", response_model=list[ValidationRunOut])
-async def list_runs(rule_set_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def list_runs(rule_set_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     runs, _ = await svc.list_runs(db, rule_set_id, _effective_org_id(user))
     out = []
     for run in runs:
@@ -128,7 +132,7 @@ async def _get_run_or_404(db: AsyncSession, run_id: int, user: User):
 
 
 @router.get("/runs/{run_id}", response_model=ValidationRunOut)
-async def get_run(run_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_run(run_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     run = await _get_run_or_404(db, run_id, user)
     results = await svc.list_results(db, run.id)
     out = ValidationRunOut.model_validate(run, from_attributes=True).model_dump()
@@ -139,7 +143,7 @@ async def get_run(run_id: int, user: User = Depends(_view), db: AsyncSession = D
 @router.get("/runs/{run_id}/rules/{rule_id}/failed-records", response_model=FailedRecordsOut)
 async def get_failed_records(
     run_id: int, rule_id: str, limit: int = 50,
-    user: User = Depends(_view), db: AsyncSession = Depends(get_db),
+    user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db),
 ):
     run = await _get_run_or_404(db, run_id, user)
     results = await svc.list_results(db, run.id)

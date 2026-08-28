@@ -18,7 +18,7 @@ from datetime import datetime
 from sqlalchemy import String, DateTime, JSON, Boolean, Float, ForeignKey, Enum, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import PlatformBase
 
 
 class BillingCycle(str, enum.Enum):
@@ -27,7 +27,7 @@ class BillingCycle(str, enum.Enum):
     CUSTOM = "CUSTOM"
 
 
-class Plan(Base):
+class Plan(PlatformBase):
     __tablename__ = "plans"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)

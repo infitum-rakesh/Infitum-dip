@@ -441,7 +441,16 @@ class SqlAlchemyDatabaseConnector(BaseConnector):
         dict_rows = [dict(zip(columns, r)) for r in rows]
         return ChunkResult(rows=dict_rows, last_key=rows[-1][key_idx], count=len(rows))
 
-    def open_sql_stream(self, sql: str, parameters: dict) -> SqlStream:
+    def build_select_all_sql(self, object_name: str, schema: str | None = None) -> str:
+        return f"SELECT * FROM {self.quote_object(object_name, schema)}"
+
+    def open_sql_stream(self, sql: str, parameters: dict, *, extraction_mode: str | None = None) -> SqlStream:
+        # extraction_mode (BULK/AUTO/ROW_BY_ROW) is a Salesforce-only
+        # concept (see SalesforceConnector.open_sql_stream) — every SQL
+        # dialect connector already streams a real server-side cursor via
+        # SQLAlchemy regardless of this setting, so it's accepted for
+        # interface compatibility with the generic caller in
+        # pipeline_job_executor.py and simply ignored here.
         stripped = (sql or "").strip()
         if not stripped:
             raise ConnectorValidationError("SQL text is empty.")

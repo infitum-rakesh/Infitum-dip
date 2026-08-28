@@ -45,6 +45,8 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database.connection import AsyncSessionLocal
+
 from app.connectors.base import ConnectorError
 from app.models.connection import Connection, ConnectionCategory, ConnectionStatus
 from app.models.document import Document, DocumentStatus
@@ -205,8 +207,9 @@ async def _list_unstructured_assets(db: AsyncSession, organization_id: int | Non
 async def _user_name_map(db: AsyncSession, ids: set[int]) -> dict[int, str]:
     if not ids:
         return {}
-    result = await db.execute(select(User.id, User.full_name).where(User.id.in_(ids)))
-    return {row.id: row.full_name for row in result.all()}
+    async with AsyncSessionLocal() as platform_db:  # User is a PlatformBase model — never the tenant-routed `db`
+        result = await platform_db.execute(select(User.id, User.full_name).where(User.id.in_(ids)))
+        return {row.id: row.full_name for row in result.all()}
 
 
 async def _all_assets(db: AsyncSession, organization_id: int | None) -> tuple[list[dict], bool]:

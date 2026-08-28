@@ -102,6 +102,16 @@
 .stg-cert-status.set     { color: var(--color-success-dark); }
 .stg-cert-status.not-set { color: var(--text-faint); }
 
+/* Migration History table (TenantDatabaseTab.jsx) — lightweight, no
+   pagination/sorting needed for a per-org history list. */
+.stg-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm, 12px); }
+.stg-table th {
+  text-align: left; padding: 6px 10px; color: var(--text-muted); font-weight: 600;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px; border-bottom: 1px solid var(--border);
+}
+.stg-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.stg-table tr:last-child td { border-bottom: none; }
+
 @media (max-width: 640px) {
   .stg-grid { grid-template-columns: 1fr; }
 }

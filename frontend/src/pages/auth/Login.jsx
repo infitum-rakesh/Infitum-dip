@@ -137,13 +137,6 @@ export default function Login() {
         {ssoMode ? <><ArrowLeft size={14} /> Back to email &amp; password</> : <><Fingerprint size={14} /> Sign in with SSO</>}
       </button>
 
-      {/* Quick dev login hint */}
-      {import.meta.env.DEV && !ssoMode && (
-        <div className="auth-alert" style={{ marginTop: 12, background: '#F0FDF4', border: '1px solid #BBF7D0', color: '#166534', fontSize: 'var(--fs-xs)' }}>
-          Dev: admin@dip.local / Admin@1234!
-        </div>
-      )}
-
       <p className="auth-footer-link">
         Don't have an account?{' '}
         <Link to="/register">Start free trial</Link>

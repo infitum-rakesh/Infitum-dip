@@ -18,18 +18,22 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   Building2, Database, FileScan, Sparkles, Bell, ShieldCheck, ScrollText,
   Workflow, Save, Plus, X, Lock, RefreshCcw, Fingerprint, Copy, Check,
-  CheckCircle2, ExternalLink,
+  CheckCircle2, ExternalLink, Server,
 } from 'lucide-react';
 import { Button, PermissionGate, FullPageSpinner, EmptyState } from '@/components/common/index.js';
-import { SETTINGS_PERMISSIONS, SSO_PERMISSIONS } from '@/utils/constants.js';
+import { SETTINGS_PERMISSIONS, SSO_PERMISSIONS, DATABASE_PERMISSIONS } from '@/utils/constants.js';
 import { formatDateTime } from '@/utils/formatters.js';
 import { settingsApi } from '@/services/api/settingsApi.js';
 import { ssoApi } from '@/services/api/ssoApi.js';
+import { tenantDatabaseApi } from '@/services/api/tenantDatabaseApi.js';
+import { tenantMigrationApi } from '@/services/api/tenantMigrationApi.js';
+import { TenantDatabaseTab } from '@/components/settings/TenantDatabaseTab.jsx';
 import './settings.css';
 
 const TABS = [
   { id: 'general', label: 'General', icon: Building2 },
   { id: 'data', label: 'Data', icon: Database },
+  { id: 'database', label: 'Database', icon: Server },
   { id: 'document_intelligence', label: 'Document Intelligence', icon: FileScan },
   { id: 'ai', label: 'AI', icon: Sparkles },
   { id: 'notifications', label: 'Notifications', icon: Bell },
@@ -122,6 +126,7 @@ export default function Settings() {
 
         {tab === 'general' && <GeneralTab settings={settings} onSave={save} />}
         {tab === 'data' && <DataTab settings={settings} onSave={save} />}
+        {tab === 'database' && <TenantDatabaseTab api={tenantDatabaseApi} migrationApi={tenantMigrationApi} editPermission={DATABASE_PERMISSIONS.DATABASE_EDIT} />}
         {tab === 'document_intelligence' && <DocumentIntelligenceTab settings={settings} onSave={save} />}
         {tab === 'ai' && <AITab settings={settings} onSave={save} />}
         {tab === 'notifications' && <NotificationsTab settings={settings} onSave={save} />}

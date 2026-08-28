@@ -35,14 +35,14 @@ from datetime import datetime
 from sqlalchemy import DateTime, ForeignKey, JSON, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import TenantBase
 
 
-class ColumnMapping(Base):
+class ColumnMapping(TenantBase):
     __tablename__ = "column_mappings"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
 
@@ -58,8 +58,8 @@ class ColumnMapping(Base):
 
     status: Mapped[str] = mapped_column(String(20), default="DRAFT")  # DRAFT | VALIDATED | WARNING | CONFLICT — last validate() outcome
 
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
-    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(nullable=True)
+    updated_by: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

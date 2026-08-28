@@ -26,11 +26,21 @@ import re
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors.base import ConnectorError
+from app.extraction import custom_engine
 from app.models.document import Document
 from app.services import document_taxonomies
 from app.services.connection_service import build_connector, get_connection
 
 OCR_TEXT_CAP = 8000  # characters of OCR text sent per call — bounds prompt size/cost
+
+# Sentinel passed as connection_id to mean "use the Custom Extraction
+# Engine (custom_engine.py) instead of a real AI Provider connection" —
+# safe because Connection primary keys are DB autoincrement starting at
+# 1, so 0 can never collide with a real connection. Lets every caller
+# that already threads a connection_id through (API schemas, the manual
+# "Run AI Extraction" picker, the Document Intelligence wizard) route to
+# the Custom Engine with no schema/type changes anywhere.
+CUSTOM_ENGINE_CONNECTION_ID = 0
 
 
 class ExtractionError(Exception):
@@ -263,7 +273,16 @@ async def detect_schema(
     still does the real per-field work of checking the actual OCR text —
     this only changes WHAT it's asked to look for, from an LLM's one-shot
     guess to a comprehensive, consistent candidate list. document_type=None
-    (the default) is the original ad-hoc behavior, unchanged."""
+    (the default) is the original ad-hoc behavior, unchanged.
+
+    connection_id == CUSTOM_ENGINE_CONNECTION_ID short-circuits straight to
+    the Custom Extraction Engine's own (non-LLM, taxonomy-only) schema
+    detection — there's no ad-hoc "guess from this one document" mode
+    without a real model, so it always seeds from the canonical taxonomy,
+    defaulting to GENERIC when document_type isn't given."""
+    if connection_id == CUSTOM_ENGINE_CONNECTION_ID:
+        return custom_engine.detect_schema(document_type, extra_field_names)
+
     if document_type:
         seed_schema = document_taxonomies.build_seed_schema(document_type, extra_field_names)
         if seed_schema:
@@ -311,6 +330,11 @@ async def extract_fields(
 ) -> dict:
     if not schema:
         raise ExtractionError("No fields to extract.")
+    if connection_id == CUSTOM_ENGINE_CONNECTION_ID:
+        try:
+            return custom_engine.extract_fields(doc, schema)
+        except custom_engine.CustomEngineError as exc:
+            raise ExtractionError(str(exc)) from exc
     text = _ocr_text(doc)
     connector = await _get_connector(db, connection_id, organization_id)
 

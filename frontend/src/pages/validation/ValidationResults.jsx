@@ -60,7 +60,7 @@ function DonutChart({ passed, failed, warning, total, size = 100 }) {
 
 const RULE_STATUS_VARIANT = { PASSED: 'success', FAILED: 'danger', WARNING: 'warning' };
 
-export function ValidationResults({ run, objectName, onReRun }) {
+export function ValidationResults({ run, objectName, onReRun, onGoToRules }) {
   const [selectedRuleId, setSelectedRuleId] = useState(null);
   const [failedTable, setFailedTable] = useState(null);
   const [loadingRows, setLoadingRows] = useState(false);
@@ -114,8 +114,16 @@ export function ValidationResults({ run, objectName, onReRun }) {
       </div>
 
       {run.status === 'FAILED' && (
-        <div style={{ padding: '10px 16px', background: 'var(--color-danger-bg)', color: 'var(--color-danger-dark)', fontSize: 13 }}>
-          {run.error_message}
+        <div style={{ padding: '10px 16px', background: 'var(--color-danger-bg)', color: 'var(--color-danger-dark)', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span>{run.error_message}</span>
+          {onGoToRules && (
+            <button
+              onClick={onGoToRules}
+              style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--color-danger-dark)', fontWeight: 700, textDecoration: 'underline', cursor: 'pointer', fontSize: 13, flexShrink: 0 }}
+            >
+              Go to Rules →
+            </button>
+          )}
         </div>
       )}
 

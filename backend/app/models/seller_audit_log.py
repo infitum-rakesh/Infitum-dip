@@ -18,7 +18,7 @@ from sqlalchemy import DateTime, ForeignKey, JSON, String, Text, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import PlatformBase
 
 # The exact event-type list from the spec (section 7). Kept as a plain
 # string column (like AuditLog.action) rather than an enum so later phases
@@ -34,10 +34,12 @@ SELLER_AUDIT_ACTIONS = [
     "Seller User Created", "Seller User Updated", "Seller User Disabled", "Seller User Enabled",
     "Seller Role Changed", "Seller User Password Reset", "Seller User Deleted",
     "Seller Settings Updated",
+    "Tenant Database Configured", "Tenant Database Updated", "Tenant Database Tested",
+    "Platform Database Migration Completed",
 ]
 
 
-class SellerAuditLog(Base):
+class SellerAuditLog(PlatformBase):
     __tablename__ = "seller_audit_log"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)

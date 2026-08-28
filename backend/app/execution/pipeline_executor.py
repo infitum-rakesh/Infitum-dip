@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select, update
 
-from app.database.connection import AsyncSessionLocal
+from app.database import tenant_engine_registry
 from app.execution.checkpoint import encode_key, infer_key_type
 from app.execution.worker import run_file_partition, run_netsuite_search_partition, run_partition, run_query_partition
 from app.ingestion.partition_reader import plan_partitions
@@ -57,17 +57,21 @@ def request_cancel(run_id: int) -> bool:
     return True
 
 
-async def start_run(run_id: int) -> None:
+async def start_run(run_id: int, organization_id: int | None) -> None:
     """Fire-and-forget from the caller's perspective — the API route that
     calls this does not (and must not) await it; it returns the run's
-    PENDING status immediately and the frontend polls GET /runs/{id}."""
-    task = asyncio.create_task(_execute(run_id))
+    PENDING status immediately and the frontend polls GET /runs/{id}.
+    organization_id comes from the run row the caller (api/executions.py)
+    already has in hand — passed through explicitly since this task
+    outlives the request and its session."""
+    task = asyncio.create_task(_execute(run_id, organization_id))
     _running_tasks[run_id] = task
     task.add_done_callback(lambda _t: _running_tasks.pop(run_id, None))
 
 
-async def _execute(run_id: int) -> None:
-    async with AsyncSessionLocal() as db:
+async def _execute(run_id: int, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         run = await db.get(PipelineRun, run_id)
         # Defense in depth: re-verify the connection genuinely belongs to
         # this run's OWN organization_id at execute time too, not just at
@@ -79,7 +83,7 @@ async def _execute(run_id: int) -> None:
         await db.commit()
 
     if conn is None:
-        async with AsyncSessionLocal() as db:
+        async with sessionmaker() as db:
             r = await db.get(PipelineRun, run_id)
             r.status = RunStatus.FAILED
             r.error_message = f"Connection {run.connection_id} was not found or no longer belongs to this organization."
@@ -99,14 +103,14 @@ async def _execute(run_id: int) -> None:
             await _run_netsuite_search(run_id, run, connector)
         else:
             await _run_partitioned(run_id, run, connector)
-        await _finalize(run_id)
+        await _finalize(run_id, organization_id)
     except Exception as exc:
         # connector may be None if build_connector() itself threw (before
         # decrypted secrets were ever attached) — nothing to scrub against
         # in that narrow case, but every other failure path has a real
         # connector to redact secrets through.
         message = connector._scrub(str(exc)) if connector is not None else str(exc)[:300]
-        async with AsyncSessionLocal() as db:
+        async with sessionmaker() as db:
             r = await db.get(PipelineRun, run_id)
             r.status = RunStatus.FAILED
             r.error_message = message
@@ -129,7 +133,8 @@ async def _run_partitioned(run_id: int, run: PipelineRun, connector) -> None:
 
 
 async def _run_query(run_id: int, run: PipelineRun, connector) -> None:
-    async with AsyncSessionLocal() as db:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(run.organization_id)
+    async with sessionmaker() as db:
         result = await db.execute(select(PipelineRunPartition).where(PipelineRunPartition.run_id == run_id))
         partitions = list(result.scalars().all())
         if not partitions:
@@ -184,7 +189,8 @@ async def _load_or_plan_netsuite_partitions(run_id: int, run: PipelineRun, conne
     doesn't pay for page 1 twice (see run_netsuite_search_partition's
     docstring on why each OTHER page's fetch is independently
     self-contained instead of sharing a searchId)."""
-    async with AsyncSessionLocal() as db:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(run.organization_id)
+    async with sessionmaker() as db:
         result = await db.execute(
             select(PipelineRunPartition).where(PipelineRunPartition.run_id == run_id).order_by(PipelineRunPartition.partition_index)
         )
@@ -210,7 +216,7 @@ async def _load_or_plan_netsuite_partitions(run_id: int, run: PipelineRun, conne
     first_partition_index = new_partitions[0].partition_index
     if rows:
         await asyncio.to_thread(staging.write_chunk, STAGING_BASE_PATH, run_id, first_partition_index, rows)
-    async with AsyncSessionLocal() as db:
+    async with sessionmaker() as db:
         await db.execute(
             update(PipelineRunPartition).where(PipelineRunPartition.id == new_partitions[0].id)
             .values(status=PartitionStatus.COMPLETE, records_read=len(rows), started_at=datetime.now(timezone.utc), completed_at=datetime.now(timezone.utc))
@@ -225,7 +231,8 @@ async def _load_or_plan_netsuite_partitions(run_id: int, run: PipelineRun, conne
 
 
 async def _load_or_plan_file_partitions(run_id: int, run: PipelineRun, connector) -> list[PipelineRunPartition]:
-    async with AsyncSessionLocal() as db:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(run.organization_id)
+    async with sessionmaker() as db:
         result = await db.execute(
             select(PipelineRunPartition).where(PipelineRunPartition.run_id == run_id).order_by(PipelineRunPartition.partition_index)
         )
@@ -241,7 +248,7 @@ async def _load_or_plan_file_partitions(run_id: int, run: PipelineRun, connector
         # COMPLETE partition from an earlier run of this same pipeline
         # node — a file re-delivered under a new name (or re-picked-up
         # because an archive move failed) doesn't get re-ingested.
-        seen_checksums = await _completed_checksums_for_node(run.pipeline_id, run.node_id, exclude_run_id=run_id)
+        seen_checksums = await _completed_checksums_for_node(run.pipeline_id, run.node_id, exclude_run_id=run_id, organization_id=run.organization_id)
 
         new_partitions: list[PipelineRunPartition] = []
         skipped: list[str] = []
@@ -274,8 +281,9 @@ async def _load_or_plan_file_partitions(run_id: int, run: PipelineRun, connector
         return new_partitions
 
 
-async def _completed_checksums_for_node(pipeline_id: int, node_id: str, *, exclude_run_id: int) -> set[str]:
-    async with AsyncSessionLocal() as db:
+async def _completed_checksums_for_node(pipeline_id: int, node_id: str, *, exclude_run_id: int, organization_id: int | None) -> set[str]:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         result = await db.execute(
             select(PipelineRunPartition.file_checksum)
             .join(PipelineRun, PipelineRun.id == PipelineRunPartition.run_id)
@@ -290,7 +298,8 @@ async def _completed_checksums_for_node(pipeline_id: int, node_id: str, *, exclu
 
 
 async def _load_or_plan_partitions(run_id: int, run: PipelineRun, connector) -> list[PipelineRunPartition]:
-    async with AsyncSessionLocal() as db:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(run.organization_id)
+    async with sessionmaker() as db:
         result = await db.execute(
             select(PipelineRunPartition).where(PipelineRunPartition.run_id == run_id).order_by(PipelineRunPartition.partition_index)
         )
@@ -317,8 +326,9 @@ async def _load_or_plan_partitions(run_id: int, run: PipelineRun, connector) -> 
         return new_partitions
 
 
-async def _finalize(run_id: int) -> None:
-    async with AsyncSessionLocal() as db:
+async def _finalize(run_id: int, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         run = await db.get(PipelineRun, run_id)
         result = await db.execute(select(PipelineRunPartition).where(PipelineRunPartition.run_id == run_id))
         partitions = list(result.scalars().all())

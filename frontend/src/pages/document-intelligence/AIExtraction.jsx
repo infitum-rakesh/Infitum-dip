@@ -6,6 +6,16 @@
  * AI Provider connection (OpenAI/Anthropic/Ollama — see Connections page)
  * is selected; user can customise the schema before running. Real calls
  * only — see backend/app/services/extraction_service.py.
+ *
+ * The picker also always offers "Custom (No AI Required)" — the real,
+ * deterministic, rule-based Custom Extraction Engine (backend
+ * app/extraction/custom_engine.py, NOT a language model) — and it's
+ * auto-selected once connections finish loading and none exist, so this
+ * stage still works with zero setup. Its id is the sentinel 0 (see
+ * extraction_service.CUSTOM_ENGINE_CONNECTION_ID) — safe because real
+ * Connection ids are DB autoincrement starting at 1. Every connectionId
+ * check below is a strict null-check (never plain truthy) specifically
+ * so 0 isn't mistaken for "nothing selected".
  */
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -40,22 +50,23 @@ export function AIExtraction({ ocrData, onComplete, onBack }) {
   const [viewMode, setViewMode]           = useState('table'); // 'table' | 'json'
   const [error, setError]                 = useState('');
 
-  // Load AI Agent connections once, default to the first active one.
+  // Load AI Agent connections once, default to the first active one — or
+  // to the Custom Extraction Engine (sentinel id 0) when none exist.
   useEffect(() => {
     connectionApi.list({ category: 'AI_PROVIDER', page_size: 50 })
       .then((r) => {
         const items = r.items ?? [];
         setConnections(items);
         const active = items.find((c) => c.status === 'ACTIVE') ?? items[0];
-        if (active) setConnectionId(active.id);
+        setConnectionId(active ? active.id : 0);
       })
-      .catch(() => {})
+      .catch(() => setConnectionId(0))
       .finally(() => setLoadingConns(false));
     documentApi.getDocumentTypes().then(setDocTypes).catch(() => setDocTypes([]));
   }, []);
 
   const handleAutoDetect = useCallback(async () => {
-    if (!connectionId) return;
+    if (connectionId == null) return;
     setDetecting(true);
     setError('');
     try {
@@ -72,7 +83,7 @@ export function AIExtraction({ ocrData, onComplete, onBack }) {
   // Auto-detect once a connection is selected/available (not before), and
   // again whenever the document type changes (seeds a different schema).
   useEffect(() => {
-    if (connectionId) handleAutoDetect();
+    if (connectionId != null) handleAutoDetect();
   }, [connectionId, documentType]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleAddField = () => {
@@ -91,7 +102,7 @@ export function AIExtraction({ ocrData, onComplete, onBack }) {
   const handleExtract = async () => {
     const validFields = schema.filter((f) => f.name.trim());
     if (!validFields.length) { setError('Add at least one field to the schema.'); return; }
-    if (!connectionId) { setError('Select an AI connection first.'); return; }
+    if (connectionId == null) { setError('Select an AI connection first.'); return; }
     setExtracting(true);
     setError('');
     try {
@@ -106,6 +117,7 @@ export function AIExtraction({ ocrData, onComplete, onBack }) {
 
   const overallConf = extractionResult?.overallConfidence;
   const noConnections = !loadingConns && connections.length === 0;
+  const usingCustomEngine = connectionId === 0;
 
   return (
     <div className="di-stage">
@@ -133,22 +145,26 @@ export function AIExtraction({ ocrData, onComplete, onBack }) {
         <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', flexShrink: 0 }}>AI Agent</span>
         {loadingConns ? (
           <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading connections…</span>
-        ) : noConnections ? (
-          <>
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No AI Agent connection configured yet.</span>
-            <Button variant="ghost" size="sm" onClick={() => navigate('/app/connections')}>Add one in Connections →</Button>
-          </>
         ) : (
-          <select
-            className="pc-config-select"
-            style={{ maxWidth: 320 }}
-            value={connectionId ?? ''}
-            onChange={(e) => { setConnectionId(Number(e.target.value)); setResult(null); }}
-          >
-            {connections.map((c) => (
-              <option key={c.id} value={c.id}>{c.name || `Connection #${c.id}`} — {c.connection_type}{c.status !== 'ACTIVE' ? ` (${c.status.toLowerCase()})` : ''}</option>
-            ))}
-          </select>
+          <>
+            <select
+              className="pc-config-select"
+              style={{ maxWidth: 320 }}
+              value={connectionId ?? ''}
+              onChange={(e) => { setConnectionId(Number(e.target.value)); setResult(null); }}
+            >
+              {connections.map((c) => (
+                <option key={c.id} value={c.id}>{c.name || `Connection #${c.id}`} — {c.connection_type}{c.status !== 'ACTIVE' ? ` (${c.status.toLowerCase()})` : ''}</option>
+              ))}
+              <option value={0}>Custom (No AI Required)</option>
+            </select>
+            {noConnections && (
+              <>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No AI Agent connection configured — using the Custom Extraction Engine.</span>
+                <Button variant="ghost" size="sm" onClick={() => navigate('/app/connections')}>Add an AI connection →</Button>
+              </>
+            )}
+          </>
         )}
         <span style={{ width: 1, alignSelf: 'stretch', background: 'var(--border)', flexShrink: 0 }} />
         <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', flexShrink: 0 }}>Document type</span>
@@ -180,7 +196,7 @@ export function AIExtraction({ ocrData, onComplete, onBack }) {
               size="sm"
               icon={<Sparkles size={13} />}
               loading={detecting}
-              disabled={!connectionId}
+              disabled={connectionId == null}
               onClick={handleAutoDetect}
             >
               Auto-detect
@@ -244,7 +260,7 @@ export function AIExtraction({ ocrData, onComplete, onBack }) {
                   icon={<Sparkles size={13} />}
                   loading={extracting}
                   onClick={handleExtract}
-                  disabled={extracting || !connectionId}
+                  disabled={extracting || connectionId == null}
                 >
                   {extractionResult ? 'Re-run Extraction' : 'Run AI Extraction'}
                 </Button>
@@ -258,7 +274,7 @@ export function AIExtraction({ ocrData, onComplete, onBack }) {
               <LoadingSpinner size="lg" />
               <p style={{ marginTop: 10, fontSize: 13, fontWeight: 500 }}>AI extracting fields…</p>
               <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
-                Using {connections.find((c) => c.id === connectionId)?.name || (connectionId ? `Connection #${connectionId}` : 'the selected AI connection')}
+                Using {usingCustomEngine ? 'the Custom Extraction Engine (no AI)' : connections.find((c) => c.id === connectionId)?.name || (connectionId != null ? `Connection #${connectionId}` : 'the selected AI connection')}
               </p>
             </div>
           )}
@@ -315,7 +331,9 @@ export function AIExtraction({ ocrData, onComplete, onBack }) {
                       <div key={field.name} className="di-extr-row">
                         <span className="di-extr-name">{field.name}</span>
                         <span className="di-extr-val">
-                          {field.value === '' || field.value == null ? '—' : String(field.value)}
+                          {field.type === 'table'
+                            ? `${field.rows?.length ?? 0} row${(field.rows?.length ?? 0) === 1 ? '' : 's'}`
+                            : (field.value === '' || field.value == null ? '—' : String(field.value))}
                         </span>
                         <div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -325,7 +343,7 @@ export function AIExtraction({ ocrData, onComplete, onBack }) {
                             <span className={`di-conf-pct conf-${confColor(field.confidence)}`}>{field.confidence}%</span>
                           </div>
                         </div>
-                        <span className="di-extr-page">p{field.page}</span>
+                        <span className="di-extr-page">{field.page != null ? `p${field.page}` : '—'}</span>
                       </div>
                     ))}
                   </div>

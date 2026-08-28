@@ -49,7 +49,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select, update
 
 from app.connectors.base import ConnectorUnsupportedError, ConnectorValidationError, scrub_secrets
-from app.database.connection import AsyncSessionLocal
+from app.database import tenant_engine_registry
 from app.execution.checkpoint import encode_key, infer_key_type
 from app.execution.load_worker import run_key_range_partition, run_load
 from app.ingestion.partition_reader import plan_partitions
@@ -79,11 +79,13 @@ def request_cancel(run_id: int) -> bool:
     return True
 
 
-async def start_load(run_id: int) -> None:
+async def start_load(run_id: int, organization_id: int | None) -> None:
     """Fire-and-forget — the API route that calls this does not await it;
     it returns the run's PENDING status immediately and the frontend polls
-    GET /loads/{id}/status."""
-    task = asyncio.create_task(_execute(run_id))
+    GET /loads/{id}/status. organization_id comes from the run row the
+    caller already has in hand — passed through explicitly since this
+    task outlives the request and its session."""
+    task = asyncio.create_task(_execute(run_id, organization_id))
     _running_tasks[run_id] = task
     task.add_done_callback(lambda _t: _running_tasks.pop(run_id, None))
 
@@ -127,8 +129,9 @@ async def _build_create_table_columns(source_connector, mapping: ColumnMapping):
     return columns
 
 
-async def _execute(run_id: int) -> None:
-    async with AsyncSessionLocal() as db:
+async def _execute(run_id: int, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         run = await db.get(TargetLoadRun, run_id)
         mapping = await db.get(ColumnMapping, run.mapping_id)
         # Defense in depth: re-verify both connections genuinely belong to
@@ -150,7 +153,7 @@ async def _execute(run_id: int) -> None:
         await db.commit()
 
     if source_conn is None or target_conn is None:
-        async with AsyncSessionLocal() as db:
+        async with sessionmaker() as db:
             r = await db.get(TargetLoadRun, run_id)
             r.status = LoadStatus.FAILED
             r.error_message = "The source or target connection for this mapping was not found or no longer belongs to this organization."
@@ -206,7 +209,7 @@ async def _execute(run_id: int) -> None:
                     (" and create_table can't infer one either (map the source's own key column, e.g. Id, "
                      "to a target column)." if run.create_table else ".")
                 )
-            async with AsyncSessionLocal() as db:
+            async with sessionmaker() as db:
                 await db.execute(update(TargetLoadRun).where(TargetLoadRun.id == run_id).values(key_columns=key_columns))
                 await db.commit()
             run.key_columns = key_columns
@@ -247,7 +250,7 @@ async def _execute(run_id: int) -> None:
             )
 
         if use_key_range:
-            async with AsyncSessionLocal() as db:
+            async with sessionmaker() as db:
                 await db.execute(
                     update(TargetLoadRun).where(TargetLoadRun.id == run_id)
                     .values(source_kind="KEY_RANGE", key_column=source_key_column)
@@ -263,7 +266,7 @@ async def _execute(run_id: int) -> None:
                 min_key=min_v, max_key=max_v, is_first_attempt=is_first_attempt,
             )
         else:
-            async with AsyncSessionLocal() as db:
+            async with sessionmaker() as db:
                 await db.execute(update(TargetLoadRun).where(TargetLoadRun.id == run_id).values(source_kind="SQL_STREAM"))
                 await db.commit()
             sql = mapper.build_preview_sql(
@@ -284,7 +287,7 @@ async def _execute(run_id: int) -> None:
         # connector(s) actually got built before the failure.
         secret_dicts = [c.secrets for c in (source_connector, target_connector) if c is not None]
         message = scrub_secrets(str(exc), *secret_dicts) if secret_dicts else str(exc)[:300]
-        async with AsyncSessionLocal() as db:
+        async with sessionmaker() as db:
             r = await db.get(TargetLoadRun, run_id)
             r.status = LoadStatus.FAILED
             r.error_message = message
@@ -309,7 +312,8 @@ async def _run_key_range_load(
             await asyncio.to_thread(writer.truncate, target_schema, target_object)
         except Exception as exc:
             message = scrub_secrets(str(exc), source_connector.secrets, writer.connector.secrets)
-            async with AsyncSessionLocal() as db:
+            sessionmaker = await tenant_engine_registry.get_background_sessionmaker(run.organization_id)
+            async with sessionmaker() as db:
                 r = await db.get(TargetLoadRun, run_id)
                 r.status = LoadStatus.FAILED
                 r.error_message = f"Could not truncate target before load: {message}"
@@ -340,11 +344,12 @@ async def _run_key_range_load(
             )
 
     await asyncio.gather(*[_bounded(p) for p in todo])
-    await _finalize_key_range(run_id)
+    await _finalize_key_range(run_id, run.organization_id)
 
 
 async def _load_or_plan_key_range_partitions(run_id: int, run: TargetLoadRun, min_key, max_key) -> tuple[list[TargetLoadRunPartition], str]:
-    async with AsyncSessionLocal() as db:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(run.organization_id)
+    async with sessionmaker() as db:
         result = await db.execute(
             select(TargetLoadRunPartition).where(TargetLoadRunPartition.run_id == run_id).order_by(TargetLoadRunPartition.partition_index)
         )
@@ -374,8 +379,9 @@ async def _load_or_plan_key_range_partitions(run_id: int, run: TargetLoadRun, mi
         return new_partitions, key_type
 
 
-async def _finalize_key_range(run_id: int) -> None:
-    async with AsyncSessionLocal() as db:
+async def _finalize_key_range(run_id: int, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         run = await db.get(TargetLoadRun, run_id)
         result = await db.execute(select(TargetLoadRunPartition).where(TargetLoadRunPartition.run_id == run_id))
         partitions = list(result.scalars().all())

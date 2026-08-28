@@ -40,7 +40,7 @@ from datetime import datetime, timezone
 from sqlalchemy import update
 
 from app.connectors.base import scrub_secrets
-from app.database.connection import AsyncSessionLocal
+from app.database import tenant_engine_registry
 from app.execution.checkpoint import decode_key, encode_key
 from app.execution.retry import with_retry
 from app.loading.writers.base import write_batch_with_fallback
@@ -55,7 +55,7 @@ async def run_load(
     sql: str, target_schema: str | None, target_object: str, columns: list[str],
     cancel_check,
 ) -> None:
-    await _mark_started(run.id)
+    await _mark_started(run.id, run.organization_id)
 
     # A failure anywhere here could come from either side (source read or
     # target write) — scrub against both connectors' secrets, not just one.
@@ -66,7 +66,7 @@ async def run_load(
         try:
             await asyncio.to_thread(writer.truncate, target_schema, target_object)
         except Exception as exc:
-            await _mark_failed(run.id, f"Could not truncate target before load: {_scrub(exc)}")
+            await _mark_failed(run.id, f"Could not truncate target before load: {_scrub(exc)}", run.organization_id)
             return
 
     key_columns = run.key_columns if run.write_mode == WriteMode.UPSERT else None
@@ -79,7 +79,7 @@ async def run_load(
 
         while True:
             if cancel_check(run.id):
-                await _mark_status(run.id, LoadStatus.CANCELLED)
+                await _mark_status(run.id, LoadStatus.CANCELLED, run.organization_id)
                 return
 
             async def _fetch():
@@ -88,12 +88,12 @@ async def run_load(
 
             if not rows:
                 break
-            await _advance_read(run.id, len(rows))
+            await _advance_read(run.id, len(rows), run.organization_id)
 
             async def _write():
                 return await asyncio.to_thread(write_batch_with_fallback, writer, target_schema, target_object, columns, rows, key_columns)
             written, rejects = await with_retry(_write, on_retry=_log_retry(run.id, "write"))
-            await _advance_written(run.id, written, len(rejects))
+            await _advance_written(run.id, written, len(rejects), run.organization_id)
             if rejects:
                 await reject_service.record_rejects(
                     organization_id=run.organization_id, source_type=RejectSourceType.TARGET_LOAD, source_id=run.id,
@@ -103,9 +103,9 @@ async def run_load(
             if len(rows) < run.chunk_size:
                 break
 
-        await _mark_status(run.id, LoadStatus.SUCCEEDED)
+        await _mark_status(run.id, LoadStatus.SUCCEEDED, run.organization_id)
     except Exception as exc:
-        await _mark_failed(run.id, _scrub(exc))
+        await _mark_failed(run.id, _scrub(exc), run.organization_id)
     finally:
         if stream is not None:
             await asyncio.to_thread(stream.close)
@@ -122,7 +122,7 @@ async def run_key_range_partition(
     (renames source field names to mapped target column names, applies
     constant_value/default_value — see mapping/mapper.py's build_soql());
     None means the fetched rows already match `columns` as-is."""
-    await _mark_started_partition(partition.id)
+    await _mark_started_partition(partition.id, run.organization_id)
 
     after_value = (
         decode_key(partition.last_key_read, run.key_type) if partition.last_key_read
@@ -133,7 +133,7 @@ async def run_key_range_partition(
     try:
         while True:
             if cancel_check(run.id):
-                await _mark_partition_status(partition.id, PartitionStatus.CANCELLED)
+                await _mark_partition_status(partition.id, PartitionStatus.CANCELLED, run.organization_id)
                 return
 
             async def _read():
@@ -157,7 +157,7 @@ async def run_key_range_partition(
             # Same ordering rule as everywhere else in this codebase: the
             # checkpoint only advances after the write it's vouching for
             # has actually landed, never before.
-            await _advance_partition(partition.id, run.id, encode_key(after_value), chunk.count, written, len(rejects))
+            await _advance_partition(partition.id, run.id, encode_key(after_value), chunk.count, written, run.organization_id, len(rejects))
             if rejects:
                 await reject_service.record_rejects(
                     organization_id=run.organization_id, source_type=RejectSourceType.TARGET_LOAD, source_id=run.id,
@@ -167,10 +167,10 @@ async def run_key_range_partition(
             if chunk.count < run.chunk_size:
                 break  # short chunk — this was the last one in range
 
-        await _mark_partition_status(partition.id, PartitionStatus.COMPLETE)
+        await _mark_partition_status(partition.id, PartitionStatus.COMPLETE, run.organization_id)
     except Exception as exc:
         message = scrub_secrets(str(exc), source_connector.secrets, writer.connector.secrets)
-        await _mark_partition_failed(partition.id, message)
+        await _mark_partition_failed(partition.id, message, run.organization_id)
 
 
 def _log_retry(run_id: int, stage: str):
@@ -179,8 +179,9 @@ def _log_retry(run_id: int, stage: str):
     return _cb
 
 
-async def _mark_started_partition(partition_id: int) -> None:
-    async with AsyncSessionLocal() as db:
+async def _mark_started_partition(partition_id: int, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         await db.execute(
             update(TargetLoadRunPartition).where(TargetLoadRunPartition.id == partition_id)
             .values(status=PartitionStatus.RUNNING, started_at=datetime.now(timezone.utc))
@@ -189,9 +190,11 @@ async def _mark_started_partition(partition_id: int) -> None:
 
 
 async def _advance_partition(
-    partition_id: int, run_id: int, last_key: str | None, read_count: int, written_count: int, rejected_count: int = 0,
+    partition_id: int, run_id: int, last_key: str | None, read_count: int, written_count: int,
+    organization_id: int | None, rejected_count: int = 0,
 ) -> None:
-    async with AsyncSessionLocal() as db:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         await db.execute(
             update(TargetLoadRunPartition).where(TargetLoadRunPartition.id == partition_id)
             .values(
@@ -215,8 +218,9 @@ async def _advance_partition(
         await db.commit()
 
 
-async def _mark_partition_status(partition_id: int, status: PartitionStatus) -> None:
-    async with AsyncSessionLocal() as db:
+async def _mark_partition_status(partition_id: int, status: PartitionStatus, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         await db.execute(
             update(TargetLoadRunPartition).where(TargetLoadRunPartition.id == partition_id)
             .values(status=status, completed_at=datetime.now(timezone.utc))
@@ -224,8 +228,9 @@ async def _mark_partition_status(partition_id: int, status: PartitionStatus) -> 
         await db.commit()
 
 
-async def _mark_partition_failed(partition_id: int, message: str) -> None:
-    async with AsyncSessionLocal() as db:
+async def _mark_partition_failed(partition_id: int, message: str, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         await db.execute(
             update(TargetLoadRunPartition).where(TargetLoadRunPartition.id == partition_id)
             .values(status=PartitionStatus.FAILED, error_message=message, completed_at=datetime.now(timezone.utc))
@@ -233,8 +238,9 @@ async def _mark_partition_failed(partition_id: int, message: str) -> None:
         await db.commit()
 
 
-async def _mark_started(run_id: int) -> None:
-    async with AsyncSessionLocal() as db:
+async def _mark_started(run_id: int, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         await db.execute(
             update(TargetLoadRun).where(TargetLoadRun.id == run_id)
             .values(status=LoadStatus.RUNNING, started_at=datetime.now(timezone.utc))
@@ -242,8 +248,9 @@ async def _mark_started(run_id: int) -> None:
         await db.commit()
 
 
-async def _advance_read(run_id: int, count: int) -> None:
-    async with AsyncSessionLocal() as db:
+async def _advance_read(run_id: int, count: int, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         await db.execute(
             update(TargetLoadRun).where(TargetLoadRun.id == run_id)
             .values(records_read=TargetLoadRun.records_read + count)
@@ -251,8 +258,9 @@ async def _advance_read(run_id: int, count: int) -> None:
         await db.commit()
 
 
-async def _advance_written(run_id: int, count: int, rejected_count: int = 0) -> None:
-    async with AsyncSessionLocal() as db:
+async def _advance_written(run_id: int, count: int, rejected_count: int, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         await db.execute(
             update(TargetLoadRun).where(TargetLoadRun.id == run_id)
             .values(
@@ -263,8 +271,9 @@ async def _advance_written(run_id: int, count: int, rejected_count: int = 0) -> 
         await db.commit()
 
 
-async def _mark_status(run_id: int, status: LoadStatus) -> None:
-    async with AsyncSessionLocal() as db:
+async def _mark_status(run_id: int, status: LoadStatus, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         await db.execute(
             update(TargetLoadRun).where(TargetLoadRun.id == run_id)
             .values(status=status, completed_at=datetime.now(timezone.utc))
@@ -272,8 +281,9 @@ async def _mark_status(run_id: int, status: LoadStatus) -> None:
         await db.commit()
 
 
-async def _mark_failed(run_id: int, message: str) -> None:
-    async with AsyncSessionLocal() as db:
+async def _mark_failed(run_id: int, message: str, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         await db.execute(
             update(TargetLoadRun).where(TargetLoadRun.id == run_id)
             .values(status=LoadStatus.FAILED, error_message=message, completed_at=datetime.now(timezone.utc))

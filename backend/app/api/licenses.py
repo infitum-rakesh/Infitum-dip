@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_action
 from app.database.connection import get_db
+from app.database.tenant_routing import get_tenant_db
 from app.models.organization import Organization
 from app.models.user import User
 from app.schemas.licenses import (
@@ -37,21 +38,21 @@ async def _get_org_or_404(db: AsyncSession, user: User) -> Organization:
 
 
 @router.get("", response_model=LicenseDashboardOut)
-async def get_dashboard(user: User = Depends(_admin), db: AsyncSession = Depends(get_db)):
+async def get_dashboard(user: User = Depends(_admin), db: AsyncSession = Depends(get_db), tenant_db: AsyncSession = Depends(get_tenant_db)):
     org = await _get_org_or_404(db, user)
-    return await svc.build_dashboard(db, org)
+    return await svc.build_dashboard(db, tenant_db, org)
 
 
 @router.get("/modules", response_model=ModuleLicenseListOut)
-async def get_modules(user: User = Depends(_admin), db: AsyncSession = Depends(get_db)):
+async def get_modules(user: User = Depends(_admin), db: AsyncSession = Depends(get_db), tenant_db: AsyncSession = Depends(get_tenant_db)):
     org = await _get_org_or_404(db, user)
-    return ModuleLicenseListOut(items=await svc.build_module_licenses(db, org))
+    return ModuleLicenseListOut(items=await svc.build_module_licenses(tenant_db, org))
 
 
 @router.get("/usage", response_model=LicenseUsageOut)
-async def get_usage(user: User = Depends(_admin), db: AsyncSession = Depends(get_db)):
+async def get_usage(user: User = Depends(_admin), db: AsyncSession = Depends(get_db), tenant_db: AsyncSession = Depends(get_tenant_db)):
     org = await _get_org_or_404(db, user)
-    return LicenseUsageOut(usage=await svc.build_usage(db, org))
+    return LicenseUsageOut(usage=await svc.build_usage(db, tenant_db, org))
 
 
 @router.get("/status", response_model=LicenseStatusOut)

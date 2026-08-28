@@ -20,6 +20,17 @@ psycopg2-binary==2.9.12
 pymysql==1.2.0
 pymssql==2.3.13
 
+# Bring-Your-Own-Database (Phase 2: tenant_engine_registry.py) — genuine
+# async drivers for routing live HTTP request traffic to an org's own
+# Postgres/MySQL once they cut over (Phase 4). SQL_SERVER has no
+# equivalent here: sync sqlserver.py deliberately uses pymssql/FreeTDS to
+# avoid needing the system ODBC driver manager pymssql sidesteps, and the
+# only SQLAlchemy-supported async mssql driver (aioodbc) needs exactly
+# that — so live SQL Server tenant routing is disclosed as not-yet-
+# supported rather than faked (see tenant_engine_registry.py).
+asyncpg==0.30.0
+aiomysql==0.2.0
+
 # Data integration — connectors/sftp (Phase 5: File/SFTP connectors)
 paramiko==5.0.0
 

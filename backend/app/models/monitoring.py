@@ -32,7 +32,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import TenantBase
 
 
 class SlaStatus(str, enum.Enum):
@@ -42,12 +42,12 @@ class SlaStatus(str, enum.Enum):
     NOT_EVALUATED = "NOT_EVALUATED"  # no run yet, or run still in progress
 
 
-class SlaDefinition(Base):
+class SlaDefinition(TenantBase):
     """SLA contract for one Pipeline (Pipeline Builder's pipelines.id)."""
     __tablename__ = "sla_definitions"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     pipeline_id: Mapped[int] = mapped_column(ForeignKey("pipelines.id"), nullable=False, index=True)
     pipeline_name: Mapped[str] = mapped_column(String(200), nullable=False)  # snapshot, survives a later rename
@@ -64,7 +64,7 @@ class SlaDefinition(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     auto_create_incident: Mapped[bool] = mapped_column(Boolean, default=True)  # file an Incident the moment a run BREACHES
 
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -90,7 +90,7 @@ class AlertSeverity(str, enum.Enum):
     LOW = "LOW"
 
 
-class AlertRule(Base):
+class AlertRule(TenantBase):
     """Configurable alert rule — see module docstring for the channel-
     registry design. `channels` shape: [{"type": "IN_APP"},
     {"type": "EMAIL", "to": "ops@acme.com"},
@@ -99,7 +99,7 @@ class AlertRule(Base):
     __tablename__ = "alert_rules"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -115,7 +115,7 @@ class AlertRule(Base):
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -129,7 +129,7 @@ class AlertEventStatus(str, enum.Enum):
     RESOLVED = "RESOLVED"
 
 
-class AlertEvent(Base):
+class AlertEvent(TenantBase):
     """One fired instance of an AlertRule. This row IS the in-app
     notification (the IN_APP channel is a no-op beyond creating this row);
     EMAIL/WEBHOOK/TEAMS channels additionally attempt real delivery and
@@ -137,7 +137,7 @@ class AlertEvent(Base):
     __tablename__ = "alert_events"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
     rule_id: Mapped[int] = mapped_column(ForeignKey("alert_rules.id"), nullable=False, index=True)
     rule_name: Mapped[str] = mapped_column(String(200), nullable=False)  # snapshot
 

@@ -63,7 +63,12 @@ class AzureDocumentIntelligenceConnector(BaseConnector):
         try:
             from PIL import Image
             buf = BytesIO()
-            Image.new("RGB", (32, 32), "white").save(buf, format="PNG")
+            # Azure Document Intelligence rejects images smaller than 50x50
+            # pixels with a real, correctly-thrown (InvalidRequest) "Invalid
+            # request." error — regardless of how correct the endpoint/API
+            # key are. 200x200 is comfortably above that floor while still
+            # being a trivially cheap real request.
+            Image.new("RGB", (200, 200), "white").save(buf, format="PNG")
             self._analyze(buf.getvalue())
             latency_ms = round((time.monotonic() - start) * 1000, 1)
             return ConnectionTestResult(True, "Connection successful.", latency_ms)

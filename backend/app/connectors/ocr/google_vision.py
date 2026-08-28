@@ -59,7 +59,11 @@ class GoogleVisionConnector(BaseConnector):
         try:
             from PIL import Image
             buf = BytesIO()
-            Image.new("RGB", (32, 32), "white").save(buf, format="PNG")
+            # Google Vision has no documented minimum, but kept at the same
+            # safe size as the other two OCR provider connectors' probe
+            # image for consistency (see aws_textract.py / azure_document_
+            # intelligence.py — 32x32 broke Azure's real 50x50 floor).
+            Image.new("RGB", (200, 200), "white").save(buf, format="PNG")
             client, vision = self._client()
             image = vision.Image(content=buf.getvalue())
             response = client.document_text_detection(image=image)

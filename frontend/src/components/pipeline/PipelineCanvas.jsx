@@ -17,13 +17,22 @@
  *   - Mouse wheel / shift+wheel / trackpad  → scroll canvas (native)
  *   - Zoom in/out (toolbar)                → scales the canvas content
  */
-import { useRef, useState, useCallback, useEffect, useMemo } from 'react';
+import { useRef, useState, useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { PipelineNode }         from './PipelineNode.jsx';
 import { PipelineEdge, GhostEdge } from './PipelineEdge.jsx';
 import { NODE_TYPES }           from './nodeTypes.js';
 import './pipeline.css';
 
+// Fallback size, used only until a node's real box has been measured (see
+// `nodeSizes` below) — e.g. the single frame between a brand-new node
+// appearing and its ResizeObserver callback firing. NOT used for edge/port
+// geometry once a real measurement exists: .pc-node is CSS-sized by its
+// content (min-width 176px / max-width 216px, auto height — see
+// pipeline.css), not a fixed 200x90 box, so hardcoding these for geometry
+// made every edge's start/end point drift up to ~24px horizontally and
+// ~19px vertically off the actual port dot (reported as "arrow not
+// properly aligned / not sticking to the connected node").
 const NODE_WIDTH  = 200;
 const NODE_HEIGHT = 90;
 
@@ -32,12 +41,22 @@ const NODE_HEIGHT = 90;
 const MIN_CANVAS_W = 2400;
 const MIN_CANVAS_H = 1200;
 
-/** Compute the absolute pixel position of a node's output or input port */
-function portPos(node, portType) {
+/**
+ * Compute the absolute pixel position of a node's output or input port.
+ * `sizes` is the {[nodeId]: {width, height}} map of each node's REAL
+ * rendered box (logical/unscaled px — see the ResizeObserver in
+ * PipelineCanvas). The port dot itself is centered exactly on its node's
+ * CSS box edge (`.pc-port { right: -6px; width: 12px }` etc. in
+ * pipeline.css put the dot's center exactly at the box's border, not
+ * inside or outside it), so the real box size is exactly what's needed
+ * here — no separate port offset to account for.
+ */
+function portPos(node, portType, sizes) {
+  const size = (sizes && sizes[node.id]) || { width: NODE_WIDTH, height: NODE_HEIGHT };
   const x = portType === 'output'
-    ? node.position.x + NODE_WIDTH
+    ? node.position.x + size.width
     : node.position.x;
-  return { x, y: node.position.y + NODE_HEIGHT / 2 };
+  return { x, y: node.position.y + size.height / 2 };
 }
 
 /** Would sourceId → targetId create a cycle, given existing edges? */
@@ -121,6 +140,52 @@ export function PipelineCanvas({
   onDeselectAll,
 }) {
   const canvasRef = useRef(null);      // scrollable viewport (.pc-canvas)
+
+  // Each node's REAL rendered box size (logical/unscaled px), keyed by node
+  // id — see portPos() above for why edge/port geometry needs this instead
+  // of a fixed NODE_WIDTH/NODE_HEIGHT. Measured synchronously after every
+  // commit that could change a node's visual size — a node's box is sized
+  // entirely by its own `node` data (title, metrics, config preview; see
+  // PipelineNode.jsx's `hasBody`), so re-running this on every `nodes`
+  // change covers every real case (drag-move alone doesn't change size, so
+  // it doesn't need to re-measure).
+  const [nodeSizes, setNodeSizes] = useState({});
+
+  useLayoutEffect(() => {
+    const container = canvasRef.current;
+    if (!container) return;
+    setNodeSizes((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      container.querySelectorAll('.pc-node').forEach((el) => {
+        const id = el.dataset.nodeId;
+        if (!id) return;
+        // offsetWidth/offsetHeight — NOT getBoundingClientRect() — on
+        // purpose: every `.pc-node` plays a `nodeAppear` mount animation
+        // (pipeline.css) that CSS-transforms it from scale(0.85) to
+        // scale(1), and getBoundingClientRect() reports that in-progress
+        // transformed size, so measuring during the ~0.18s animation would
+        // permanently cache a too-small box. offsetWidth/offsetHeight read
+        // the element's actual layout (border-box) size, which `transform`
+        // never affects — and, same reasoning, they're also already
+        // immune to the ancestor `.pc-canvas-inner`'s `transform:
+        // scale(zoom)`, so no /zoom division is needed here either.
+        const w = el.offsetWidth;
+        const h = el.offsetHeight;
+        const cur = next[id];
+        if (!cur || Math.abs(cur.width - w) > 0.5 || Math.abs(cur.height - h) > 0.5) {
+          next[id] = { width: w, height: h };
+          changed = true;
+        }
+      });
+      // Drop sizes for nodes that no longer exist, so a deleted-then-
+      // recreated id (unlikely but not impossible) never reads stale data.
+      Object.keys(next).forEach((id) => {
+        if (!nodes.some((n) => n.id === id)) { delete next[id]; changed = true; }
+      });
+      return changed ? next : prev;
+    });
+  }, [nodes, zoom]);
 
   // Drag state for moving a node
   const drag = useRef({ active: false, nodeId: null, startMouse: null, startPos: null });
@@ -244,7 +309,7 @@ export function PipelineCanvas({
     e.stopPropagation();
     const node = nodes.find((n) => n.id === nodeId);
     if (!node) return;
-    setGhost({ sourceId: nodeId, mousePos: portPos(node, 'output'), targetId: null, valid: true });
+    setGhost({ sourceId: nodeId, mousePos: portPos(node, 'output', nodeSizes), targetId: null, valid: true });
 
     const onMove = (mv) => {
       const canvasPt = clientToCanvas(mv.clientX, mv.clientY);
@@ -270,7 +335,7 @@ export function PipelineCanvas({
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup',   onUp);
-  }, [nodes, edges, clientToCanvas, onAddEdge]);
+  }, [nodes, edges, clientToCanvas, onAddEdge, nodeSizes]);
 
   // ── Edge context menu ────────────────────────────────────────
   const handleEdgeContextMenu = useCallback((edgeId, clientX, clientY) => {
@@ -354,8 +419,8 @@ export function PipelineCanvas({
                 <PipelineEdge
                   key={edge.id}
                   edge={edge}
-                  sourcePos={portPos(src, 'output')}
-                  targetPos={portPos(tgt, 'input')}
+                  sourcePos={portPos(src, 'output', nodeSizes)}
+                  targetPos={portPos(tgt, 'input', nodeSizes)}
                   selected={selectedId === edge.id}
                   animated={src.status === 'running' || tgt.status === 'running'}
                   status={tgt.status !== 'idle' ? tgt.status : 'idle'}
@@ -371,7 +436,7 @@ export function PipelineCanvas({
               const srcNode = augmentedNodes.find((n) => n.id === ghost.sourceId);
               return srcNode ? (
                 <GhostEdge
-                  sourcePos={portPos(srcNode, 'output')}
+                  sourcePos={portPos(srcNode, 'output', nodeSizes)}
                   mousePos={ghost.mousePos}
                   invalid={ghost.targetId ? !ghost.valid : false}
                 />

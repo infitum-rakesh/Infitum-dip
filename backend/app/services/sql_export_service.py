@@ -12,6 +12,8 @@ from pathlib import Path
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database.connection import AsyncSessionLocal
+
 from app.execution import sql_export_executor
 from app.execution.sql_export_executor import SQL_EXPORT_BASE_PATH
 from app.models.sql_export_job import SqlExportFormat, SqlExportStatus, SqlWorkspaceExportJob
@@ -49,7 +51,7 @@ async def create_export_job(
     db.add(job)
     await db.commit()
     await db.refresh(job)
-    sql_export_executor.start_export(job.id)
+    sql_export_executor.start_export(job.id, job.organization_id)
     return job
 
 
@@ -119,5 +121,6 @@ def resolve_download_path(job: SqlWorkspaceExportJob) -> Path | None:
 async def user_name_map(db: AsyncSession, ids: set[int]) -> dict[int, str]:
     if not ids:
         return {}
-    result = await db.execute(select(User.id, User.full_name).where(User.id.in_(ids)))
-    return {row.id: row.full_name for row in result.all()}
+    async with AsyncSessionLocal() as platform_db:  # User is a PlatformBase model — never the tenant-routed `db`
+        result = await platform_db.execute(select(User.id, User.full_name).where(User.id.in_(ids)))
+        return {row.id: row.full_name for row in result.all()}

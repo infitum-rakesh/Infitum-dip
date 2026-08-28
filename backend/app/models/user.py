@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from sqlalchemy import String, Enum, Boolean, DateTime, ForeignKey, JSON, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.database.connection import Base
+from app.database.connection import PlatformBase
 
 
 class UserRole(str, enum.Enum):
@@ -16,7 +16,7 @@ class UserRole(str, enum.Enum):
     VIEWER = "viewer"
 
 
-class User(Base):
+class User(PlatformBase):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)

@@ -18,7 +18,7 @@ export const reconciliationApi = {
 
   getJob: (id) => apiClient.get(`/reconciliation/jobs/${id}`).then((r) => r.data),
 
-  /** body: { name, source_connection_id, source_schema, source_object, target_connection_id, target_schema, target_object, key_columns, compare_columns, comparison_types } */
+  /** body: { name, source_connection_id, source_schema, source_object, target_connection_id, target_schema, target_object, key_columns, compare_columns, comparison_types, column_mapping } — column_mapping is {source_column: target_column}, only for columns that differ by name; anything unmapped falls back to matching by name. */
   createJob: (body) => apiClient.post('/reconciliation/jobs', body).then((r) => r.data),
 
   updateJob: (id, body) => apiClient.put(`/reconciliation/jobs/${id}`, body).then((r) => r.data),

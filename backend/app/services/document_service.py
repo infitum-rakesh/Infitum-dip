@@ -19,9 +19,12 @@ the same LLM engine as the Document Intelligence wizard
 (services/extraction_service.py) — auto-detects a schema from the
 document's real OCR text, then extracts genuine field values, via
 whichever AI Provider connection is configured for the organization. If
-no AI Provider connection exists yet, or there's no OCR text to work
-from, the stage is genuinely skipped (recorded as such in the timeline)
-rather than falling back to a fixed field template.
+no AI Provider connection exists yet, this now falls back to the
+**Custom Extraction Engine** (app/extraction/custom_engine.py) — a real,
+deterministic, rule-based extractor, NOT a language model — so the stage
+still produces genuine structured output with zero configuration
+required. The stage is only genuinely skipped when there's no OCR text
+to work from at all (recorded as such in the timeline).
 
 Image Scanner and Validation-stage timing remain simulated — a real
 image-quality analyzer doesn't exist yet, and Validation only formats the
@@ -44,9 +47,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database.connection import AsyncSessionLocal
+
 from app.connectors.base import ConnectorError
 from app.core.config import get_settings
-from app.database.connection import AsyncSessionLocal
+from app.database import tenant_engine_registry
 from app.models.connection import Connection, ConnectionCategory, ConnectionStatus
 from app.models.document import Document, DocumentStatus, DocumentType
 from app.models.user import User
@@ -182,8 +187,9 @@ def _stage_record(stage, status, started, ended, confidence=None, error=None) ->
 async def uploader_name_map(db: AsyncSession, ids: set[int]) -> dict[int, str]:
     if not ids:
         return {}
-    result = await db.execute(select(User.id, User.full_name).where(User.id.in_(ids)))
-    return {row.id: row.full_name for row in result.all()}
+    async with AsyncSessionLocal() as platform_db:  # User is a PlatformBase model — never the tenant-routed `db`
+        result = await platform_db.execute(select(User.id, User.full_name).where(User.id.in_(ids)))
+        return {row.id: row.full_name for row in result.all()}
 
 
 DATE_PRESETS = {"today", "yesterday", "last_7_days", "last_30_days"}
@@ -695,6 +701,28 @@ def _reshape_extraction_fields(raw_fields: list[dict]) -> list[dict]:
     return fields
 
 
+async def _run_custom_engine_extraction(db: AsyncSession, doc: Document, *, document_type: str | None = None) -> tuple[list[dict], float | None, str | None]:
+    """Real, zero-configuration fallback extraction via the Custom
+    Extraction Engine (app/extraction/custom_engine.py) — a deterministic
+    rule-based extractor, NOT a language model. Called whenever no AI
+    Provider connection is configured for the organization, from both the
+    automatic pipeline (_run_ai_extraction above) and the manual "Run AI
+    Extraction" action (run_manual_ai_extraction below), via
+    extraction_service's connection_id == CUSTOM_ENGINE_CONNECTION_ID
+    sentinel so neither of those callers needs any separate code path."""
+    try:
+        schema = await extraction_service.detect_schema(
+            db, doc, extraction_service.CUSTOM_ENGINE_CONNECTION_ID, doc.organization_id, document_type=document_type,
+        )
+        result = await extraction_service.extract_fields(
+            db, doc, schema, extraction_service.CUSTOM_ENGINE_CONNECTION_ID, doc.organization_id,
+        )
+    except extraction_service.ExtractionError as exc:
+        return [], None, f"Custom Extraction Engine: {exc}"
+    fields = _reshape_extraction_fields(result["fields"])
+    return fields, result.get("overallConfidence"), None
+
+
 async def _run_ai_extraction(db: AsyncSession, doc: Document) -> tuple[list[dict], float | None, str | None]:
     """Real AI Extraction for the Documents module's automatic pipeline —
     the same LLM engine as the Document Intelligence wizard
@@ -733,14 +761,18 @@ async def _run_ai_extraction(db: AsyncSession, doc: Document) -> tuple[list[dict
     writer lock right as one of these autoflushes fired). Suppressing
     autoflush here just defers that write to process_document's own
     single explicit commit at the end, where it belongs — no data is
-    lost, only the accidental extra flush points are removed."""
+    lost, only the accidental extra flush points are removed.
+
+    No AI Provider connection configured -> falls back to the Custom
+    Extraction Engine (see _run_custom_engine_extraction below) instead
+    of skipping the stage outright."""
     if not doc.ocr_result or not (doc.ocr_result.get("full_text") or "").strip():
         return [], None, "No OCR text available for AI Extraction."
 
     with db.no_autoflush:
         candidates = await _pick_ai_connections(db, doc.organization_id)
         if not candidates:
-            return [], None, "No active AI Provider connection configured — add one on the Connections page to enable AI Extraction."
+            return await _run_custom_engine_extraction(db, doc)
 
         last_error: str | None = None
         for conn in candidates:
@@ -875,47 +907,75 @@ async def run_manual_ai_extraction(
     is omitted (the default, "Auto"), every active AI Provider connection
     is tried in order until one genuinely succeeds — see
     _pick_ai_connections() — so a single broken connection no longer
-    blocks extraction outright when a working one is also configured."""
+    blocks extraction outright when a working one is also configured.
+
+    connection_id == extraction_service.CUSTOM_ENGINE_CONNECTION_ID (the
+    "Custom (No AI Required)" option in the picker) routes straight to
+    the Custom Extraction Engine, explicitly requested. "Auto" with no
+    AI Provider connection configured now falls back to the same engine
+    too, instead of raising — matching the automatic pipeline's
+    behavior (_run_ai_extraction above)."""
     if not doc.ocr_result or not (doc.ocr_result.get("full_text") or "").strip():
         raise ManualExtractionError("This document has no OCR text yet — run OCR first (Process/Reprocess).")
 
-    if connection_id is not None:
-        conn = await get_connection(db, connection_id, doc.organization_id)
-        if conn is None:
-            raise ManualExtractionError("Selected AI connection not found.")
-        if conn.category != ConnectionCategory.AI_PROVIDER:
-            raise ManualExtractionError(f"'{_conn_label(conn)}' is not an AI Provider connection.")
-        candidates = [conn]
-    else:
-        candidates = await _pick_ai_connections(db, doc.organization_id)
-        if not candidates:
-            raise ManualExtractionError("No active AI Provider connection configured — add one on the Connections page.")
+    use_custom_engine = connection_id == extraction_service.CUSTOM_ENGINE_CONNECTION_ID
+    candidates: list[Connection] = []
+    if not use_custom_engine:
+        if connection_id is not None:
+            conn = await get_connection(db, connection_id, doc.organization_id)
+            if conn is None:
+                raise ManualExtractionError("Selected AI connection not found.")
+            if conn.category != ConnectionCategory.AI_PROVIDER:
+                raise ManualExtractionError(f"'{_conn_label(conn)}' is not an AI Provider connection.")
+            candidates = [conn]
+        else:
+            candidates = await _pick_ai_connections(db, doc.organization_id)
+            if not candidates:
+                # No AI Provider connection configured for "Auto" -> fall
+                # back to the Custom Extraction Engine instead of failing
+                # outright, same as the automatic pipeline does.
+                use_custom_engine = True
 
     errors: list[str] = []
     result: dict | None = None
     used_conn: Connection | None = None
-    for conn in candidates:
+    if use_custom_engine:
+        extra_names = None
+        if document_type:
+            extra_names = await discover_known_field_names(db, doc.organization_id, document_type=document_type)
         try:
-            extra_names = None
-            if document_type:
-                extra_names = await discover_known_field_names(db, doc.organization_id, document_type=document_type)
             schema = await extraction_service.detect_schema(
-                db, doc, conn.id, doc.organization_id, document_type=document_type, extra_field_names=extra_names,
+                db, doc, extraction_service.CUSTOM_ENGINE_CONNECTION_ID, doc.organization_id,
+                document_type=document_type, extra_field_names=extra_names,
             )
-            result = await extraction_service.extract_fields(db, doc, schema, conn.id, doc.organization_id)
-            # Gap-fill (find_gap_fields) is deliberately NOT run for a known
-            # canonical document_type — see the matching comment in
-            # _run_ai_extraction() above for the real, observed fabrication
-            # this caused (a plausible-sounding field name proposed beyond
-            # the taxonomy, then given a made-up value instead of null). The
-            # canonical taxonomy (document_taxonomies.py) is comprehensive
-            # by design; this second, less-grounded pass isn't worth that risk.
-            used_conn = conn
-            break
+            result = await extraction_service.extract_fields(
+                db, doc, schema, extraction_service.CUSTOM_ENGINE_CONNECTION_ID, doc.organization_id,
+            )
         except extraction_service.ExtractionError as exc:
-            errors.append(f"{_conn_label(conn)}: {exc}")
-            result = None
-            continue
+            errors.append(f"Custom Extraction Engine: {exc}")
+    else:
+        for conn in candidates:
+            try:
+                extra_names = None
+                if document_type:
+                    extra_names = await discover_known_field_names(db, doc.organization_id, document_type=document_type)
+                schema = await extraction_service.detect_schema(
+                    db, doc, conn.id, doc.organization_id, document_type=document_type, extra_field_names=extra_names,
+                )
+                result = await extraction_service.extract_fields(db, doc, schema, conn.id, doc.organization_id)
+                # Gap-fill (find_gap_fields) is deliberately NOT run for a known
+                # canonical document_type — see the matching comment in
+                # _run_ai_extraction() above for the real, observed fabrication
+                # this caused (a plausible-sounding field name proposed beyond
+                # the taxonomy, then given a made-up value instead of null). The
+                # canonical taxonomy (document_taxonomies.py) is comprehensive
+                # by design; this second, less-grounded pass isn't worth that risk.
+                used_conn = conn
+                break
+            except extraction_service.ExtractionError as exc:
+                errors.append(f"{_conn_label(conn)}: {exc}")
+                result = None
+                continue
 
     if result is None:
         if len(candidates) > 1:
@@ -924,7 +984,7 @@ async def run_manual_ai_extraction(
 
     fields = _reshape_extraction_fields(result["fields"])
     if not fields:
-        raise ManualExtractionError("The AI model didn't find any usable fields in this document.")
+        raise ManualExtractionError("The Custom Extraction Engine didn't find any usable fields in this document." if use_custom_engine else "The AI model didn't find any usable fields in this document.")
 
     doc.extraction_result = {"fields": fields, "business_rule_flag": False, "document_type": document_type}
     doc.dataset = build_dataset(fields)
@@ -933,7 +993,7 @@ async def run_manual_ai_extraction(
     doc.status = DocumentStatus.COMPLETED if overall_conf >= 90 else DocumentStatus.NEEDS_REVIEW
     doc.error_message = None
     now = datetime.now(timezone.utc)
-    conn_suffix = f" via {_conn_label(used_conn)}" if used_conn else ""
+    conn_suffix = f" via {'Custom Extraction Engine' if use_custom_engine else _conn_label(used_conn)}" if (use_custom_engine or used_conn) else ""
     label = f"AI Extraction (Manual — {document_type}{conn_suffix})" if document_type else f"AI Extraction (Manual{conn_suffix})"
     doc.timeline = list(doc.timeline or []) + [_stage_record(label, "completed", now, now, confidence=overall_conf)]
     await db.commit()
@@ -1292,21 +1352,24 @@ async def start_processing(db: AsyncSession, doc: Document, *, reprocess: bool) 
     await db.refresh(doc)
 
     document_id = doc.id
-    task = asyncio.create_task(_process_in_background(document_id, reprocess))
+    task = asyncio.create_task(_process_in_background(document_id, reprocess, doc.organization_id))
     _running_tasks[document_id] = task
     task.add_done_callback(lambda _t, did=document_id: _running_tasks.pop(did, None))
     return doc
 
 
-async def _process_in_background(document_id: int, reprocess: bool) -> None:
+async def _process_in_background(document_id: int, reprocess: bool, organization_id: int | None) -> None:
     """Runs detached from the request that triggered it, so it needs its
     own DB session — the request's session is gone by the time this
     actually executes. process_document() already catches everything it
     can meaningfully attribute to a specific stage; this outer catch is
     belt-and-suspenders for anything that somehow still escapes (e.g. the
     document row itself vanishing mid-run), so a document can never be
-    left stuck showing an in-progress status forever."""
-    async with AsyncSessionLocal() as db:
+    left stuck showing an in-progress status forever. organization_id
+    comes from the doc row the caller (start_processing) already has in
+    hand — see tenant_engine_registry.get_background_sessionmaker."""
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         doc = await db.get(Document, document_id)
         if doc is None:
             return

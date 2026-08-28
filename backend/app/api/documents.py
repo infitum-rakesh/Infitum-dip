@@ -10,7 +10,7 @@ from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_organization, get_current_user, require_action
-from app.database.connection import get_db
+from app.database.tenant_routing import get_tenant_db
 from app.models.document import DocumentStatus
 from app.models.organization import Organization
 from app.models.user import User, UserRole
@@ -63,7 +63,7 @@ def _to_out(doc, name_map: dict[int, str]) -> DocumentOut:
 @router.get("/stats", response_model=DocumentStatsOut)
 async def stats(
     user: User = Depends(require_action("VIEW")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     return await svc.get_stats(db, _effective_org_id(user))
 
@@ -71,7 +71,7 @@ async def stats(
 @router.get("/facets", response_model=DocumentFacetsOut)
 async def facets(
     user: User = Depends(require_action("VIEW")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     return await svc.get_facets(db, _effective_org_id(user))
 
@@ -105,7 +105,7 @@ async def list_documents(
     sort_by: str = Query("uploaded_at"),
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
     user: User = Depends(require_action("VIEW")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     items, total, name_map = await svc.list_documents(
         db,
@@ -131,7 +131,7 @@ async def list_documents(
 async def get_document(
     document_id: int,
     user: User = Depends(require_action("VIEW")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     doc = await _get_or_404(db, document_id, user)
     name_map = await svc.uploader_name_map(db, {doc.uploaded_by_id} if doc.uploaded_by_id else set())
@@ -146,7 +146,7 @@ async def get_document(
 async def upload_document(
     file: UploadFile = File(...),
     user: User = Depends(require_action("CREATE")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     try:
         doc, _duplicate_of_id = await svc.save_upload(db, file=file, organization_id=user.organization_id, uploaded_by_id=user.id)
@@ -176,7 +176,7 @@ class BulkUploadResultOut(BaseModel):
 async def upload_documents_bulk(
     files: list[UploadFile] = File(...),
     user: User = Depends(require_action("CREATE")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     """Accepts multiple files in one request, saves each as its own real
     Document row (identical to /upload — no shortcuts), then immediately
@@ -233,7 +233,7 @@ async def update_document(
     document_id: int,
     body: DocumentUpdateRequest,
     user: User = Depends(require_action("EDIT")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     doc = await _get_or_404(db, document_id, user)
     doc = await svc.update_document(db, doc, filename=body.filename, folder=body.folder)
@@ -247,7 +247,7 @@ async def update_document(
 async def delete_document(
     document_id: int,
     user: User = Depends(require_action("DELETE")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     doc = await _get_or_404(db, document_id, user)
     await svc.delete_document(db, doc)
@@ -260,7 +260,7 @@ async def delete_document(
 async def process_document(
     document_id: int,
     user: User = Depends(require_action("EXECUTE")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     """Starts real OCR + AI Extraction as a background task and returns
     immediately with the document's status flipped to SCANNING — does NOT
@@ -281,7 +281,7 @@ async def process_document(
 async def reprocess_document(
     document_id: int,
     user: User = Depends(require_action("EXECUTE")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     """Same non-blocking start as /process above, but resets the timeline
     (reprocess=True) — see start_processing()."""
@@ -298,7 +298,7 @@ async def send_to_review(
     document_id: int,
     body: SendToReviewRequest | None = None,
     user: User = Depends(require_action("APPROVE")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     doc = await _get_or_404(db, document_id, user)
     doc = await svc.send_to_review(db, doc)
@@ -317,7 +317,7 @@ async def send_to_review(
 async def cancel_review(
     document_id: int,
     user: User = Depends(require_action("APPROVE")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     doc = await _get_or_404(db, document_id, user)
     if doc.status != DocumentStatus.NEEDS_REVIEW:
@@ -336,7 +336,7 @@ async def cancel_review(
 async def get_ocr(
     document_id: int,
     user: User = Depends(require_action("VIEW")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     doc = await _get_or_404(db, document_id, user)
     if not doc.ocr_result:
@@ -348,7 +348,7 @@ async def get_ocr(
 async def get_extraction(
     document_id: int,
     user: User = Depends(require_action("VIEW")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     doc = await _get_or_404(db, document_id, user)
     if not doc.extraction_result:
@@ -364,7 +364,7 @@ async def get_extraction(
 async def get_dataset(
     document_id: int,
     user: User = Depends(require_action("VIEW")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     doc = await _get_or_404(db, document_id, user)
     if not doc.dataset:
@@ -382,7 +382,7 @@ async def run_extraction(
     document_id: int,
     body: RunExtractionRequest | None = None,
     user: User = Depends(require_action("EXECUTE")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     """Explicit, user-triggered AI Extraction — the option missing from
     the review flow ("no AI extraction option while reviewing"). Can be
@@ -409,7 +409,7 @@ async def manual_extraction(
     document_id: int,
     body: ManualExtractionRequest,
     user: User = Depends(require_action("EDIT")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     """Lets the user build structured data by hand from the document's OCR
     text when AI Extraction found nothing (no AI connection configured, or
@@ -437,7 +437,7 @@ async def manual_extraction(
 async def view_file(
     document_id: int,
     user: User = Depends(require_action("VIEW")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     doc = await _get_or_404(db, document_id, user)
     content = svc.read_file(doc)
@@ -448,7 +448,7 @@ async def view_file(
 async def download_file(
     document_id: int,
     user: User = Depends(require_action("VIEW")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     doc = await _get_or_404(db, document_id, user)
     content = svc.read_file(doc)
@@ -466,7 +466,7 @@ async def bulk_action(
     body: BulkActionRequest,
     user: User = Depends(get_current_user),
     org: Organization | None = Depends(get_current_organization),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     action_map = {"process": "EXECUTE", "send_to_review": "APPROVE", "delete": "DELETE"}
     required_action = action_map.get(body.action)

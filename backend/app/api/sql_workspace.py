@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_organization, get_current_user
-from app.database.connection import get_db
+from app.database.tenant_routing import get_tenant_db
 from app.models.organization import Organization
 from app.models.user import User, UserRole
 from app.schemas.sql_workspace import (
@@ -59,7 +59,7 @@ def require_sql_action(action: str):
     async def _checker(
         user: User = Depends(get_current_user),
         org: Organization | None = Depends(get_current_organization),
-        db: AsyncSession = Depends(get_db),
+        db: AsyncSession = Depends(get_tenant_db),
     ) -> User:
         permissions = await role_service.effective_sql_permissions(db, user)
         if action not in permissions:
@@ -121,7 +121,7 @@ _VALID_SCOPES = {"mine", "shared", "favorites"}
 
 
 @router.get("/queries", response_model=QueryListOut)
-async def list_queries(scope: str = "mine", user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def list_queries(scope: str = "mine", user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     if scope not in _VALID_SCOPES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"scope must be one of {sorted(_VALID_SCOPES)}.")
     rows, total = await svc.list_queries(db, _effective_org_id(user), scope=scope, user_id=user.id)
@@ -131,7 +131,7 @@ async def list_queries(scope: str = "mine", user: User = Depends(_view), db: Asy
 
 
 @router.post("/queries", response_model=QueryOut, status_code=status.HTTP_201_CREATED)
-async def create_query(body: QueryCreateRequest, user: User = Depends(_write), db: AsyncSession = Depends(get_db)):
+async def create_query(body: QueryCreateRequest, user: User = Depends(_write), db: AsyncSession = Depends(get_tenant_db)):
     try:
         row = await svc.create_query(
             db, organization_id=user.organization_id, name=body.name, connection_id=body.connection_id,
@@ -143,14 +143,14 @@ async def create_query(body: QueryCreateRequest, user: User = Depends(_write), d
 
 
 @router.get("/queries/{query_id}", response_model=QueryOut)
-async def get_query(query_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_query(query_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     row = await _get_visible_query_or_404(db, query_id, user)
     favorite_ids = await svc.favorited_query_ids(db, user.id, {row.id})
     return await _to_out(db, row, is_favorite=row.id in favorite_ids)
 
 
 @router.put("/queries/{query_id}", response_model=QueryOut)
-async def update_query(query_id: int, body: QueryUpdateRequest, user: User = Depends(_write), db: AsyncSession = Depends(get_db)):
+async def update_query(query_id: int, body: QueryUpdateRequest, user: User = Depends(_write), db: AsyncSession = Depends(get_tenant_db)):
     row = await _get_visible_query_or_404(db, query_id, user)
     try:
         svc.ensure_owner_or_elevated(row, user.id, user.role in _ELEVATED_ROLES)
@@ -162,7 +162,7 @@ async def update_query(query_id: int, body: QueryUpdateRequest, user: User = Dep
 
 
 @router.delete("/queries/{query_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_query(query_id: int, user: User = Depends(_delete), db: AsyncSession = Depends(get_db)):
+async def delete_query(query_id: int, user: User = Depends(_delete), db: AsyncSession = Depends(get_tenant_db)):
     row = await _get_visible_query_or_404(db, query_id, user)
     try:
         svc.ensure_owner_or_elevated(row, user.id, user.role in _ELEVATED_ROLES)
@@ -172,7 +172,7 @@ async def delete_query(query_id: int, user: User = Depends(_delete), db: AsyncSe
 
 
 @router.post("/queries/{query_id}/favorite", response_model=FavoriteToggleOut)
-async def toggle_favorite(query_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def toggle_favorite(query_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     """Anyone who can VIEW a query (their own, or a shared one) can
     favorite/unfavorite it for themselves — favoriting doesn't require
     WRITE, it's a personal bookmark, not a change to the query itself."""
@@ -184,7 +184,7 @@ async def toggle_favorite(query_id: int, user: User = Depends(_view), db: AsyncS
 # ── Run ──────────────────────────────────────────────────────────
 
 @router.post("/connections/{connection_id}/run", response_model=RunSqlResponse)
-async def run_sql(connection_id: int, body: RunSqlRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_db)):
+async def run_sql(connection_id: int, body: RunSqlRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
     # Route-level EXECUTE gate above only covers "can this user run
     # anything at all" — the ACTUAL statement (READ vs a write vs DDL) and
     # the target connection's real environment are checked per-statement
@@ -217,7 +217,7 @@ async def run_sql(connection_id: int, body: RunSqlRequest, user: User = Depends(
 # (or an elevated role) inside svc.cancel_run().
 
 @router.post("/connections/{connection_id}/cancel", response_model=CancelRunOut)
-async def cancel_run(connection_id: int, body: CancelRunRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_db)):
+async def cancel_run(connection_id: int, body: CancelRunRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
     try:
         await svc.cancel_run(
             client_run_id=body.client_run_id, organization_id=_effective_org_id(user),
@@ -233,7 +233,7 @@ async def cancel_run(connection_id: int, body: CancelRunRequest, user: User = De
 # ── Explain ──────────────────────────────────────────────────────
 
 @router.post("/connections/{connection_id}/explain", response_model=ExplainResponse)
-async def explain_sql(connection_id: int, body: ExplainRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_db)):
+async def explain_sql(connection_id: int, body: ExplainRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
     start = time.monotonic()
     try:
         result = await svc.explain_sql(
@@ -254,7 +254,7 @@ async def explain_sql(connection_id: int, body: ExplainRequest, user: User = Dep
 # without AI_ASSISTANT (or vice versa), they're independent grants.
 
 @router.post("/connections/{connection_id}/ai/generate-sql", response_model=AiGenerateSqlResponse)
-async def ai_generate_sql(connection_id: int, body: AiGenerateSqlRequest, user: User = Depends(_ai), db: AsyncSession = Depends(get_db)):
+async def ai_generate_sql(connection_id: int, body: AiGenerateSqlRequest, user: User = Depends(_ai), db: AsyncSession = Depends(get_tenant_db)):
     start = time.monotonic()
     try:
         result = await sql_ai_service.generate_sql(
@@ -284,7 +284,7 @@ async def list_history(
     page: int = 1,
     page_size: int = 50,
     user: User = Depends(_view),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     elevated = user.role in _ELEVATED_ROLES
     own_only = (not elevated) or (scope == "mine")
@@ -334,7 +334,7 @@ async def _get_export_job_or_404(db: AsyncSession, job_id: int, user: User):
 
 
 @router.post("/connections/{connection_id}/export", response_model=ExportJobOut, status_code=status.HTTP_201_CREATED)
-async def create_export(connection_id: int, body: ExportCreateRequest, user: User = Depends(_export), db: AsyncSession = Depends(get_db)):
+async def create_export(connection_id: int, body: ExportCreateRequest, user: User = Depends(_export), db: AsyncSession = Depends(get_tenant_db)):
     try:
         job = await sql_export_service.create_export_job(
             db, organization_id=_effective_org_id(user), connection_id=connection_id, user_id=user.id,
@@ -349,7 +349,7 @@ async def create_export(connection_id: int, body: ExportCreateRequest, user: Use
 @router.get("/exports", response_model=ExportJobListOut)
 async def list_exports(
     connection_id: int | None = None, page: int = 1, page_size: int = 20,
-    user: User = Depends(_export), db: AsyncSession = Depends(get_db),
+    user: User = Depends(_export), db: AsyncSession = Depends(get_tenant_db),
 ):
     elevated = user.role in _ELEVATED_ROLES
     rows, total = await sql_export_service.list_export_jobs(
@@ -361,14 +361,14 @@ async def list_exports(
 
 
 @router.get("/exports/{job_id}", response_model=ExportJobOut)
-async def get_export(job_id: int, user: User = Depends(_export), db: AsyncSession = Depends(get_db)):
+async def get_export(job_id: int, user: User = Depends(_export), db: AsyncSession = Depends(get_tenant_db)):
     job = await _get_export_job_or_404(db, job_id, user)
     name_map = await sql_export_service.user_name_map(db, {job.created_by} if job.created_by else set())
     return _export_job_to_out(job, name_map)
 
 
 @router.post("/exports/{job_id}/cancel", response_model=ExportCancelOut)
-async def cancel_export(job_id: int, user: User = Depends(_export), db: AsyncSession = Depends(get_db)):
+async def cancel_export(job_id: int, user: User = Depends(_export), db: AsyncSession = Depends(get_tenant_db)):
     job = await _get_export_job_or_404(db, job_id, user)
     try:
         sql_export_service.ensure_owner_or_elevated(job, user.id, user.role in _ELEVATED_ROLES)
@@ -382,7 +382,7 @@ async def cancel_export(job_id: int, user: User = Depends(_export), db: AsyncSes
 
 
 @router.get("/exports/{job_id}/download")
-async def download_export(job_id: int, user: User = Depends(_export), db: AsyncSession = Depends(get_db)):
+async def download_export(job_id: int, user: User = Depends(_export), db: AsyncSession = Depends(get_tenant_db)):
     job = await _get_export_job_or_404(db, job_id, user)
     try:
         sql_export_service.ensure_owner_or_elevated(job, user.id, user.role in _ELEVATED_ROLES)
@@ -403,6 +403,6 @@ async def download_export(job_id: int, user: User = Depends(_export), db: AsyncS
 # this endpoint informs the UI, it doesn't grant anything by itself.
 
 @router.get("/permissions", response_model=SqlPermissionsOut)
-async def get_my_permissions(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def get_my_permissions(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_tenant_db)):
     permissions = await role_service.effective_sql_permissions(db, user)
     return SqlPermissionsOut(actions=sorted(permissions))

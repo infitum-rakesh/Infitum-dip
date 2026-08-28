@@ -27,7 +27,7 @@ from datetime import datetime
 from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import TenantBase
 
 
 class SqlExportStatus(str, enum.Enum):
@@ -45,11 +45,11 @@ class SqlExportFormat(str, enum.Enum):
     PARQUET = "PARQUET"
 
 
-class SqlWorkspaceExportJob(Base):
+class SqlWorkspaceExportJob(TenantBase):
     __tablename__ = "sql_workspace_export_jobs"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
     connection_id: Mapped[int] = mapped_column(ForeignKey("connections.id"), nullable=False, index=True)
 
     sql_text: Mapped[str] = mapped_column(Text, nullable=False)
@@ -63,7 +63,7 @@ class SqlWorkspaceExportJob(Base):
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     def __repr__(self) -> str:

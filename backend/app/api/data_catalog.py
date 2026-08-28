@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_action
-from app.database.connection import get_db
+from app.database.tenant_routing import get_tenant_db
 from app.models.user import User, UserRole
 from app.services import data_catalog_service as svc
 
@@ -30,13 +30,13 @@ def _not_found(asset_id: str) -> HTTPException:
 
 
 @router.get("/stats")
-async def stats(user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def stats(user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     """KPI header: total assets, datasets, tables, files, quality score, recent assets."""
     return await svc.get_stats(db, _effective_org_id(user))
 
 
 @router.get("/facets")
-async def facets(user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def facets(user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     """Distinct filter values for the catalog filter panel."""
     return await svc.get_facets(db, _effective_org_id(user))
 
@@ -58,7 +58,7 @@ async def list_assets(
     page_size: int = Query(20, ge=1, le=200),
     sort_by: str = Query("last_updated"),
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
-    user: User = Depends(_view), db: AsyncSession = Depends(get_db),
+    user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db),
 ):
     return await svc.list_assets(
         db, _effective_org_id(user),
@@ -69,7 +69,7 @@ async def list_assets(
 
 
 @router.get("/assets/{asset_id}")
-async def get_asset(asset_id: str, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_asset(asset_id: str, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     asset = await svc.get_asset(db, asset_id, _effective_org_id(user))
     if asset is None:
         raise _not_found(asset_id)
@@ -77,7 +77,7 @@ async def get_asset(asset_id: str, user: User = Depends(_view), db: AsyncSession
 
 
 @router.get("/assets/{asset_id}/columns")
-async def get_columns(asset_id: str, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_columns(asset_id: str, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     columns = await svc.get_columns(db, asset_id, _effective_org_id(user))
     if columns is None:
         raise _not_found(asset_id)
@@ -85,7 +85,7 @@ async def get_columns(asset_id: str, user: User = Depends(_view), db: AsyncSessi
 
 
 @router.get("/assets/{asset_id}/profile")
-async def get_profile(asset_id: str, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_profile(asset_id: str, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     profile = await svc.get_profile(db, asset_id, _effective_org_id(user))
     if profile is None:
         raise _not_found(asset_id)
@@ -93,7 +93,7 @@ async def get_profile(asset_id: str, user: User = Depends(_view), db: AsyncSessi
 
 
 @router.get("/assets/{asset_id}/lineage")
-async def get_lineage(asset_id: str, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_lineage(asset_id: str, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     lineage = await svc.get_lineage(db, asset_id, _effective_org_id(user))
     if lineage is None:
         raise _not_found(asset_id)
@@ -101,7 +101,7 @@ async def get_lineage(asset_id: str, user: User = Depends(_view), db: AsyncSessi
 
 
 @router.get("/assets/{asset_id}/quality")
-async def get_quality(asset_id: str, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_quality(asset_id: str, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     quality = await svc.get_quality(db, asset_id, _effective_org_id(user))
     if quality is None:
         raise _not_found(asset_id)
@@ -109,7 +109,7 @@ async def get_quality(asset_id: str, user: User = Depends(_view), db: AsyncSessi
 
 
 @router.get("/assets/{asset_id}/incidents")
-async def get_incidents(asset_id: str, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_incidents(asset_id: str, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     incidents = await svc.get_incidents(db, asset_id, _effective_org_id(user))
     if incidents is None:
         raise _not_found(asset_id)
@@ -117,7 +117,7 @@ async def get_incidents(asset_id: str, user: User = Depends(_view), db: AsyncSes
 
 
 @router.get("/assets/{asset_id}/usage")
-async def get_usage(asset_id: str, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_usage(asset_id: str, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     usage = await svc.get_usage(db, asset_id, _effective_org_id(user))
     if usage is None:
         raise _not_found(asset_id)

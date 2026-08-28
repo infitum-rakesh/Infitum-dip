@@ -10,7 +10,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import TenantBase
 
 
 class ScheduleFrequency(str, enum.Enum):
@@ -45,15 +45,15 @@ class RunStatus(str, enum.Enum):
     FAILED = "FAILED"
 
 
-class Schedule(Base):
+class Schedule(TenantBase):
     __tablename__ = "schedules"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
 
     # FK only, no relationship() back-populates — additive, doesn't touch
     # models/organization.py or models/user.py.
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
-    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
+    owner_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
 
@@ -94,14 +94,23 @@ class Schedule(Base):
         return f"<Schedule {self.name} ({self.status})>"
 
 
-class ScheduleRun(Base):
+class ScheduleRun(TenantBase):
     """One execution of a Schedule — the audit/history trail."""
     __tablename__ = "schedule_runs"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     schedule_id: Mapped[int] = mapped_column(ForeignKey("schedules.id"), nullable=False, index=True)
 
-    status: Mapped[RunStatus] = mapped_column(Enum(RunStatus), default=RunStatus.RUNNING, index=True)
+    # name= is required here (Postgres/MySQL only — SQLite ignores it and
+    # just emits a CHECK constraint): this codebase has TWO independent
+    # RunStatus enum classes (this one and pipeline_run.py's, different
+    # member sets) — SQLAlchemy's Enum() names the native DB enum type
+    # after the Python class by default, so both would otherwise collide
+    # on a single "runstatus" type and whichever table's create_all() ran
+    # second would fail loading the other's values. Found live during
+    # Bring-Your-Own-Database Phase 6 verification against real Postgres
+    # (SQLite has no native enum type, so this was invisible until then).
+    status: Mapped[RunStatus] = mapped_column(Enum(RunStatus, name="schedule_run_status"), default=RunStatus.RUNNING, index=True)
     trigger: Mapped[str] = mapped_column(String(20), default="Schedule")  # Schedule | Manual | Rerun
 
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

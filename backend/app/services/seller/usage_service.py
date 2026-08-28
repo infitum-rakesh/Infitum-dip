@@ -19,6 +19,18 @@ ReconciliationRun/TargetLoadRun (everything usage is actually measured
 from) do not. Wiring a filter that silently does nothing would be worse
 than omitting it, so the API simply doesn't accept one; see Seller
 Portal memory / Phase 6 summary for the disclosure to the user.
+
+KNOWN LIMITATION (Bring-Your-Own-Database): same disclosure as
+dashboard_service.py's module docstring — every query here runs against
+one single `db` session (the platform database) across all orgs at once.
+An org that has completed its own individual BYO-Database migration
+moves its real Document/PipelineRun/ValidationRun/ReconciliationRun/
+TargetLoadRun rows to a separate physical database this session can't
+see, so this file's per-org usage numbers (and the platform KPIs it
+reuses from dashboard_service) silently go stale for that org from its
+migration date forward, rather than erroring. Not fixed here — real
+per-org routing would need fan-out aggregation (one query per org's own
+sessionmaker), a separate, larger piece of work.
 """
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone

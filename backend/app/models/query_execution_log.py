@@ -19,18 +19,18 @@ from datetime import datetime
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import TenantBase
 
 SQL_TEXT_CAP = 4000
 
 
-class QueryExecutionLog(Base):
+class QueryExecutionLog(TenantBase):
     __tablename__ = "query_execution_logs"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
     connection_id: Mapped[int] = mapped_column(ForeignKey("connections.id"), nullable=False, index=True)
-    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     sql_text: Mapped[str] = mapped_column(Text, nullable=False)
     statement_command: Mapped[str] = mapped_column(String(30), nullable=False)   # SELECT, INSERT, DELETE, DROP, UNKNOWN, ...

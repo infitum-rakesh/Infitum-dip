@@ -10,21 +10,29 @@ ONE Source Dataset node to a staging file — built for very large single
 tables). This engine instead runs an entire multi-node graph end-to-end
 for real, in one in-memory pandas DataFrame per source. For SQL-database
 connections (Postgres/MySQL/SQL Server/Oracle/Snowflake/SAP/Vertica/
-Fabric/NetSuite SuiteQL) a TABLE/VIEW/QUERY source now reads EXHAUSTIVELY
-via the same chunked open_sql_stream()/fetch_chunk() primitive
-execution/worker.py's "Run Extraction" engine uses — no silent 50K-row
-truncation — up to SOURCE_ROW_HARD_CAP as an in-memory safety ceiling
+Fabric/NetSuite SuiteQL) AND for Salesforce, a TABLE/VIEW/QUERY source now
+reads EXHAUSTIVELY via the same chunked open_sql_stream()/fetch_chunk()
+primitive execution/worker.py's "Run Extraction" engine uses — no silent
+row truncation — up to SOURCE_ROW_HARD_CAP as an in-memory safety ceiling
 (this engine still isn't a distributed/spilling engine, so *some* ceiling
-has to exist, but it's 40x the old cap). Connectors that don't support
-streaming (Salesforce, generic SOAP/REST, files) fall back to the older
-single-shot bounded preview, capped at SOURCE_ROW_CAP — every truncation,
-at either cap, is disclosed via the source node's log line, never applied
-silently.
+has to exist, but it's 40x the old cap). Streaming is a generic capability
+check (connector.build_select_all_sql() — see connectors/base.py), NOT
+gated on the SQL-only quote_object()/quote_identifier() concept the way an
+earlier version of this engine mistakenly was — that earlier gate silently
+routed every Salesforce object through the bounded preview_object() path
+below instead, which Salesforce itself hard-caps near 2,000 rows
+regardless of the object's real size or the Source Dataset node's Load
+Type (BULK/AUTO/ROW_BY_ROW) setting; both are now real, honored, and
+disclosed via the source node's log line if the row cap is ever hit.
+Connectors that genuinely don't implement build_select_all_sql() (generic
+SOAP/REST, files) still fall back to the older single-shot bounded
+preview, capped at SOURCE_ROW_CAP.
 
 Node types executed for real:
   source              TABLE/VIEW/QUERY on a saved connection — real
-                       exhaustive chunked read for SQL databases (see
-                       _stream_all_rows), or the connector's bounded
+                       exhaustive chunked read for every connector that
+                       implements build_select_all_sql() + open_sql_stream()
+                       (see _stream_all_rows), or the connector's bounded
                        preview_object/preview_sql for connectors that
                        don't support streaming — or an uploaded
                        PipelineSourceFile (CSV/TSV/Excel/JSON read
@@ -99,7 +107,7 @@ from sqlalchemy import select
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.connectors.base import ConnectorError, ConnectorUnsupportedError
-from app.database.connection import AsyncSessionLocal
+from app.database import tenant_engine_registry
 from app.loading import scd
 from app.loading.writers.base import write_batch_with_fallback
 from app.loading.writers.registry import get_bulk_writer
@@ -124,6 +132,12 @@ DI_NODE_TYPES = {"doc_input", "image_scanner", "ocr_engine", "ai_extraction", "s
 
 _running_tasks: dict[int, asyncio.Task] = {}
 _cancelled: set[int] = set()
+# job_id -> organization_id, set once in start_job() (before the task even
+# starts) and read by every _log/_update_node_stats/_finish call below —
+# avoids threading organization_id through all ~47 of those call sites
+# individually; same "small module-level dict keyed by job_id" shape
+# _running_tasks/_cancelled already use for their own cross-cutting concerns.
+_job_org_cache: dict[int, int | None] = {}
 
 
 class NodeExecutionError(Exception):
@@ -145,10 +159,13 @@ def request_cancel(job_id: int) -> bool:
     return True
 
 
-def start_job(job_id: int) -> None:
+def start_job(job_id: int, organization_id: int | None) -> None:
     """Fire-and-forget — the API route that calls this does not (and must
-    not) await it; the frontend polls GET /pipeline-jobs/{id} and .../logs."""
-    task = asyncio.create_task(_execute(job_id))
+    not) await it; the frontend polls GET /pipeline-jobs/{id} and .../logs.
+    organization_id comes from the job row the caller already has in hand —
+    recorded here (see _job_org_cache above) before the task even starts."""
+    _job_org_cache[job_id] = organization_id
+    task = asyncio.create_task(_execute(job_id, organization_id))
     _running_tasks[job_id] = task
     task.add_done_callback(lambda _t: _running_tasks.pop(job_id, None))
 
@@ -156,13 +173,15 @@ def start_job(job_id: int) -> None:
 # ── Logging / stats helpers ─────────────────────────────────────────
 
 async def _log(job_id: int, level: str, message: str, node_id: str | None = None) -> None:
-    async with AsyncSessionLocal() as db:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(_job_org_cache.get(job_id))
+    async with sessionmaker() as db:
         db.add(PipelineJobLog(job_id=job_id, level=level, node_id=node_id, message=str(message)[:2000]))
         await db.commit()
 
 
 async def _update_node_stats(job_id: int, node_id: str, patch: dict) -> None:
-    async with AsyncSessionLocal() as db:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(_job_org_cache.get(job_id))
+    async with sessionmaker() as db:
         job = await db.get(PipelineJob, job_id)
         stats = dict(job.node_stats or {})
         stats[node_id] = {**stats.get(node_id, {}), **patch}
@@ -172,7 +191,8 @@ async def _update_node_stats(job_id: int, node_id: str, patch: dict) -> None:
 
 
 async def _finish(job_id: int, status: JobStatus, *, error_message: str | None = None, records_out: int | None = None) -> None:
-    async with AsyncSessionLocal() as db:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(_job_org_cache.get(job_id))
+    async with sessionmaker() as db:
         job = await db.get(PipelineJob, job_id)
         job.status = status
         job.completed_at = datetime.now(timezone.utc)
@@ -187,7 +207,7 @@ async def _finish(job_id: int, status: JobStatus, *, error_message: str | None =
     # session and never raises (see on_job_finished's own try/except), so a
     # monitoring bug can never turn a real pipeline result into a failure.
     from app.monitoring.service import on_job_finished
-    await on_job_finished(job_id)
+    await on_job_finished(job_id, _job_org_cache.get(job_id))
 
 
 async def _fail(job_id: int, message: str) -> None:
@@ -238,7 +258,8 @@ def _normalize_expr(expr: str) -> str:
 async def _resolve_connector(connection_id: int, organization_id: int | None, cache: dict[int, tuple]):
     if connection_id in cache:
         return cache[connection_id]
-    async with AsyncSessionLocal() as db:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         conn = await get_connection(db, connection_id, organization_id)
         if conn is None:
             raise NodeExecutionError(f"Connection {connection_id} was not found or no longer belongs to this organization.")
@@ -249,7 +270,9 @@ async def _resolve_connector(connection_id: int, organization_id: int | None, ca
 
 # ── Node executors ─────────────────────────────────────────────
 
-async def _stream_all_rows(connector, sql: str, parameters: dict) -> tuple[list[list], list[str], bool]:
+async def _stream_all_rows(
+    connector, sql: str, parameters: dict, *, job_id: int | None = None, node_id: str | None = None, extraction_mode: str | None = None,
+) -> tuple[list[list], list[str], bool]:
     """Real, chunked, exhaustive read of a SELECT via the same
     open_sql_stream()/fetch_chunk() primitive execution/worker.py's "Run
     Extraction" engine already uses for genuinely unbounded reads — this
@@ -257,23 +280,35 @@ async def _stream_all_rows(connector, sql: str, parameters: dict) -> tuple[list[
     which opened one cursor, called fetchmany() exactly ONCE, and threw
     the rest of the real result set away (the actual cause of the
     "only pulls the first 50,000 rows" bug). Raises ConnectorUnsupportedError
-    for connectors that don't implement streaming (Salesforce, generic
-    SOAP/REST, files) — callers fall back to the old bounded preview path
-    for those. Still enforces SOURCE_ROW_HARD_CAP as a safety ceiling since
-    this engine loads the whole source into one in-memory pandas
-    DataFrame — but that ceiling is far above SOURCE_ROW_CAP, and hitting
-    it is disclosed via `truncated` exactly like the old cap was, never
-    applied silently."""
-    stream = await asyncio.to_thread(connector.open_sql_stream, sql, parameters or {})
+    for connectors that don't implement streaming (generic SOAP/REST,
+    files) — callers fall back to the old bounded preview path for those.
+    Still enforces SOURCE_ROW_HARD_CAP as a safety ceiling since this
+    engine loads the whole source into one in-memory pandas DataFrame —
+    but that ceiling is far above SOURCE_ROW_CAP, and hitting it is
+    disclosed via `truncated` exactly like the old cap was, never applied
+    silently.
+
+    extraction_mode threads a connector-specific extraction hint (today:
+    Salesforce's BULK/AUTO/ROW_BY_ROW Load Type — see
+    SalesforceConnector.open_sql_stream) straight to open_sql_stream();
+    every other connector's open_sql_stream() accepts and ignores it.
+    job_id/node_id (when given) mirror real per-chunk progress into this
+    job's own visible log (PipelineJobLog), not just the server console —
+    the job log viewer is what a user actually watches during a run."""
+    stream = await asyncio.to_thread(connector.open_sql_stream, sql, parameters or {}, extraction_mode=extraction_mode)
     try:
         columns = list(stream.columns)
         rows: list[list] = []
         truncated = False
+        chunk_num = 0
         while True:
             chunk = await asyncio.to_thread(stream.fetch_chunk, SOURCE_STREAM_CHUNK_SIZE)
             if not chunk:
                 break
+            chunk_num += 1
             rows.extend([r.get(c) for c in columns] for r in chunk)
+            if job_id is not None:
+                await _log(job_id, "INFO", f"Fetched chunk {chunk_num} — {len(chunk):,} row(s) (running total: {len(rows):,}).", node_id)
             if len(rows) >= SOURCE_ROW_HARD_CAP:
                 del rows[SOURCE_ROW_HARD_CAP:]
                 # peek one more row to know whether the cap actually cut anything off
@@ -290,7 +325,8 @@ async def _stream_all_rows(connector, sql: str, parameters: dict) -> tuple[list[
 async def _run_source(job_id, node_id, cfg, organization_id, cache):
     uploaded_file_id = cfg.get("uploadedFileId")
     if uploaded_file_id:
-        async with AsyncSessionLocal() as db:
+        sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+        async with sessionmaker() as db:
             record = await pipeline_file_service.get_by_id(db, uploaded_file_id, organization_id)
         if record is None:
             raise NodeExecutionError(f"Uploaded file {uploaded_file_id} was not found.")
@@ -341,9 +377,14 @@ async def _run_source(job_id, node_id, cfg, organization_id, cache):
             columns, rows, truncated = result.columns, result.rows, result.truncated
         elif cfg.get("customSql"):
             params = {p["name"]: p["value"] for p in cfg.get("parameters", []) if p.get("name")}
+            extraction_mode = cfg.get("loadType") if conn.connection_type.value == "SALESFORCE" else None
             try:
-                rows, columns, truncated = await _stream_all_rows(connector, cfg["customSql"], params)
+                await _log(job_id, "INFO", f"Streaming custom SOQL/SQL from {conn.name} (exhaustive read, no row cap besides the {SOURCE_ROW_HARD_CAP:,}-row in-memory safety ceiling)...", node_id)
+                rows, columns, truncated = await _stream_all_rows(
+                    connector, cfg["customSql"], params, job_id=job_id, node_id=node_id, extraction_mode=extraction_mode,
+                )
                 cap_note = SOURCE_ROW_HARD_CAP
+                await _log(job_id, "INFO", f"Streamed {len(rows):,} row(s) from {conn.name}.", node_id)
             except ConnectorUnsupportedError:
                 result = await asyncio.to_thread(connector.preview_sql, cfg["customSql"], params, SOURCE_ROW_CAP)
                 columns, rows, truncated = result.columns, result.rows, result.truncated
@@ -352,16 +393,41 @@ async def _run_source(job_id, node_id, cfg, organization_id, cache):
             if not object_name:
                 raise NodeExecutionError("Source Dataset node has no object/table selected.")
             schema = cfg.get("schema") or None
-            quote_object = getattr(connector, "quote_object", None)
+            # build_select_all_sql() (connectors/base.py) is the generic
+            # capability check for "can this connector genuinely stream
+            # this object exhaustively" — SQL-dialect connectors quote the
+            # object name via quote_object() (see connectors/database/
+            # base.py's override); Salesforce builds a real, unbounded
+            # (no LIMIT) SOQL SELECT off its own describe() field list
+            # (see SalesforceConnector.build_select_all_sql). Previously
+            # this branch was gated on `getattr(connector, "quote_object")`
+            # directly, a SQL-only concept Salesforce has no reason to
+            # implement — so a Salesforce (or any other build_select_all_sql-
+            # capable, non-SQL) source always fell through to
+            # preview_object() below, which is a genuinely bounded preview
+            # call (Salesforce's own hard-caps it near 2,000 rows) — the
+            # actual cause of pipelines truncating a Salesforce object at
+            # ~2,000 records regardless of its real size or the Load Type
+            # (BULK/AUTO/ROW_BY_ROW) selected on the node.
+            extraction_mode = cfg.get("loadType") if conn.connection_type.value == "SALESFORCE" else None
             streamed = False
-            if quote_object is not None:
-                try:
-                    select_sql = f"SELECT * FROM {quote_object(object_name, schema)}"
-                    rows, columns, truncated = await _stream_all_rows(connector, select_sql, {})
-                    cap_note = SOURCE_ROW_HARD_CAP
-                    streamed = True
-                except ConnectorUnsupportedError:
-                    pass
+            try:
+                select_sql = connector.build_select_all_sql(object_name, schema)
+                await _log(
+                    job_id, "INFO",
+                    f"Streaming '{object_name}' from {conn.name} exhaustively"
+                    + (f" (Load Type: {extraction_mode})" if extraction_mode else "")
+                    + f" — no row cap besides the {SOURCE_ROW_HARD_CAP:,}-row in-memory safety ceiling...",
+                    node_id,
+                )
+                rows, columns, truncated = await _stream_all_rows(
+                    connector, select_sql, {}, job_id=job_id, node_id=node_id, extraction_mode=extraction_mode,
+                )
+                cap_note = SOURCE_ROW_HARD_CAP
+                streamed = True
+                await _log(job_id, "INFO", f"Streamed {len(rows):,} row(s) from '{object_name}'.", node_id)
+            except ConnectorUnsupportedError:
+                pass
             if not streamed:
                 result = await asyncio.to_thread(connector.preview_object, object_name, schema, SOURCE_ROW_CAP)
                 columns, rows, truncated = result.columns, result.rows, result.truncated
@@ -861,10 +927,10 @@ async def _run_notification(job_id, node_id, cfg):
 
 # ── Main driver ─────────────────────────────────────────────────
 
-async def _execute(job_id: int) -> None:
-    async with AsyncSessionLocal() as db:
+async def _execute(job_id: int, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         job = await db.get(PipelineJob, job_id)
-        organization_id = job.organization_id
         version_result = await db.execute(
             select(PipelineVersion).where(
                 PipelineVersion.pipeline_id == job.pipeline_id,
@@ -1007,7 +1073,8 @@ async def _execute(job_id: int) -> None:
                 total_in = rows_in
             total_out = rows_out
 
-        async with AsyncSessionLocal() as db:
+        sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+        async with sessionmaker() as db:
             job = await db.get(PipelineJob, job_id)
             job.records_in = total_in
             await db.commit()
@@ -1017,3 +1084,4 @@ async def _execute(job_id: int) -> None:
         await _fail(job_id, f"Unexpected error: {exc}"[:300])
     finally:
         _cancelled.discard(job_id)
+        _job_org_cache.pop(job_id, None)

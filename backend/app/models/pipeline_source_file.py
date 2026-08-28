@@ -19,10 +19,10 @@ from datetime import datetime
 from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import TenantBase
 
 
-class PipelineSourceFile(Base):
+class PipelineSourceFile(TenantBase):
     __tablename__ = "pipeline_source_files"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
@@ -30,8 +30,8 @@ class PipelineSourceFile(Base):
     pipeline_id: Mapped[int | None] = mapped_column(ForeignKey("pipelines.id"), nullable=True, index=True)
     node_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
 
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
-    uploaded_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
+    uploaded_by_id: Mapped[int | None] = mapped_column(nullable=True)
 
     filename: Mapped[str] = mapped_column(String(500), nullable=False)
     extension: Mapped[str] = mapped_column(String(20), nullable=False)  # real, from the filename — e.g. "csv", "xlsx"

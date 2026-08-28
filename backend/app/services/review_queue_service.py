@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database.connection import AsyncSessionLocal
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.config import get_settings
@@ -269,8 +271,9 @@ async def _log(db: AsyncSession, item_id: int, user_id: int | None, action: str,
 async def _user_name_map(db: AsyncSession, ids: set[int]) -> dict[int, str]:
     if not ids:
         return {}
-    result = await db.execute(select(User.id, User.full_name).where(User.id.in_(ids)))
-    return {row.id: row.full_name for row in result.all()}
+    async with AsyncSessionLocal() as platform_db:  # User is a PlatformBase model — never the tenant-routed `db`
+        result = await platform_db.execute(select(User.id, User.full_name).where(User.id.in_(ids)))
+        return {row.id: row.full_name for row in result.all()}
 
 
 # ── Query / list ─────────────────────────────────────────────────
@@ -410,12 +413,14 @@ async def get_stats(db: AsyncSession, organization_id: int | None, requesting_us
 
 async def get_assignable_users(db: AsyncSession, organization_id: int | None) -> list[dict]:
     """Org users who can be assigned/escalated to — backs the 'Assigned To:
-    Specific User' filter and the reassign/escalate pickers."""
+    Specific User' filter and the reassign/escalate pickers. User is a
+    PlatformBase model — never the tenant-routed `db`."""
     stmt = select(User.id, User.full_name).where(User.is_active.is_(True))
     if organization_id is not None:
         stmt = stmt.where(User.organization_id == organization_id)
-    result = await db.execute(stmt)
-    return [{"id": row.id, "full_name": row.full_name} for row in result.all()]
+    async with AsyncSessionLocal() as platform_db:
+        result = await platform_db.execute(stmt)
+        return [{"id": row.id, "full_name": row.full_name} for row in result.all()]
 
 
 async def get_count(db: AsyncSession, organization_id: int | None) -> int:

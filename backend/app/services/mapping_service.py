@@ -14,6 +14,8 @@ import asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database.connection import AsyncSessionLocal
+
 from app.connectors.base import ConnectorError
 from app.mapping import auto_mapper, mapper
 from app.models.column_mapping import ColumnMapping
@@ -112,8 +114,9 @@ async def list_mappings(db: AsyncSession, organization_id: int | None) -> tuple[
 async def user_name_map(db: AsyncSession, ids: set[int]) -> dict[int, str]:
     if not ids:
         return {}
-    result = await db.execute(select(User.id, User.full_name).where(User.id.in_(ids)))
-    return {row.id: row.full_name for row in result.all()}
+    async with AsyncSessionLocal() as platform_db:  # User is a PlatformBase model — never the tenant-routed `db`
+        result = await platform_db.execute(select(User.id, User.full_name).where(User.id.in_(ids)))
+        return {row.id: row.full_name for row in result.all()}
 
 
 # ── Engine operations ────────────────────────────────────────────

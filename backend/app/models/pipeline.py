@@ -22,21 +22,21 @@ from datetime import datetime
 from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import TenantBase
 
 
-class Pipeline(Base):
+class Pipeline(TenantBase):
     __tablename__ = "pipelines"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
 
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     current_version: Mapped[int] = mapped_column(Integer, default=1)
 
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
-    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(nullable=True, index=True)
+    updated_by: Mapped[int | None] = mapped_column(nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -47,7 +47,7 @@ class Pipeline(Base):
         return f"<Pipeline {self.name} v{self.current_version}>"
 
 
-class PipelineVersion(Base):
+class PipelineVersion(TenantBase):
     """
     One immutable snapshot of a pipeline's full node/edge definition.
 
@@ -64,7 +64,7 @@ class PipelineVersion(Base):
 
     pipeline_definition: Mapped[dict] = mapped_column(JSON, nullable=False)
 
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    created_by: Mapped[int | None] = mapped_column(nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # e.g. "Restored from v7" / free-text note — surfaced in Version History

@@ -17,7 +17,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import PlatformBase
 
 
 class RoleStatus(str, enum.Enum):
@@ -57,7 +57,7 @@ PERMISSION_CATEGORIES = [
 ]
 
 
-class Role(Base):
+class Role(PlatformBase):
     __tablename__ = "roles"
     __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_role_org_name"),)
 
@@ -82,7 +82,7 @@ class Role(Base):
         return f"<Role {self.name} ({self.status})>"
 
 
-class RolePermission(Base):
+class RolePermission(PlatformBase):
     __tablename__ = "role_permissions"
     __table_args__ = (UniqueConstraint("role_id", "category", "action", name="uq_role_permission"),)
 
@@ -105,7 +105,7 @@ class RoleAuditEventType(str, enum.Enum):
     DELETED = "DELETED"
 
 
-class RoleAuditLog(Base):
+class RoleAuditLog(PlatformBase):
     __tablename__ = "role_audit_log"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)

@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_action
-from app.database.connection import get_db
+from app.database.tenant_routing import get_tenant_db
 from app.models.rejected_record import RejectSourceType
 from app.models.user import User, UserRole
 from app.schemas.pipeline_jobs import PipelineJobListOut, PipelineJobLogsOut, PipelineJobOut
@@ -35,12 +35,12 @@ def _effective_org_id(user: User) -> int | None:
 
 
 @router.post("", response_model=PipelineJobOut, status_code=status.HTTP_201_CREATED)
-async def run_pipeline(pipeline_id: int, user: User = Depends(_create), db: AsyncSession = Depends(get_db)):
+async def run_pipeline(pipeline_id: int, user: User = Depends(_create), db: AsyncSession = Depends(get_tenant_db)):
     pipeline = await pipeline_service.get_pipeline(db, pipeline_id, _effective_org_id(user))
     if pipeline is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Pipeline not found")
     job = await svc.create_job(db, pipeline=pipeline, organization_id=user.organization_id, user_id=user.id, trigger="Manual")
-    pipeline_job_executor.start_job(job.id)
+    pipeline_job_executor.start_job(job.id, job.organization_id)
     name_map = await svc.user_name_map(db, {job.created_by})
     return svc.job_to_out(job, name_map)
 
@@ -48,7 +48,7 @@ async def run_pipeline(pipeline_id: int, user: User = Depends(_create), db: Asyn
 @router.get("", response_model=PipelineJobListOut)
 async def list_jobs(
     pipeline_id: int | None = Query(None), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
-    user: User = Depends(_view), db: AsyncSession = Depends(get_db),
+    user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db),
 ):
     jobs, total = await svc.list_jobs(db, organization_id=_effective_org_id(user), pipeline_id=pipeline_id, page=page, page_size=page_size)
     name_map = await svc.user_name_map(db, {j.created_by for j in jobs})
@@ -56,7 +56,7 @@ async def list_jobs(
 
 
 @router.get("/{job_id}", response_model=PipelineJobOut)
-async def get_job(job_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_job(job_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     job = await svc.get_job(db, job_id, _effective_org_id(user))
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
@@ -65,7 +65,7 @@ async def get_job(job_id: int, user: User = Depends(_view), db: AsyncSession = D
 
 
 @router.get("/{job_id}/logs", response_model=PipelineJobLogsOut)
-async def get_logs(job_id: int, since_id: int | None = Query(None), user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_logs(job_id: int, since_id: int | None = Query(None), user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     job = await svc.get_job(db, job_id, _effective_org_id(user))
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
@@ -74,7 +74,7 @@ async def get_logs(job_id: int, since_id: int | None = Query(None), user: User =
 
 
 @router.get("/{job_id}/nodes/{node_id}/download")
-async def download_output_file(job_id: int, node_id: str, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def download_output_file(job_id: int, node_id: str, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     """Downloads the real file a File-target node wrote during this
     specific job run — the exact path recorded onto the job's node_stats
     by pipeline_job_executor.py's _run_target() (no separate "latest file
@@ -98,7 +98,7 @@ async def download_output_file(job_id: int, node_id: str, user: User = Depends(_
 
 
 @router.post("/{job_id}/cancel", response_model=PipelineJobOut)
-async def cancel_job(job_id: int, user: User = Depends(_create), db: AsyncSession = Depends(get_db)):
+async def cancel_job(job_id: int, user: User = Depends(_create), db: AsyncSession = Depends(get_tenant_db)):
     job = await svc.get_job(db, job_id, _effective_org_id(user))
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
@@ -114,7 +114,7 @@ async def cancel_job(job_id: int, user: User = Depends(_create), db: AsyncSessio
 @router.get("/{job_id}/rejected-records", response_model=RejectedRecordListOut)
 async def list_rejected_records(
     job_id: int, node_id: str | None = Query(None), page: int = Query(1, ge=1), page_size: int = Query(100, ge=1, le=500),
-    user: User = Depends(_view), db: AsyncSession = Depends(get_db),
+    user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db),
 ):
     """Real per-row failures from this job's dataset target node(s) (KK2/
     KK3) — each one's actual row data and the real error the target gave.

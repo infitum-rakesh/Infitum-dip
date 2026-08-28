@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.connectors.base import ConnectorValidationError
-from app.database.connection import AsyncSessionLocal
+from app.database import tenant_engine_registry
 from app.models.sql_export_job import SqlExportStatus, SqlWorkspaceExportJob
 from app.services import connection_service
 from app.services.sql_export_writers import extension_for, make_writer
@@ -44,17 +44,19 @@ def request_cancel(job_id: int) -> bool:
     return True
 
 
-def start_export(job_id: int) -> None:
+def start_export(job_id: int, organization_id: int | None) -> None:
     """Fire-and-forget — the API route that calls this does not await it;
     it returns the job's PENDING status immediately and the frontend
-    polls GET /sql-workspace/exports/{id}."""
-    task = asyncio.create_task(_execute(job_id))
+    polls GET /sql-workspace/exports/{id}. organization_id comes from the
+    job row the caller already has in hand (see tenant_engine_registry)."""
+    task = asyncio.create_task(_execute(job_id, organization_id))
     _running_tasks[job_id] = task
     task.add_done_callback(lambda _t: _running_tasks.pop(job_id, None))
 
 
-async def _mark_failed(job_id: int, message: str) -> None:
-    async with AsyncSessionLocal() as db:
+async def _mark_failed(job_id: int, message: str, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         job = await db.get(SqlWorkspaceExportJob, job_id)
         job.status = SqlExportStatus.FAILED
         job.error_message = message
@@ -62,8 +64,9 @@ async def _mark_failed(job_id: int, message: str) -> None:
         await db.commit()
 
 
-async def _execute(job_id: int) -> None:
-    async with AsyncSessionLocal() as db:
+async def _execute(job_id: int, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         job = await db.get(SqlWorkspaceExportJob, job_id)
         conn = await connection_service.get_connection(db, job.connection_id, job.organization_id)
         if conn is None:
@@ -97,7 +100,7 @@ async def _execute(job_id: int) -> None:
                 await asyncio.to_thread(writer.close)
                 writer = None
                 full_path.unlink(missing_ok=True)  # never expose a partial file as a real download — see module docstring
-                async with AsyncSessionLocal() as db:
+                async with sessionmaker() as db:
                     j = await db.get(SqlWorkspaceExportJob, job_id)
                     j.status = SqlExportStatus.CANCELLED
                     j.row_count = row_count
@@ -113,7 +116,7 @@ async def _execute(job_id: int) -> None:
             await asyncio.to_thread(writer.write_rows, columns, row_values)
             row_count += len(rows)
 
-            async with AsyncSessionLocal() as db:
+            async with sessionmaker() as db:
                 j = await db.get(SqlWorkspaceExportJob, job_id)
                 j.row_count = row_count
                 await db.commit()
@@ -125,7 +128,7 @@ async def _execute(job_id: int) -> None:
         writer = None
         file_size = full_path.stat().st_size if full_path.exists() else None
 
-        async with AsyncSessionLocal() as db:
+        async with sessionmaker() as db:
             j = await db.get(SqlWorkspaceExportJob, job_id)
             j.status = SqlExportStatus.SUCCEEDED
             j.row_count = row_count
@@ -134,10 +137,10 @@ async def _execute(job_id: int) -> None:
             j.completed_at = datetime.now(timezone.utc)
             await db.commit()
     except ConnectorValidationError as exc:
-        await _mark_failed(job_id, str(exc))
+        await _mark_failed(job_id, str(exc), organization_id)
     except Exception as exc:
         message = connector._scrub(str(exc)) if connector is not None else str(exc)[:300]
-        await _mark_failed(job_id, message)
+        await _mark_failed(job_id, message, organization_id)
     finally:
         if stream is not None:
             await asyncio.to_thread(stream.close)

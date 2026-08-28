@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_action
-from app.database.connection import get_db
+from app.database.tenant_routing import get_tenant_db
 from app.models.document import Document
 from app.models.user import User, UserRole
 from app.schemas.extraction import DetectSchemaOut, DetectSchemaRequest, ExtractOut, ExtractRequest
@@ -34,7 +34,7 @@ async def _get_doc(db: AsyncSession, document_id: int, organization_id: int | No
 
 
 @router.post("/detect-schema", response_model=DetectSchemaOut)
-async def detect_schema(body: DetectSchemaRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_db)):
+async def detect_schema(body: DetectSchemaRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
     """document_type (e.g. "INVOICE") steers this at a comprehensive
     canonical schema — see document_taxonomies.py — instead of the ad-hoc
     "guess 5-12 fields" LLM call, same as Document Details' "Run AI
@@ -55,7 +55,7 @@ async def detect_schema(body: DetectSchemaRequest, user: User = Depends(_execute
 
 
 @router.post("/extract", response_model=ExtractOut)
-async def extract(body: ExtractRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_db)):
+async def extract(body: ExtractRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
     doc = await _get_doc(db, body.document_id, _effective_org_id(user))
     try:
         result = await svc.extract_fields(

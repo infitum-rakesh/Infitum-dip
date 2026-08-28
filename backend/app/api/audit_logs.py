@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_action
-from app.database.connection import get_db
+from app.database.tenant_routing import get_tenant_db
 from app.models.user import User, UserRole
 from app.schemas.audit_logs import AuditLogDetailOut, AuditLogListOut
 from app.services import audit_log_service as svc
@@ -50,7 +50,7 @@ async def list_audit_logs(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     current_user: User = Depends(_admin),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     items, total = await svc.list_entries(
         db, organization_id=_effective_org_id(current_user), user=user, module=module, action=action,
@@ -72,7 +72,7 @@ async def export_audit_logs(
     date_from: str | None = Query(None),
     date_to: str | None = Query(None),
     current_user: User = Depends(_admin),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     content, media_type, filename = await svc.export_entries(
         db, organization_id=_effective_org_id(current_user), fmt=format, user=user, module=module, action=action,
@@ -82,7 +82,7 @@ async def export_audit_logs(
 
 
 @router.get("/{entry_id}", response_model=AuditLogDetailOut)
-async def get_audit_log(entry_id: str, current_user: User = Depends(_admin), db: AsyncSession = Depends(get_db)):
+async def get_audit_log(entry_id: str, current_user: User = Depends(_admin), db: AsyncSession = Depends(get_tenant_db)):
     entry = await svc.get_entry(db, _effective_org_id(current_user), entry_id)
     if entry is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Audit log entry not found")

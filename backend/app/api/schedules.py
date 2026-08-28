@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_action
-from app.database.connection import get_db
+from app.database.tenant_routing import get_tenant_db
 from app.models.user import User, UserRole
 from app.schemas.schedules import (
     ScheduleCreateRequest,
@@ -55,7 +55,7 @@ async def _get_or_404(db: AsyncSession, schedule_id: int, user: User):
 # Starlette matches by position, not type.
 
 @router.get("/stats", response_model=ScheduleStatsOut)
-async def stats(user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def stats(user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     return await svc.get_stats(db, _effective_org_id(user))
 
 
@@ -72,7 +72,7 @@ async def list_schedules(
     sort_by: str = Query("next_run_at"),
     sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
     user: User = Depends(_view),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     schedules, total, name_map = await svc.list_schedules(
         db, organization_id=_effective_org_id(user), search=q, status_filter=status_filter,
@@ -84,7 +84,7 @@ async def list_schedules(
 
 
 @router.get("/{schedule_id}", response_model=ScheduleOut)
-async def get_schedule(schedule_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_schedule(schedule_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     schedule = await _get_or_404(db, schedule_id, user)
     name_map = await svc.owner_name_map(db, {schedule.owner_id} if schedule.owner_id else set())
     return svc.to_out(schedule, name_map.get(schedule.owner_id))
@@ -93,7 +93,7 @@ async def get_schedule(schedule_id: int, user: User = Depends(_view), db: AsyncS
 # ── Create / update / delete ──────────────────────────────────────
 
 @router.post("", response_model=ScheduleOut, status_code=status.HTTP_201_CREATED)
-async def create_schedule(body: ScheduleCreateRequest, user: User = Depends(_create), db: AsyncSession = Depends(get_db)):
+async def create_schedule(body: ScheduleCreateRequest, user: User = Depends(_create), db: AsyncSession = Depends(get_tenant_db)):
     try:
         schedule = await svc.create_schedule(db, organization_id=user.organization_id, owner_id=user.id, body=body)
     except svc.ScheduleValidationError as exc:
@@ -102,7 +102,7 @@ async def create_schedule(body: ScheduleCreateRequest, user: User = Depends(_cre
 
 
 @router.put("/{schedule_id}", response_model=ScheduleOut)
-async def update_schedule(schedule_id: int, body: ScheduleUpdateRequest, user: User = Depends(_edit), db: AsyncSession = Depends(get_db)):
+async def update_schedule(schedule_id: int, body: ScheduleUpdateRequest, user: User = Depends(_edit), db: AsyncSession = Depends(get_tenant_db)):
     schedule = await _get_or_404(db, schedule_id, user)
     try:
         schedule = await svc.update_schedule(db, schedule, body)
@@ -113,7 +113,7 @@ async def update_schedule(schedule_id: int, body: ScheduleUpdateRequest, user: U
 
 
 @router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_schedule(schedule_id: int, user: User = Depends(_delete), db: AsyncSession = Depends(get_db)):
+async def delete_schedule(schedule_id: int, user: User = Depends(_delete), db: AsyncSession = Depends(get_tenant_db)):
     schedule = await _get_or_404(db, schedule_id, user)
     await svc.delete_schedule(db, schedule)
 
@@ -121,7 +121,7 @@ async def delete_schedule(schedule_id: int, user: User = Depends(_delete), db: A
 # ── Actions ───────────────────────────────────────────────────────
 
 @router.post("/{schedule_id}/run", response_model=ScheduleOut)
-async def run_now(schedule_id: int, user: User = Depends(_execute), db: AsyncSession = Depends(get_db)):
+async def run_now(schedule_id: int, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
     schedule = await _get_or_404(db, schedule_id, user)
     await svc.execute_schedule(db, schedule, trigger="Manual")
     name_map = await svc.owner_name_map(db, {schedule.owner_id} if schedule.owner_id else set())
@@ -129,7 +129,7 @@ async def run_now(schedule_id: int, user: User = Depends(_execute), db: AsyncSes
 
 
 @router.post("/{schedule_id}/pause", response_model=ScheduleOut)
-async def pause_schedule(schedule_id: int, user: User = Depends(_edit), db: AsyncSession = Depends(get_db)):
+async def pause_schedule(schedule_id: int, user: User = Depends(_edit), db: AsyncSession = Depends(get_tenant_db)):
     schedule = await _get_or_404(db, schedule_id, user)
     schedule = await svc.pause_schedule(db, schedule)
     name_map = await svc.owner_name_map(db, {schedule.owner_id} if schedule.owner_id else set())
@@ -137,7 +137,7 @@ async def pause_schedule(schedule_id: int, user: User = Depends(_edit), db: Asyn
 
 
 @router.post("/{schedule_id}/resume", response_model=ScheduleOut)
-async def resume_schedule(schedule_id: int, user: User = Depends(_edit), db: AsyncSession = Depends(get_db)):
+async def resume_schedule(schedule_id: int, user: User = Depends(_edit), db: AsyncSession = Depends(get_tenant_db)):
     schedule = await _get_or_404(db, schedule_id, user)
     schedule = await svc.resume_schedule(db, schedule)
     name_map = await svc.owner_name_map(db, {schedule.owner_id} if schedule.owner_id else set())
@@ -145,7 +145,7 @@ async def resume_schedule(schedule_id: int, user: User = Depends(_edit), db: Asy
 
 
 @router.post("/{schedule_id}/clone", response_model=ScheduleOut, status_code=status.HTTP_201_CREATED)
-async def clone_schedule(schedule_id: int, user: User = Depends(_create), db: AsyncSession = Depends(get_db)):
+async def clone_schedule(schedule_id: int, user: User = Depends(_create), db: AsyncSession = Depends(get_tenant_db)):
     schedule = await _get_or_404(db, schedule_id, user)
     clone = await svc.clone_schedule(db, schedule, user.id)
     return svc.to_out(clone, user.full_name)
@@ -159,7 +159,7 @@ async def list_runs(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     user: User = Depends(_view),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     await _get_or_404(db, schedule_id, user)
     runs, total = await svc.get_runs(db, schedule_id, page=page, page_size=page_size)
@@ -167,7 +167,7 @@ async def list_runs(
 
 
 @router.get("/{schedule_id}/runs/{run_id}", response_model=ScheduleRunDetailOut)
-async def get_run(schedule_id: int, run_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_run(schedule_id: int, run_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     await _get_or_404(db, schedule_id, user)
     run = await svc.get_run(db, schedule_id, run_id)
     if run is None:
@@ -176,7 +176,7 @@ async def get_run(schedule_id: int, run_id: int, user: User = Depends(_view), db
 
 
 @router.post("/{schedule_id}/runs/{run_id}/rerun", response_model=ScheduleRunDetailOut, status_code=status.HTTP_201_CREATED)
-async def rerun(schedule_id: int, run_id: int, user: User = Depends(_execute), db: AsyncSession = Depends(get_db)):
+async def rerun(schedule_id: int, run_id: int, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
     schedule = await _get_or_404(db, schedule_id, user)
     original = await svc.get_run(db, schedule_id, run_id)
     if original is None:

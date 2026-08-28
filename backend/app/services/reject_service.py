@@ -13,7 +13,7 @@ from datetime import date, datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.connection import AsyncSessionLocal
+from app.database import tenant_engine_registry
 from app.models.rejected_record import RejectedRecord, RejectSourceType
 
 
@@ -46,7 +46,8 @@ async def record_rejects(
     batches have zero rejects) without opening a DB session at all."""
     if not rejects:
         return
-    async with AsyncSessionLocal() as db:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         db.add_all([
             RejectedRecord(
                 organization_id=organization_id, source_type=source_type, source_id=source_id,

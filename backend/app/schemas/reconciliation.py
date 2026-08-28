@@ -5,15 +5,21 @@ from pydantic import BaseModel
 
 class JobCreateRequest(BaseModel):
     name: str
+    # 0 is the real, established "not a real Connection — see
+    # *_uploaded_file_id instead" sentinel (matches the AI-extraction
+    # engine's connection_id=0 convention elsewhere in this codebase).
     source_connection_id: int
     source_schema: str | None = None
     source_object: str
+    source_uploaded_file_id: int | None = None
     target_connection_id: int
     target_schema: str | None = None
     target_object: str
+    target_uploaded_file_id: int | None = None
     key_columns: list[str] = []
     compare_columns: list[str] = []
     comparison_types: list[str] = ["COUNT"]  # subset of COUNT/CHECKSUM/KEY_MATCH/FIELD_LEVEL
+    column_mapping: dict[str, str] = {}  # {source_column: target_column}, only for columns that differ by name
 
 
 class JobUpdateRequest(BaseModel):
@@ -21,6 +27,7 @@ class JobUpdateRequest(BaseModel):
     key_columns: list[str] | None = None
     compare_columns: list[str] | None = None
     comparison_types: list[str] | None = None
+    column_mapping: dict[str, str] | None = None
 
 
 class JobOut(BaseModel):
@@ -29,12 +36,15 @@ class JobOut(BaseModel):
     source_connection_id: int
     source_schema: str | None
     source_object: str
+    source_uploaded_file_id: int | None = None
     target_connection_id: int
     target_schema: str | None
     target_object: str
+    target_uploaded_file_id: int | None = None
     key_columns: list[str]
     compare_columns: list[str]
     comparison_types: list[str]
+    column_mapping: dict[str, str] = {}
     created_by: int | None
     created_by_name: str | None = None
     updated_by: int | None

@@ -13,7 +13,10 @@ Versioning rules (see models/pipeline.py + the Transform Workspace spec):
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database.connection import AsyncSessionLocal
+
 from app.models.pipeline import Pipeline, PipelineVersion
+from app.models.pipeline_job import PipelineJob, PipelineJobLog
 from app.models.user import User
 
 MAX_VERSIONS = 5
@@ -147,6 +150,22 @@ async def restore_version(
 
 
 async def delete_pipeline(db: AsyncSession, pipeline: Pipeline) -> None:
+    """Deletes the pipeline and everything that references it — including
+    its PipelineJob run history and each job's PipelineJobLog lines.
+    Missing this used to leave orphaned job/log rows behind (neither
+    FK is ON DELETE CASCADE, and SQLite doesn't enforce FKs by default),
+    which was a real, observed bug: SQLite reuses a deleted row's
+    integer id for the next insert (no true AUTOINCREMENT unless the
+    table opts in — see models/pipeline_job.py), so a brand-new job for
+    a totally different, later pipeline could be assigned the exact
+    same id as one of these orphans and inherit its stale log lines —
+    e.g. an old SFTP failure from a deleted pipeline bleeding into an
+    unrelated CSV job's log view. Deleting logs -> jobs -> versions ->
+    pipeline, in that order, keeps every step consistent even without
+    DB-level cascade support."""
+    job_ids_subq = select(PipelineJob.id).where(PipelineJob.pipeline_id == pipeline.id)
+    await db.execute(PipelineJobLog.__table__.delete().where(PipelineJobLog.job_id.in_(job_ids_subq)))
+    await db.execute(PipelineJob.__table__.delete().where(PipelineJob.pipeline_id == pipeline.id))
     await db.execute(
         PipelineVersion.__table__.delete().where(PipelineVersion.pipeline_id == pipeline.id)
     )
@@ -214,8 +233,9 @@ async def user_name_map(db: AsyncSession, ids: set[int]) -> dict[int, str]:
     ids = {i for i in ids if i}
     if not ids:
         return {}
-    result = await db.execute(select(User.id, User.full_name).where(User.id.in_(ids)))
-    return {row[0]: row[1] for row in result.all()}
+    async with AsyncSessionLocal() as platform_db:  # User is a PlatformBase model — never the tenant-routed `db`
+        result = await platform_db.execute(select(User.id, User.full_name).where(User.id.in_(ids)))
+        return {row[0]: row[1] for row in result.all()}
 
 
 def version_to_summary(v: PipelineVersion, is_current: bool, name_map: dict[int, str]) -> dict:

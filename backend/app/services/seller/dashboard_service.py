@@ -6,6 +6,28 @@ ReconciliationRun, TargetLoadRun, UserActivityLog); nothing is fabricated.
 Where this codebase genuinely doesn't track something yet (customer churn
 events, per-module usage credits), the field is reported as 0 or omitted
 rather than invented — see the docstrings inline below.
+
+KNOWN LIMITATION (Bring-Your-Own-Database, Phases 4/6): the aggregation
+below runs as ONE query per model against a SINGLE session (`db`, the
+platform database) across every org's TenantBase rows at once — Document,
+PipelineRun, ValidationRun, ReconciliationRun, TargetLoadRun. That's only
+correct as long as every org's business data still lives in that one
+shared database. Once an org completes its OWN individual migration
+(tenant_migration_service.py, organization_id = that org), its real rows
+move to a separate physical database this single session can't see, so
+its activity silently drops out of these platform-wide KPIs/charts from
+that point on (its stale pre-migration rows stay counted, frozen at the
+migration date, rather than erroring). A platform-level migration (Phase
+6, organization_id=None) does NOT have this problem for the orgs it
+carries along — they all move together to the same new platform database
+— but this service still isn't wired to route to that new platform
+sessionmaker (tenant_engine_registry.get_sessionmaker(db, None)) instead
+of the raw AsyncSessionLocal-backed `db` it's handed today, so it would
+also go stale immediately after a platform cutover. Correctly fixing
+this needs real fan-out aggregation (one query per org's own
+sessionmaker, summed in Python) rather than a single cross-org query —
+a genuinely separate, larger piece of work, disclosed here rather than
+silently left to under-report once BYO-Database is used.
 """
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone

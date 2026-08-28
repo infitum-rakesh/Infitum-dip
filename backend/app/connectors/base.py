@@ -303,8 +303,25 @@ class BaseConnector(abc.ABC):
     ) -> ChunkResult:
         raise ConnectorUnsupportedError(f"{self.connection_type} does not support chunked extraction.")
 
-    def open_sql_stream(self, sql: str, parameters: dict) -> SqlStream:
+    def open_sql_stream(self, sql: str, parameters: dict, *, extraction_mode: str | None = None) -> SqlStream:
         raise ConnectorUnsupportedError(f"{self.connection_type} does not support streaming SQL extraction.")
+
+    def build_select_all_sql(self, object_name: str, schema: str | None = None) -> str:
+        """Returns a real, dialect-correct "read everything" SELECT for
+        object_name — the statement execution/pipeline_job_executor.py's
+        _run_source() hands to open_sql_stream() for a genuinely
+        exhaustive, chunked read of a plain TABLE/object source (as
+        opposed to a hand-written customSql source, which already has its
+        own SELECT text). Deliberately separate from open_sql_stream()
+        itself: building the statement text is dialect-specific (SQL
+        needs identifier quoting via quote_object(); SOQL has no `SELECT
+        *` and needs an explicit field list — see
+        connectors/application/salesforce.py's override), while streaming
+        the result is not. Raises ConnectorUnsupportedError for any
+        connector that doesn't implement it — callers fall back to the
+        older bounded preview_object() path for those, same as an
+        unimplemented open_sql_stream() itself already does."""
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support building a SELECT-all statement.")
 
     # ── REST API extraction (API-category Source Dataset node) ────────
 

@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import update
 
-from app.database.connection import AsyncSessionLocal
+from app.database import tenant_engine_registry
 from app.execution.checkpoint import decode_key, encode_key
 from app.execution.retry import with_retry
 from app.loading import staging
@@ -35,7 +35,7 @@ async def run_partition(connector, run: PipelineRun, partition: PipelineRunParti
     concurrently with sibling partitions (each owns a disjoint key range
     and its own staging file, so there's no shared mutable state besides
     the atomic DB counters above)."""
-    await _mark_started(partition.id)
+    await _mark_started(partition.id, run.organization_id)
 
     after_value = (
         decode_key(partition.last_key_read, run.key_type) if partition.last_key_read
@@ -46,7 +46,7 @@ async def run_partition(connector, run: PipelineRun, partition: PipelineRunParti
     try:
         while True:
             if cancel_check(run.id):
-                await _mark_status(partition.id, PartitionStatus.CANCELLED)
+                await _mark_status(partition.id, PartitionStatus.CANCELLED, run.organization_id)
                 return
 
             async def _read():
@@ -62,14 +62,14 @@ async def run_partition(connector, run: PipelineRun, partition: PipelineRunParti
 
             await asyncio.to_thread(staging.write_chunk, staging_base, run.id, partition.partition_index, chunk.rows)
             after_value = chunk.last_key
-            await _advance(partition.id, run.id, encode_key(after_value), chunk.count)
+            await _advance(partition.id, run.id, encode_key(after_value), chunk.count, run.organization_id)
 
             if chunk.count < run.chunk_size:
                 break  # short chunk — this was the last one in range
 
-        await _mark_status(partition.id, PartitionStatus.COMPLETE)
+        await _mark_status(partition.id, PartitionStatus.COMPLETE, run.organization_id)
     except Exception as exc:
-        await _mark_failed(partition.id, connector._scrub(str(exc)))
+        await _mark_failed(partition.id, connector._scrub(str(exc)), run.organization_id)
 
 
 async def run_query_partition(connector, run: PipelineRun, partition: PipelineRunPartition, *, cancel_check, staging_base: str) -> None:
@@ -78,7 +78,7 @@ async def run_query_partition(connector, run: PipelineRun, partition: PipelineRu
     arbitrary SQL, so Resume on a QUERY-mode run restarts this partition
     from the beginning (see staging.reset_partition) rather than faking a
     resume point that doesn't exist — a disclosed limitation, not a bug."""
-    await _mark_started(partition.id)
+    await _mark_started(partition.id, run.organization_id)
     await asyncio.to_thread(staging.reset_partition, staging_base, run.id, partition.partition_index)
 
     stream = None
@@ -89,7 +89,7 @@ async def run_query_partition(connector, run: PipelineRun, partition: PipelineRu
 
         while True:
             if cancel_check(run.id):
-                await _mark_status(partition.id, PartitionStatus.CANCELLED)
+                await _mark_status(partition.id, PartitionStatus.CANCELLED, run.organization_id)
                 return
 
             async def _fetch():
@@ -99,13 +99,13 @@ async def run_query_partition(connector, run: PipelineRun, partition: PipelineRu
             if not rows:
                 break
             await asyncio.to_thread(staging.write_chunk, staging_base, run.id, partition.partition_index, rows)
-            await _advance(partition.id, run.id, None, len(rows))
+            await _advance(partition.id, run.id, None, len(rows), run.organization_id)
             if len(rows) < run.chunk_size:
                 break
 
-        await _mark_status(partition.id, PartitionStatus.COMPLETE)
+        await _mark_status(partition.id, PartitionStatus.COMPLETE, run.organization_id)
     except Exception as exc:
-        await _mark_failed(partition.id, connector._scrub(str(exc)))
+        await _mark_failed(partition.id, connector._scrub(str(exc)), run.organization_id)
     finally:
         if stream is not None:
             await asyncio.to_thread(stream.close)
@@ -123,7 +123,7 @@ async def run_file_partition(connector, run: PipelineRun, partition: PipelineRun
     on failure, if run.error_dir is configured, the file is moved there
     instead so a bad file doesn't get silently re-picked-up by the next
     run's file-matching pattern."""
-    await _mark_started(partition.id)
+    await _mark_started(partition.id, run.organization_id)
     await asyncio.to_thread(staging.reset_partition, staging_base, run.id, partition.partition_index)
 
     stream = None
@@ -134,7 +134,7 @@ async def run_file_partition(connector, run: PipelineRun, partition: PipelineRun
 
         while True:
             if cancel_check(run.id):
-                await _mark_status(partition.id, PartitionStatus.CANCELLED)
+                await _mark_status(partition.id, PartitionStatus.CANCELLED, run.organization_id)
                 return
 
             async def _fetch():
@@ -144,30 +144,32 @@ async def run_file_partition(connector, run: PipelineRun, partition: PipelineRun
             if not rows:
                 break
             await asyncio.to_thread(staging.write_chunk, staging_base, run.id, partition.partition_index, rows)
-            await _advance(partition.id, run.id, None, len(rows))
+            await _advance(partition.id, run.id, None, len(rows), run.organization_id)
             if len(rows) < run.chunk_size:
                 break
 
-        await _mark_status(partition.id, PartitionStatus.COMPLETE)
+        await _mark_status(partition.id, PartitionStatus.COMPLETE, run.organization_id)
     except Exception as exc:
-        await _mark_failed(partition.id, connector._scrub(str(exc)))
-        await _move_after_run(connector, run.error_dir, partition, run.id, mark_archived=False)
+        await _mark_failed(partition.id, connector._scrub(str(exc)), run.organization_id)
+        await _move_after_run(connector, run.error_dir, partition, run.id, run.organization_id, mark_archived=False)
         return
     finally:
         if stream is not None:
             await asyncio.to_thread(stream.close)
 
-    await _move_after_run(connector, run.archive_dir, partition, run.id, mark_archived=True)
+    await _move_after_run(connector, run.archive_dir, partition, run.id, run.organization_id, mark_archived=True)
 
 
-async def _move_after_run(connector, dest_dir: str | None, partition: PipelineRunPartition, run_id: int, *, mark_archived: bool) -> None:
+async def _move_after_run(
+    connector, dest_dir: str | None, partition: PipelineRunPartition, run_id: int, organization_id: int | None, *, mark_archived: bool,
+) -> None:
     if not dest_dir or not partition.file_name:
         return
     try:
         resolved = await asyncio.to_thread(connector.resolve_path, partition.file_name)
         await asyncio.to_thread(connector.move_file, resolved, dest_dir)
         if mark_archived:
-            await _mark_archived(partition.id)
+            await _mark_archived(partition.id, organization_id)
     except Exception as exc:
         # The extraction itself already succeeded/failed and is recorded —
         # a failed post-hoc archive/error move is logged, not allowed to
@@ -197,9 +199,9 @@ async def run_netsuite_search_partition(connector, run: PipelineRun, partition: 
     server-side query once per page rather than once per run; acceptable
     for the bounded result sizes a saved search realistically returns,
     disclosed here rather than silently assumed away."""
-    await _mark_started(partition.id)
+    await _mark_started(partition.id, run.organization_id)
     if cancel_check(run.id):
-        await _mark_status(partition.id, PartitionStatus.CANCELLED)
+        await _mark_status(partition.id, PartitionStatus.CANCELLED, run.organization_id)
         return
 
     page_index = int(partition.range_start or (partition.partition_index + 1))
@@ -212,10 +214,10 @@ async def run_netsuite_search_partition(connector, run: PipelineRun, partition: 
 
         if rows:
             await asyncio.to_thread(staging.write_chunk, staging_base, run.id, partition.partition_index, rows)
-            await _advance(partition.id, run.id, None, len(rows))
-        await _mark_status(partition.id, PartitionStatus.COMPLETE)
+            await _advance(partition.id, run.id, None, len(rows), run.organization_id)
+        await _mark_status(partition.id, PartitionStatus.COMPLETE, run.organization_id)
     except Exception as exc:
-        await _mark_failed(partition.id, connector._scrub(str(exc)))
+        await _mark_failed(partition.id, connector._scrub(str(exc)), run.organization_id)
 
 
 def _log_retry(run_id: int, partition_index: int):
@@ -224,8 +226,9 @@ def _log_retry(run_id: int, partition_index: int):
     return _cb
 
 
-async def _mark_started(partition_id: int) -> None:
-    async with AsyncSessionLocal() as db:
+async def _mark_started(partition_id: int, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         await db.execute(
             update(PipelineRunPartition).where(PipelineRunPartition.id == partition_id)
             .values(status=PartitionStatus.RUNNING, started_at=datetime.now(timezone.utc))
@@ -233,8 +236,9 @@ async def _mark_started(partition_id: int) -> None:
         await db.commit()
 
 
-async def _advance(partition_id: int, run_id: int, last_key_encoded: str | None, chunk_count: int) -> None:
-    async with AsyncSessionLocal() as db:
+async def _advance(partition_id: int, run_id: int, last_key_encoded: str | None, chunk_count: int, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         values = {"records_read": PipelineRunPartition.records_read + chunk_count}
         if last_key_encoded is not None:
             values["last_key_read"] = last_key_encoded
@@ -248,8 +252,9 @@ async def _advance(partition_id: int, run_id: int, last_key_encoded: str | None,
         await db.commit()
 
 
-async def _mark_status(partition_id: int, status: PartitionStatus) -> None:
-    async with AsyncSessionLocal() as db:
+async def _mark_status(partition_id: int, status: PartitionStatus, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         await db.execute(
             update(PipelineRunPartition).where(PipelineRunPartition.id == partition_id)
             .values(status=status, completed_at=datetime.now(timezone.utc))
@@ -257,14 +262,16 @@ async def _mark_status(partition_id: int, status: PartitionStatus) -> None:
         await db.commit()
 
 
-async def _mark_archived(partition_id: int) -> None:
-    async with AsyncSessionLocal() as db:
+async def _mark_archived(partition_id: int, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         await db.execute(update(PipelineRunPartition).where(PipelineRunPartition.id == partition_id).values(archived=True))
         await db.commit()
 
 
-async def _mark_failed(partition_id: int, message: str) -> None:
-    async with AsyncSessionLocal() as db:
+async def _mark_failed(partition_id: int, message: str, organization_id: int | None) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+    async with sessionmaker() as db:
         await db.execute(
             update(PipelineRunPartition).where(PipelineRunPartition.id == partition_id)
             .values(status=PartitionStatus.FAILED, error_message=message,

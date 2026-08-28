@@ -11,3 +11,15 @@ cd frontend
 # Or use:
 cmd /c "cd frontend && npm run dev"
 # App: http://localhost:5173
+
+
+
+nohup cloudflared tunnel --url http://localhost:5173 > /tmp/cloudflared.log 2>&1 & echo "started, check URL with: cat /tmp/cloudflared.log"
+
+
+pkill -f "cloudflared tunnel"
+
+
+cloudflared tunnel --url http://localhost:5173
+
+WU5wHVrHobZh >>>. TestPass@123

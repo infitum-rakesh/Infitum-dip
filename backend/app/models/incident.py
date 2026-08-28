@@ -16,7 +16,7 @@ from datetime import datetime
 from sqlalchemy import DateTime, Enum, ForeignKey, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import TenantBase
 
 
 class IncidentSource(str, enum.Enum):
@@ -69,14 +69,14 @@ class IncidentEvidenceType(str, enum.Enum):
     RECONCILIATION_RESULT = "RECONCILIATION_RESULT"
 
 
-class Incident(Base):
+class Incident(TenantBase):
     __tablename__ = "incidents"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
 
     # FK only, no relationship() back-populates — additive, doesn't touch
     # models/organization.py or models/user.py.
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     incident_number: Mapped[str] = mapped_column(String(20), unique=True, index=True)  # e.g. "INC-10281"
     title: Mapped[str] = mapped_column(String(300), nullable=False)
@@ -94,7 +94,7 @@ class Incident(Base):
     connection_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     environment: Mapped[str] = mapped_column(String(30), default="PRODUCTION")
 
-    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    owner_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
     owner_team: Mapped[str | None] = mapped_column(String(100), nullable=True)  # e.g. "Data Engineering"
 
     root_cause: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -109,7 +109,7 @@ class Incident(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -119,7 +119,7 @@ class Incident(Base):
         return f"<Incident {self.incident_number} {self.severity}/{self.status}>"
 
 
-class IncidentTimelineEvent(Base):
+class IncidentTimelineEvent(TenantBase):
     """Append-only audit trail — lifecycle stages + comments, one feed."""
     __tablename__ = "incident_timeline_events"
 
@@ -129,14 +129,14 @@ class IncidentTimelineEvent(Base):
     event_type: Mapped[IncidentTimelineEventType] = mapped_column(Enum(IncidentTimelineEventType), nullable=False)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    actor_id: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     def __repr__(self) -> str:
         return f"<IncidentTimelineEvent incident={self.incident_id} {self.event_type}>"
 
 
-class IncidentEvidence(Base):
+class IncidentEvidence(TenantBase):
     __tablename__ = "incident_evidence"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
@@ -146,7 +146,7 @@ class IncidentEvidence(Base):
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     content: Mapped[dict] = mapped_column(JSON, default=dict)  # free-form: {text, rows, metrics, ...}
 
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     def __repr__(self) -> str:

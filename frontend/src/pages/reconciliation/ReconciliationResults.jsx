@@ -20,7 +20,7 @@ function keyText(keyValue) {
   return Object.values(keyValue).join(', ');
 }
 
-export function ReconciliationResults({ run, sourceObject, targetObject, onReRun }) {
+export function ReconciliationResults({ run, sourceObject, targetObject, onReRun, onGoToSetup }) {
   const [filter, setFilter] = useState('all');
   const [exceptions, setExceptions] = useState([]);
   const [excLoading, setExcLoading] = useState(false);
@@ -46,8 +46,16 @@ export function ReconciliationResults({ run, sourceObject, targetObject, onReRun
   if (run.status === 'FAILED') {
     return (
       <div style={{ padding: 32 }}>
-        <div style={{ padding: '12px 16px', background: 'var(--color-danger-bg)', color: 'var(--color-danger-dark)', borderRadius: 8, fontSize: 13 }}>
-          {run.error_message}
+        <div style={{ padding: '12px 16px', background: 'var(--color-danger-bg)', color: 'var(--color-danger-dark)', borderRadius: 8, fontSize: 13, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span>{run.error_message}</span>
+          {onGoToSetup && (
+            <button
+              onClick={onGoToSetup}
+              style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--color-danger-dark)', fontWeight: 700, textDecoration: 'underline', cursor: 'pointer', fontSize: 13, flexShrink: 0 }}
+            >
+              Go to Setup →
+            </button>
+          )}
         </div>
       </div>
     );

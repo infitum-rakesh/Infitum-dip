@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database.connection import AsyncSessionLocal
+
 from app.core.config import get_settings
 from app.models.incident import (
     Incident,
@@ -400,8 +402,9 @@ async def user_name_map(db: AsyncSession, ids: set[int]) -> dict[int, str]:
     ids = {i for i in ids if i}
     if not ids:
         return {}
-    result = await db.execute(select(User.id, User.full_name).where(User.id.in_(ids)))
-    return {row[0]: row[1] for row in result.all()}
+    async with AsyncSessionLocal() as platform_db:  # User is a PlatformBase model — never the tenant-routed `db`
+        result = await platform_db.execute(select(User.id, User.full_name).where(User.id.in_(ids)))
+        return {row[0]: row[1] for row in result.all()}
 
 
 def incident_to_out(incident: Incident, name_map: dict[int, str]) -> dict:

@@ -502,6 +502,28 @@
    column tables and preview tables need more than 280px. */
 .pc-config-panel-wide { width: 420px; min-width: 420px; }
 
+/* Disclosure banner at the top of a node's Configuration section — used
+   wherever the config UI's fields don't map 1:1 onto what the run engine
+   (pipeline_job_executor.py) actually does with them (e.g. a Document
+   Intelligence node passing data through unchanged, or Notification only
+   sending real webhooks). Same honesty pattern as .sdc-inline-warning,
+   just block-level since it applies to the whole node, not one field. */
+.pc-config-notice {
+  display: flex; gap: 7px; align-items: flex-start;
+  padding: 8px 10px; margin-bottom: 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-warning-bg);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  font-size: 11px; line-height: 1.5; color: var(--color-warning-dark);
+}
+.pc-config-notice svg { flex-shrink: 0; margin-top: 1px; }
+.pc-config-checkbox-row {
+  display: flex; align-items: center; gap: 6px;
+  font-size: var(--fs-sm); color: var(--text-primary);
+  margin-bottom: 8px; cursor: pointer;
+}
+.pc-config-checkbox-row input { accent-color: var(--color-primary); cursor: pointer; }
+
 /* ── LoadStrategyConfig — Full/Delta load, SCD1/SCD2 ────────────── */
 .ls-panel { display: flex; flex-direction: column; }
 .ls-radio-group { display: flex; flex-direction: row; gap: 14px; flex-wrap: wrap; }

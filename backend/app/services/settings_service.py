@@ -80,9 +80,15 @@ async def to_out(db: AsyncSession, org: Organization, row: OrganizationSettings)
 
 
 async def update_settings(
-    db: AsyncSession, org: Organization, row: OrganizationSettings, body, actor_id: int | None,
+    db: AsyncSession, platform_db: AsyncSession, org: Organization, row: OrganizationSettings, body, actor_id: int | None,
     ip_address: str | None = None,
 ) -> OrganizationSettings:
+    """`org` (PlatformBase) is committed via `platform_db`; `row`
+    (OrganizationSettings, TenantBase) and the audit event (also
+    TenantBase) via `db` — two separate sessions/physical databases once
+    an org has migrated, so `org` can never be `db.add()`ed onto the same
+    session that owns `row` (a plain ORM object can only be attached to
+    one session's identity map at a time — mixing them raises)."""
     patch = body.model_dump(exclude_unset=True)
     changed_sections = []
 
@@ -103,7 +109,7 @@ async def update_settings(
     row.values = new_values
     row.updated_by = actor_id
     db.add(row)
-    db.add(org)
+    platform_db.add(org)
 
     if changed_sections:
         await record_event(
@@ -114,5 +120,6 @@ async def update_settings(
 
     await db.commit()
     await db.refresh(row)
-    await db.refresh(org)
+    await platform_db.commit()
+    await platform_db.refresh(org)
     return row

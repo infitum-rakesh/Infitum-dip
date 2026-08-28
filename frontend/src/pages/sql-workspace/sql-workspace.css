@@ -273,11 +273,36 @@
 .sqlw-result-tabs button.active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
 .sqlw-result-tabs-minimized { cursor: pointer; }
 .sqlw-result-tabs-spacer { flex: 1; }
+/* Real DOM portal target — ResultGrid.jsx portals its filter/freeze/export
+   buttons in here (see its `toolbar` + createPortal). Collapses to nothing
+   (no stray gap) when empty, e.g. before any query has run. */
+.sqlw-grid-toolbar-slot:empty { display: none; }
+.sqlw-grid-toolbar-slot:not(:empty) {
+  display: flex; align-items: center; margin-right: 4px; padding-right: 6px; border-right: 1px solid var(--border);
+}
+/* `.sqlw-grid-tool`'s own padding: 5px (further below) loses to
+   `.sqlw-result-tabs button`'s padding: 7px 12px on specificity alone
+   (0,1,1 beats 0,1,0) now that these buttons live inside .sqlw-result-tabs
+   — same 0-width-icon bug as .sqlw-panel-control above, same cause. This
+   selector's two classes (0,2,0) outrank that rule regardless of source
+   order, so it's the fix that can't quietly break again if either rule
+   moves in the file. */
+.sqlw-grid-toolbar-slot .sqlw-grid-tool { padding: 5px; }
 .sqlw-panel-controls { display: flex; gap: 2px; padding-right: 2px; }
 .sqlw-panel-control {
   display: flex; align-items: center; justify-content: center; width: 22px; height: 22px;
   border-radius: var(--radius-sm); color: var(--text-muted);
 }
+/* Overrides `.sqlw-result-tabs button`'s padding: 7px 12px — that rule
+   targets the text tab buttons (Results/Messages/...), but also matches
+   these icon-only buttons since they live inside .sqlw-result-tabs too.
+   With box-sizing: border-box and this button's fixed 22px width, 24px of
+   horizontal padding alone left the icon a 0-width content box (invisible,
+   though still present and clickable). A bare `.sqlw-panel-control` rule
+   is (0,1,0) — LESS specific than `.sqlw-result-tabs button`'s (0,1,1), so
+   it silently loses no matter where it's placed in the file. This two-class
+   selector is (0,2,0), which outranks it regardless of source order. */
+.sqlw-panel-controls .sqlw-panel-control { padding: 0; }
 .sqlw-panel-control:hover { background: var(--border); color: var(--text-primary); }
 .sqlw-plan-text {
   flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 12px 14px;
@@ -317,6 +342,12 @@
 .sqlw-exec-footer-error {
   color: var(--color-danger-dark); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%;
 }
+/* Real DOM portal target — ResultGrid.jsx portals "N selected" text in
+   here (see its `selectionSlotEl` usage) once one or more rows are
+   checked. Collapses to nothing when empty, so it doesn't leave a stray
+   flex gap before any rows are selected. */
+.sqlw-exec-footer-selection:empty { display: none; }
+.sqlw-exec-footer-selection { font-weight: 600; color: var(--text-primary); }
 
 .sqlw-grid-wrap {
   flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg-card);
@@ -378,7 +409,15 @@
 
 .sqlw-grid-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 
-.sqlw-grid-interactive thead th { cursor: pointer; user-select: none; position: relative; }
+/* No `position: relative` here on purpose — `.sqlw-grid thead th` already
+   sets `position: sticky` above, and this rule has the same specificity
+   (0,1,2) and comes later in the file, so re-declaring position here would
+   silently clobber the sticky value back to a plain in-flow header that
+   scrolls away with the body (the header row stops pinning to the top of
+   .sqlw-grid-scroll on scroll). `position: sticky` is itself a positioned
+   value, so it already gives `.sqlw-th-resize` (position: absolute) a
+   valid containing block — nothing else needs to change here. */
+.sqlw-grid-interactive thead th { cursor: pointer; user-select: none; }
 .sqlw-th-label { display: inline-flex; align-items: center; gap: 4px; }
 .sqlw-th-resize {
   position: absolute; right: 0; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 1;
@@ -392,13 +431,35 @@
 }
 .sqlw-grid-filterrow input:focus { border-color: var(--color-primary); }
 .sqlw-row-selected td { background: var(--color-primary-light); }
-/* Higher specificity than ".sqlw-grid-interactive thead th" (which sets
-   position:relative for the resize handle) — otherwise that rule wins on
-   specificity alone and this column silently stops sticking, while its
-   `left` offset still applies as a plain relative shift, overlapping the
-   next column instead of freezing in place during horizontal scroll. */
 .sqlw-grid-interactive .sqlw-frozen { position: sticky; left: 32px; z-index: 1; background: var(--bg-card); box-shadow: 2px 0 4px rgba(0,0,0,0.04); }
+/* Body td.sqlw-frozen cells need position:sticky too (for the horizontal
+   freeze), which makes them positioned elements just like the sticky
+   thead th row — and per CSS stacking rules, positioned elements at the
+   same z-index paint in DOM order, so a scrolled-down tbody row (later in
+   the DOM than thead) silently painted OVER the frozen header cell
+   whenever that row scrolled up to meet the pinned header, hiding it
+   behind live row data. Ordinary (non-frozen) td's don't have this
+   problem since they stay position:static, which always paints below any
+   positioned element regardless of DOM order — only the frozen column's
+   body cells are positioned, so only the frozen header cell needed a
+   higher z-index than its own column's body cells. This selector's two
+   classes + two elements (0,2,2) outrank the base ".sqlw-frozen" rule's
+   (0,2,0) regardless of file order, so it isn't at risk of silently
+   losing the way earlier fixes on this page were. */
+.sqlw-grid-interactive thead th.sqlw-frozen { z-index: 2; }
 .sqlw-row-selected .sqlw-frozen { background: var(--color-primary-light); }
+/* Checkbox column pins to the left edge alongside the frozen data column
+   whenever "Freeze first column" is on, instead of scrolling away on its
+   own and leaving the frozen data column stranded with no selector column
+   visible next to it — the two are meant to read as one pinned unit, same
+   as Excel/Sheets treat a frozen selection column. Only applied when
+   frozenFirst is true (ResultGrid.jsx adds this class conditionally); when
+   off, the checkbox column scrolls normally like any other column. Mirrors
+   .sqlw-frozen's left/z-index pattern above, including the header-vs-body
+   z-index split for the same DOM-order paint-collision reason. */
+.sqlw-grid-interactive .sqlw-frozen-select { position: sticky; left: 0; z-index: 1; background: var(--bg-card); }
+.sqlw-grid-interactive thead th.sqlw-frozen-select { z-index: 2; }
+.sqlw-row-selected .sqlw-frozen-select { background: var(--color-primary-light); }
 
 .sqlw-grid-ctxmenu {
   position: fixed; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md);

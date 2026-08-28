@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_action
-from app.database.connection import get_db
+from app.database.tenant_routing import get_tenant_db
 from app.models.user import User, UserRole
 from app.schemas.connections import ColumnOut
 from app.schemas.mapping import (
@@ -61,7 +61,7 @@ async def _to_out(db: AsyncSession, row) -> dict:
 # ── Engine operations (must precede /{mapping_id}) ─────────────────
 
 @router.post("/auto-map", response_model=AutoMapResponse)
-async def auto_map(body: AutoMapRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_db)):
+async def auto_map(body: AutoMapRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
     try:
         proposals = await svc.run_auto_map(
             db, organization_id=_effective_org_id(user), source=body.source, target=body.target,
@@ -73,7 +73,7 @@ async def auto_map(body: AutoMapRequest, user: User = Depends(_execute), db: Asy
 
 
 @router.post("/validate", response_model=ValidateResponse)
-async def validate(body: ValidateRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_db)):
+async def validate(body: ValidateRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
     try:
         result = await svc.run_validate(
             db, organization_id=_effective_org_id(user), source=body.source, target=body.target,
@@ -85,7 +85,7 @@ async def validate(body: ValidateRequest, user: User = Depends(_execute), db: As
 
 
 @router.post("/preview", response_model=MappingPreviewResponse)
-async def preview(body: MappingPreviewRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_db)):
+async def preview(body: MappingPreviewRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
     try:
         result = await svc.run_preview(
             db, organization_id=_effective_org_id(user), source=body.source,
@@ -99,14 +99,14 @@ async def preview(body: MappingPreviewRequest, user: User = Depends(_execute), d
 # ── CRUD ─────────────────────────────────────────────────────────
 
 @router.get("", response_model=ColumnMappingListOut)
-async def list_mappings(user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def list_mappings(user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     rows, total = await svc.list_mappings(db, _effective_org_id(user))
     items = [await _to_out(db, r) for r in rows]
     return ColumnMappingListOut(items=items, total=total)
 
 
 @router.post("", response_model=ColumnMappingOut, status_code=status.HTTP_201_CREATED)
-async def create_mapping(body: ColumnMappingCreateRequest, user: User = Depends(_create), db: AsyncSession = Depends(get_db)):
+async def create_mapping(body: ColumnMappingCreateRequest, user: User = Depends(_create), db: AsyncSession = Depends(get_tenant_db)):
     try:
         row = await svc.create_mapping(
             db, organization_id=user.organization_id, name=body.name, source=body.source, target=body.target,
@@ -125,7 +125,7 @@ async def _get_or_404(db: AsyncSession, mapping_id: int, user: User):
 
 
 @router.get("/{mapping_id}", response_model=ColumnMappingDetailOut)
-async def get_mapping(mapping_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_mapping(mapping_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     row = await _get_or_404(db, mapping_id, user)
     out = await _to_out(db, row)
 
@@ -147,7 +147,7 @@ async def get_mapping(mapping_id: int, user: User = Depends(_view), db: AsyncSes
 
 
 @router.put("/{mapping_id}", response_model=ColumnMappingOut)
-async def update_mapping(mapping_id: int, body: ColumnMappingUpdateRequest, user: User = Depends(_edit), db: AsyncSession = Depends(get_db)):
+async def update_mapping(mapping_id: int, body: ColumnMappingUpdateRequest, user: User = Depends(_edit), db: AsyncSession = Depends(get_tenant_db)):
     row = await _get_or_404(db, mapping_id, user)
     row = await svc.update_mapping(
         db, row, name=body.name, mappings=[m.model_dump() for m in body.mappings] if body.mappings is not None else None,
@@ -157,6 +157,6 @@ async def update_mapping(mapping_id: int, body: ColumnMappingUpdateRequest, user
 
 
 @router.delete("/{mapping_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_mapping(mapping_id: int, user: User = Depends(_delete), db: AsyncSession = Depends(get_db)):
+async def delete_mapping(mapping_id: int, user: User = Depends(_delete), db: AsyncSession = Depends(get_tenant_db)):
     row = await _get_or_404(db, mapping_id, user)
     await svc.delete_mapping(db, row)

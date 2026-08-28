@@ -102,7 +102,6 @@ function makeTab(overrides = {}) {
     sendingToTransform: false,
     sendToTransformError: '',
     activeSchemaName: '',
-    schemaRefreshKey: 0,
     resultView: 'results',   // 'results' | 'messages' | 'statistics' | 'explain'
     explaining: false,
     explainResult: null,
@@ -113,7 +112,7 @@ function makeTab(overrides = {}) {
 
 // ── Results grid ───────────────────────────────────────────────────
 
-function ResultsPanel({ running, error, result, queryName, canExport, onSendToTransform, sendingToTransform, sendToTransformError, connectionId, sqlText }) {
+function ResultsPanel({ running, error, result, queryName, canExport, onSendToTransform, sendingToTransform, sendToTransformError, connectionId, sqlText, toolbarSlotEl, selectionSlotEl }) {
   if (running) {
     return <div className="sqlw-results-empty"><Loader2 size={16} className="sqlw-spin" /> Running…</div>;
   }
@@ -157,6 +156,8 @@ function ResultsPanel({ running, error, result, queryName, canExport, onSendToTr
         sendToTransformError={sendToTransformError}
         connectionId={connectionId}
         sqlText={sqlText}
+        toolbarSlotEl={toolbarSlotEl}
+        selectionSlotEl={selectionSlotEl}
       />
     </>
   );
@@ -275,7 +276,7 @@ function StatisticsPanel({ running, error, result, connection }) {
 // ── Footer execution status bar — always visible under the results
 // panel once at least one run has happened this tab, real data only. ──
 
-function ExecutionFooter({ running, error, result, connection }) {
+function ExecutionFooter({ running, error, result, connection, selectionSlotRef }) {
   if (running) {
     return (
       <div className="sqlw-exec-footer">
@@ -301,6 +302,9 @@ function ExecutionFooter({ running, error, result, connection }) {
       <span>Duration: {result.elapsed_ms} ms</span>
       {connection && <span>Server: {connection.name}</span>}
       {connection?.database_display && <span>Database: {connection.database_display}</span>}
+      {/* ResultGrid portals "N selected" text in here when rows are checked —
+          see ResultGrid.jsx's selectionSlotEl usage. */}
+      <span className="sqlw-exec-footer-selection" ref={selectionSlotRef} />
     </div>
   );
 }
@@ -413,6 +417,19 @@ export default function SqlWorkspace() {
   const [connections, setConnections] = useState([]);
   const [tabs, setTabs] = useState(() => [makeTab()]);
   const [activeTabId, setActiveTabId] = useState(() => tabs[0].id);
+
+  // Real DOM portal targets — filter/freeze/export live in the result-tabs
+  // banner (right-aligned, alongside Results/Messages/Statistics/Execution
+  // Plan) instead of their own toolbar row inside the grid; the "N
+  // selected" message lives in the bottom execution-status footer instead
+  // of that same removed row. ResultGrid still OWNS all the state/logic
+  // (filters, freeze, export, selection) — these are just the real DOM
+  // nodes it portals its buttons/text into via createPortal, set once each
+  // slot mounts (callback refs, so ResultGrid always has a live target by
+  // the time it renders, since both slots mount unconditionally above/
+  // around it).
+  const [gridToolbarEl, setGridToolbarEl] = useState(null);
+  const [gridFooterSelectionEl, setGridFooterSelectionEl] = useState(null);
 
   // Results panel size — a workspace-wide UI preference (not per-tab):
   // 'normal' at a real, user-adjustable height (default 30% of the main
@@ -593,12 +610,16 @@ export default function SqlWorkspace() {
       });
       // Any successful statement (not just DDL) may have changed what's in
       // the schema — a write's target table might be new since the tree
-      // was last expanded. Bust the DatabaseExplorer's cache AND the
-      // Monaco autocomplete's table/column cache so both are live, not
-      // stale. Uses the functional setState form (not patchTab) so this
-      // is correct even if the user edited another tab while this one ran.
+      // was last expanded. Bust Monaco autocomplete's table/column cache
+      // so it doesn't offer stale suggestions (silent — it just re-fetches
+      // next time completion is requested, no visible effect). The
+      // DatabaseExplorer tree deliberately does NOT get busted here — see
+      // its own comment for why an eager cache-clear there just blanked
+      // the visible tree instead of refreshing it. Uses the functional
+      // setState form (not patchTab) so this is correct even if the user
+      // edited another tab while this one ran.
       invalidateEditorMeta(connectionId);
-      setTabs((ts) => ts.map((x) => (x.id === tabId ? { ...x, result: r, running: false, runId: null, schemaRefreshKey: x.schemaRefreshKey + 1 } : x)));
+      setTabs((ts) => ts.map((x) => (x.id === tabId ? { ...x, result: r, running: false, runId: null } : x)));
     } catch (err) {
       // A real cancellation surfaces here too — Postgres/MySQL both raise
       // a genuine DB error when pg_cancel_backend/KILL QUERY interrupts a
@@ -803,7 +824,7 @@ export default function SqlWorkspace() {
             {leftTab === 'schema' && (
               <DatabaseExplorer
                 connectionId={activeTab.connectionId}
-                refreshKey={activeTab.schemaRefreshKey}
+                connectionType={selectedConnection?.connection_type}
                 onInsertSql={insertSql}
                 onPreviewObject={previewObject}
               />
@@ -941,6 +962,12 @@ export default function SqlWorkspace() {
               <button className={activeTab.resultView === 'statistics' ? 'active' : ''} onClick={() => { patchActiveTab({ resultView: 'statistics' }); if (resultsMode === 'minimized') setResultsMode('normal'); }}>Statistics</button>
               <button className={activeTab.resultView === 'explain' ? 'active' : ''} onClick={() => { patchActiveTab({ resultView: 'explain' }); if (resultsMode === 'minimized') setResultsMode('normal'); }}>Execution Plan</button>
               <div className="sqlw-result-tabs-spacer" />
+              {/* Filter/Freeze/Export buttons portal in here from ResultGrid
+                  (only meaningful — and only rendered by ResultGrid — while
+                  the Results tab is showing an actual grid). */}
+              {activeTab.resultView === 'results' && (
+                <div className="sqlw-grid-toolbar-slot" ref={setGridToolbarEl} />
+              )}
               <div className="sqlw-panel-controls">
                 <button
                   className="sqlw-panel-control"
@@ -979,11 +1006,13 @@ export default function SqlWorkspace() {
                       sendToTransformError={activeTab.sendToTransformError}
                       connectionId={activeTab.connectionId}
                       sqlText={activeTab.sqlText}
+                      toolbarSlotEl={gridToolbarEl}
+                      selectionSlotEl={gridFooterSelectionEl}
                     />
                   )}
                 </div>
                 {activeTab.resultView === 'results' && (
-                  <ExecutionFooter running={activeTab.running} error={activeTab.error} result={activeTab.result} connection={selectedConnection} />
+                  <ExecutionFooter running={activeTab.running} error={activeTab.error} result={activeTab.result} connection={selectedConnection} selectionSlotRef={setGridFooterSelectionEl} />
                 )}
               </div>
             )}

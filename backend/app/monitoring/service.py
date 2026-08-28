@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.connection import AsyncSessionLocal
+from app.database import tenant_engine_registry
 from app.models.incident import IncidentSeverity, IncidentSource
 from app.models.monitoring import AlertSeverity, SlaDefinition, SlaStatus
 from app.models.pipeline_job import JobStatus, PipelineJob
@@ -36,14 +36,17 @@ async def get_sla_for_pipeline(db: AsyncSession, pipeline_id: int, organization_
     return (await db.execute(stmt)).scalars().first()
 
 
-async def on_job_finished(job_id: int) -> None:
+async def on_job_finished(job_id: int, organization_id: int | None) -> None:
     """Fire-and-forget-safe: opens its own session, never raises out to
     the caller (a monitoring hiccup must never fail or mask the pipeline
     run itself) — any internal error is swallowed after being logged via
     a best-effort AlertEvent-less print, matching this codebase's existing
-    fire-and-forget executor risk disclosure (see pipeline_job_executor.py)."""
+    fire-and-forget executor risk disclosure (see pipeline_job_executor.py).
+    organization_id comes from the caller's _job_org_cache (pipeline_job_executor.py)
+    — this function itself has no live session to look it up from."""
     try:
-        async with AsyncSessionLocal() as db:
+        sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+        async with sessionmaker() as db:
             job = await db.get(PipelineJob, job_id)
             if job is None or job.status not in (JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED):
                 return

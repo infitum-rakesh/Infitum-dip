@@ -15,10 +15,10 @@ stored on read, so adding a new field later never breaks existing rows.
 """
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, JSON, func
+from sqlalchemy import DateTime, JSON, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import TenantBase
 
 DEFAULT_SETTINGS = {
     "general": {
@@ -75,15 +75,15 @@ DEFAULT_SETTINGS = {
 }
 
 
-class OrganizationSettings(Base):
+class OrganizationSettings(TenantBase):
     __tablename__ = "organization_settings"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False, unique=True, index=True)
+    organization_id: Mapped[int] = mapped_column(nullable=False, unique=True, index=True)
 
     values: Mapped[dict] = mapped_column(JSON, default=dict)
 
-    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    updated_by: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

@@ -10,6 +10,14 @@
  * route around a connection that's genuinely broken (e.g. an Anthropic
  * key whose account is out of API credit) without leaving this screen;
  * see document_service.run_manual_ai_extraction()'s connection_id param.
+ *
+ * The connection select also always offers "Custom (No AI Required)" —
+ * the real, deterministic, rule-based Custom Extraction Engine (backend
+ * app/extraction/custom_engine.py, NOT a language model) — and defaults
+ * to it automatically once connections finish loading and none exist,
+ * so extraction still works with zero setup. Its value is the sentinel
+ * "0" (see extraction_service.CUSTOM_ENGINE_CONNECTION_ID) — safe
+ * because real Connection ids are DB autoincrement starting at 1.
  */
 import { useEffect, useState } from 'react';
 import { Sparkles } from 'lucide-react';
@@ -30,7 +38,15 @@ export function RunExtractionControl({ documentId, onDone, size = 'sm' }) {
   useEffect(() => {
     documentApi.getDocumentTypes().then(setTypes).catch(() => setTypes([]));
     connectionApi.list({ category: 'AI_PROVIDER', page_size: 50 })
-      .then((r) => setConnections(r.items ?? []))
+      .then((r) => {
+        const items = r.items ?? [];
+        setConnections(items);
+        // No AI Provider connection configured anywhere for this org —
+        // default straight to the Custom Extraction Engine instead of
+        // leaving the picker on "Auto" (which would otherwise still try
+        // real connections first and only fall back server-side).
+        if (items.length === 0) setConnectionId('0');
+      })
       .catch(() => setConnections([]));
   }, []);
 
@@ -75,6 +91,7 @@ export function RunExtractionControl({ documentId, onDone, size = 'sm' }) {
             {c.name || `Connection #${c.id}`} — {c.connection_type}{c.status !== 'ACTIVE' ? ` (${c.status.toLowerCase()})` : ''}
           </option>
         ))}
+        <option value="0">Custom (No AI Required)</option>
       </select>
       <Button variant="secondary" size={size} icon={<Sparkles size={13} />} loading={running} onClick={run}>
         Run AI Extraction

@@ -90,31 +90,38 @@ async def _count(db: AsyncSession, stmt) -> int:
 
 
 async def _users_used(db: AsyncSession, organization_id: int | None) -> int:
+    # User is PlatformBase — always the platform session, never tenant-routed.
     return await _count(db, select(User).where(User.organization_id == organization_id))
 
 
-async def _documents_used(db: AsyncSession, organization_id: int | None) -> int:
-    return await _count(db, select(Document).where(Document.organization_id == organization_id))
+async def _documents_used(tenant_db: AsyncSession, organization_id: int | None) -> int:
+    # Document is TenantBase — for a migrated org this MUST be the
+    # tenant-routed session, not the platform one. The shared platform
+    # database still physically has this org's OLD Document rows after a
+    # migration (Bring-Your-Own-Database's copy step never deletes source
+    # rows), so querying the wrong session here wouldn't error — it would
+    # just silently return stale usage numbers frozen at the migration date.
+    return await _count(tenant_db, select(Document).where(Document.organization_id == organization_id))
 
 
-async def _ocr_used(db: AsyncSession, organization_id: int | None) -> int:
-    return await _count(db, select(Document).where(Document.organization_id == organization_id, Document.ocr_percent.isnot(None)))
+async def _ocr_used(tenant_db: AsyncSession, organization_id: int | None) -> int:
+    return await _count(tenant_db, select(Document).where(Document.organization_id == organization_id, Document.ocr_percent.isnot(None)))
 
 
-async def _ai_extraction_used(db: AsyncSession, organization_id: int | None) -> int:
-    return await _count(db, select(Document).where(Document.organization_id == organization_id, Document.extraction_percent.isnot(None)))
+async def _ai_extraction_used(tenant_db: AsyncSession, organization_id: int | None) -> int:
+    return await _count(tenant_db, select(Document).where(Document.organization_id == organization_id, Document.extraction_percent.isnot(None)))
 
 
-async def _storage_used_gb(db: AsyncSession, organization_id: int | None) -> float:
-    result = await db.execute(select(func.coalesce(func.sum(Document.size_bytes), 0)).where(Document.organization_id == organization_id))
+async def _storage_used_gb(tenant_db: AsyncSession, organization_id: int | None) -> float:
+    result = await tenant_db.execute(select(func.coalesce(func.sum(Document.size_bytes), 0)).where(Document.organization_id == organization_id))
     return round((result.scalar_one() or 0) / 1_000_000_000, 3)
 
 
-async def build_usage(db: AsyncSession, org: Organization) -> dict[str, dict]:
+async def build_usage(db: AsyncSession, tenant_db: AsyncSession, org: Organization) -> dict[str, dict]:
     users_used = await _users_used(db, org.id)
-    documents_used = await _documents_used(db, org.id)
-    ai_used = await _ai_extraction_used(db, org.id)
-    storage_used = await _storage_used_gb(db, org.id)
+    documents_used = await _documents_used(tenant_db, org.id)
+    ai_used = await _ai_extraction_used(tenant_db, org.id)
+    storage_used = await _storage_used_gb(tenant_db, org.id)
 
     return {
         "users":      {"used": users_used, "limit": org.max_users if org.max_users and org.max_users > 0 else None},
@@ -124,8 +131,8 @@ async def build_usage(db: AsyncSession, org: Organization) -> dict[str, dict]:
     }
 
 
-async def build_dashboard(db: AsyncSession, org: Organization) -> dict:
-    usage = await build_usage(db, org)
+async def build_dashboard(db: AsyncSession, tenant_db: AsyncSession, org: Organization) -> dict:
+    usage = await build_usage(db, tenant_db, org)
     return {
         "organization_id": org.id,
         "license_status": org.license_status.value if hasattr(org.license_status, "value") else org.license_status,
@@ -142,7 +149,7 @@ async def build_dashboard(db: AsyncSession, org: Organization) -> dict:
     }
 
 
-async def build_module_licenses(db: AsyncSession, org: Organization) -> list[dict]:
+async def build_module_licenses(tenant_db: AsyncSession, org: Organization) -> list[dict]:
     licensed = set(org.licensed_modules or [])
     is_enabled_state = org.license_status not in (LicenseStatus.EXPIRED, LicenseStatus.SUSPENDED)
     expiry = _expiry_for(org)
@@ -154,9 +161,9 @@ async def build_module_licenses(db: AsyncSession, org: Organization) -> list[dic
         usage = limit = None
         if purchased and resource:
             if resource == "documents":
-                usage = await (_ocr_used(db, org.id) if module == "OCR" else _documents_used(db, org.id))
+                usage = await (_ocr_used(tenant_db, org.id) if module == "OCR" else _documents_used(tenant_db, org.id))
             elif resource == "ai_calls":
-                usage = await _ai_extraction_used(db, org.id)
+                usage = await _ai_extraction_used(tenant_db, org.id)
             limit = _limit_for(org.plan, resource)
         items.append({
             "module": module,

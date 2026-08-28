@@ -10,13 +10,16 @@
  * only *reads* the plan list for its change-plan dropdown.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Building2, Palette, KeyRound, Layers, Save, Lock, RefreshCcw, Plus, Pencil, Power, PowerOff, Mail, Send, CheckCircle2, XCircle } from 'lucide-react';
+import { Building2, Palette, KeyRound, Layers, Save, Lock, RefreshCcw, Plus, Pencil, Power, PowerOff, Mail, Send, CheckCircle2, XCircle, Server } from 'lucide-react';
 import { Button, StatusBadge, PermissionGate, FullPageSpinner, EmptyState } from '@/components/common/index.js';
 import { SELLER_PERMISSIONS } from '@/utils/constants.js';
 import { MODULE_META } from '@/utils/permissions.js';
 import { formatDateTime } from '@/utils/formatters.js';
 import { sellerSettingsApi } from '@/services/api/seller/sellerSettingsApi.js';
 import { planApi } from '@/services/api/seller/subscriptionApi.js';
+import { sellerTenantDatabaseApi } from '@/services/api/tenantDatabaseApi.js';
+import { sellerTenantMigrationApi } from '@/services/api/tenantMigrationApi.js';
+import { TenantDatabaseTab } from '@/components/settings/TenantDatabaseTab.jsx';
 import { PlanModal } from './PlanModal.jsx';
 import './seller-settings.css';
 
@@ -24,6 +27,7 @@ const TABS = [
   { id: 'company', label: 'Company', icon: Building2 },
   { id: 'branding', label: 'Branding', icon: Palette },
   { id: 'email', label: 'Email', icon: Mail },
+  { id: 'database', label: 'Database', icon: Server },
   { id: 'plans', label: 'Plans', icon: Layers },
   { id: 'defaults', label: 'Default License Settings', icon: KeyRound },
 ];
@@ -112,6 +116,14 @@ export default function SellerSettings() {
         {tab === 'company' && <CompanyTab settings={settings} onSave={save} />}
         {tab === 'branding' && <BrandingTab settings={settings} onSave={save} />}
         {tab === 'email' && <EmailTab settings={settings} onReload={load} />}
+        {tab === 'database' && (
+          <TenantDatabaseTab
+            api={sellerTenantDatabaseApi}
+            migrationApi={sellerTenantMigrationApi}
+            isPlatform
+            editPermission={SELLER_PERMISSIONS.SELLER_PORTAL_ACCESS}
+          />
+        )}
         {tab === 'plans' && <PlansTab />}
         {tab === 'defaults' && <DefaultsTab settings={settings} onSave={save} />}
       </div>

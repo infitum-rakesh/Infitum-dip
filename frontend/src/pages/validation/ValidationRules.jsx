@@ -13,11 +13,18 @@ import './validation.css';
 
 const SEVERITY_VARIANT = { error: 'danger', warning: 'warning', info: 'info' };
 
+// A file has no SQL engine behind it — these two rule types need real
+// relational SQL (a JOIN, an arbitrary boolean expression) and have no
+// portable file-only equivalent (validation/file_engine.py refuses them
+// server-side too; this just keeps the UI from offering a rule that would
+// only fail at run time).
+const FILE_UNSUPPORTED_TYPES = new Set(['REF_INTEGRITY', 'SQL_CONDITION']);
+
 function blankRule() {
   return { id: `rule_${Date.now()}`, name: '', type: 'NOT_NULL', columns: [], severity: 'error', enabled: true, threshold: 100, config: {} };
 }
 
-export function ValidationRules({ rules, onRulesChange, columns, disabled }) {
+export function ValidationRules({ rules, onRulesChange, columns, disabled, fileBacked }) {
   const [modalOpen, setModalOpen] = useState(false);
   const [editId, setEditId] = useState(null);
   const [form, setForm] = useState(blankRule());
@@ -115,13 +122,18 @@ export function ValidationRules({ rules, onRulesChange, columns, disabled }) {
         <div style={{ marginBottom: 16 }}>
           <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: 8 }}>Rule Type</div>
           <div className="vld-rule-type-grid">
-            {Object.entries(RULE_TYPES).map(([key, def]) => (
-              <div key={key} className={`vld-rule-type-card ${form.type === key ? 'selected' : ''}`}
-                onClick={() => setForm((f) => ({ ...f, type: key, columns: key === 'UNIQUE' ? f.columns : f.columns.slice(0, 1) }))}>
-                <div className="vld-rule-type-icon">{def.icon}</div>
-                <div className="vld-rule-type-label">{def.label}</div>
-              </div>
-            ))}
+            {Object.entries(RULE_TYPES).map(([key, def]) => {
+              const unsupported = fileBacked && FILE_UNSUPPORTED_TYPES.has(key);
+              return (
+                <div key={key}
+                  className={`vld-rule-type-card ${form.type === key ? 'selected' : ''} ${unsupported ? 'disabled' : ''}`}
+                  title={unsupported ? 'Needs a real database — not available for an uploaded file.' : undefined}
+                  onClick={() => { if (!unsupported) setForm((f) => ({ ...f, type: key, columns: key === 'UNIQUE' ? f.columns : f.columns.slice(0, 1) })); }}>
+                  <div className="vld-rule-type-icon">{def.icon}</div>
+                  <div className="vld-rule-type-label">{def.label}</div>
+                </div>
+              );
+            })}
           </div>
         </div>
 

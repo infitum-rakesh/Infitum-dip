@@ -24,59 +24,86 @@ function debounce(fn, ms) {
 
 // ── Real SQL text generation from real reflected column metadata ───
 
-function qualifiedName(schema, name) {
-  return schema ? `${schema}.${name}` : name;
+// An identifier is only safe to leave unquoted if it's lowercase, starts
+// with a letter/underscore, and has no special characters — Postgres (and
+// most ANSI dialects) fold an UNQUOTED identifier to lowercase before
+// comparing it against the catalog, so a real mixed-case object created
+// via a quoted identifier (e.g. an uploaded file's original filename
+// becoming a table name — see Run Load / pipeline target-table naming)
+// would otherwise generate a SELECT that fails with "relation does not
+// exist" the moment it's dragged in or a script is generated for it.
+function needsQuoting(name) {
+  return !/^[a-z_][a-z0-9_$]*$/.test(name || '');
 }
 
-function generateSelectSql(schema, name, columns, opts) {
-  const qname = qualifiedName(schema, name);
-  const colList = opts.includeColumns && columns?.length ? columns.map((c) => c.name).join(',\n    ') : '*';
+// Quote character is dialect-specific — MySQL uses backticks, SQL Server/
+// Fabric use brackets, everything else here (Postgres, Oracle, Snowflake,
+// SAP, Vertica, NetSuite SuiteQL) is standard SQL double-quoting.
+function quoteIdent(name, connectionType) {
+  if (!needsQuoting(name)) return name;
+  const str = String(name);
+  if (connectionType === 'MYSQL') return `\`${str.replace(/`/g, '``')}\``;
+  if (connectionType === 'SQL_SERVER' || connectionType === 'FABRIC') return `[${str.replace(/]/g, ']]')}]`;
+  return `"${str.replace(/"/g, '""')}"`;
+}
+
+function qualifiedName(schema, name, connectionType) {
+  const qName = quoteIdent(name, connectionType);
+  return schema ? `${quoteIdent(schema, connectionType)}.${qName}` : qName;
+}
+
+function generateSelectSql(schema, name, columns, opts, connectionType) {
+  const qname = qualifiedName(schema, name, connectionType);
+  const colList = opts.includeColumns && columns?.length
+    ? columns.map((c) => quoteIdent(c.name, connectionType)).join(',\n    ')
+    : '*';
   let sql = `SELECT\n    ${colList}\nFROM ${qname}`;
   if (opts.addWhere) sql += `\nWHERE 1 = 1`;
   if (opts.addOrderBy) {
     const pk = columns?.find((c) => c.primary_key);
-    sql += `\nORDER BY ${pk ? pk.name : (columns?.[0]?.name ?? '1')}`;
+    sql += `\nORDER BY ${quoteIdent(pk ? pk.name : (columns?.[0]?.name ?? '1'), connectionType)}`;
   }
   if (opts.addLimit) sql += `\nLIMIT 100`;
   return `${sql};`;
 }
 
-function generateInsertSql(schema, name, columns) {
+function generateInsertSql(schema, name, columns, connectionType) {
   const writable = (columns || []).filter((c) => !(c.primary_key && /^(nextval|autoincrement)/i.test(c.default || '')));
   const cols = (writable.length ? writable : columns || []).map((c) => c.name);
   const placeholders = cols.map((c) => `<${c}>`);
-  return `INSERT INTO ${qualifiedName(schema, name)} (\n    ${cols.join(',\n    ')}\n) VALUES (\n    ${placeholders.join(',\n    ')}\n);`;
+  const qCols = cols.map((c) => quoteIdent(c, connectionType));
+  return `INSERT INTO ${qualifiedName(schema, name, connectionType)} (\n    ${qCols.join(',\n    ')}\n) VALUES (\n    ${placeholders.join(',\n    ')}\n);`;
 }
 
-function generateUpdateSql(schema, name, columns) {
+function generateUpdateSql(schema, name, columns, connectionType) {
   const pk = (columns || []).find((c) => c.primary_key);
   const setCols = (columns || []).filter((c) => !c.primary_key);
-  const setClause = setCols.map((c) => `${c.name} = <${c.name}>`).join(',\n    ') || '<column> = <value>';
-  const whereClause = pk ? `${pk.name} = <${pk.name}>` : '<key_column> = <value>';
-  return `UPDATE ${qualifiedName(schema, name)}\nSET\n    ${setClause}\nWHERE ${whereClause};`;
+  const setClause = setCols.map((c) => `${quoteIdent(c.name, connectionType)} = <${c.name}>`).join(',\n    ') || '<column> = <value>';
+  const whereClause = pk ? `${quoteIdent(pk.name, connectionType)} = <${pk.name}>` : '<key_column> = <value>';
+  return `UPDATE ${qualifiedName(schema, name, connectionType)}\nSET\n    ${setClause}\nWHERE ${whereClause};`;
 }
 
-function generateDeleteSql(schema, name, columns) {
+function generateDeleteSql(schema, name, columns, connectionType) {
   const pk = (columns || []).find((c) => c.primary_key);
-  const whereClause = pk ? `${pk.name} = <${pk.name}>` : '<key_column> = <value>';
-  return `DELETE FROM ${qualifiedName(schema, name)}\nWHERE ${whereClause};`;
+  const whereClause = pk ? `${quoteIdent(pk.name, connectionType)} = <${pk.name}>` : '<key_column> = <value>';
+  return `DELETE FROM ${qualifiedName(schema, name, connectionType)}\nWHERE ${whereClause};`;
 }
 
-function generateCreateSql(schema, name, columns) {
+function generateCreateSql(schema, name, columns, connectionType) {
   const lines = (columns || []).map((c) => {
-    let line = `    ${c.name} ${c.data_type}`;
+    let line = `    ${quoteIdent(c.name, connectionType)} ${c.data_type}`;
     if (!c.nullable) line += ' NOT NULL';
     if (c.default) line += ` DEFAULT ${c.default}`;
     return line;
   });
-  const pkCols = (columns || []).filter((c) => c.primary_key).map((c) => c.name);
+  const pkCols = (columns || []).filter((c) => c.primary_key).map((c) => quoteIdent(c.name, connectionType));
   if (pkCols.length) lines.push(`    PRIMARY KEY (${pkCols.join(', ')})`);
   for (const c of columns || []) {
     if (c.foreign_key) {
-      lines.push(`    FOREIGN KEY (${c.name}) REFERENCES ${qualifiedName(c.foreign_key.schema, c.foreign_key.table)} (${c.foreign_key.column})`);
+      lines.push(`    FOREIGN KEY (${quoteIdent(c.name, connectionType)}) REFERENCES ${qualifiedName(c.foreign_key.schema, c.foreign_key.table, connectionType)} (${quoteIdent(c.foreign_key.column, connectionType)})`);
     }
   }
-  return `CREATE TABLE ${qualifiedName(schema, name)} (\n${lines.join(',\n')}\n);`;
+  return `CREATE TABLE ${qualifiedName(schema, name, connectionType)} (\n${lines.join(',\n')}\n);`;
 }
 
 // ── Column badge row ─────────────────────────────────────────────
@@ -103,7 +130,7 @@ function ColumnRow({ col }) {
 // ── Object (table/view) row with its own expand + context menu ─────
 
 function ObjectRow({
-  connectionId, schema, obj, expanded, onToggle, onGenerateSql, onPreview, onDragStartSql,
+  connectionId, schema, obj, expanded, onToggle, onGenerateSql, onPreview, onDragStartSql, connectionType,
 }) {
   const [columns, setColumns] = useState(null);
   const [loadingCols, setLoadingCols] = useState(false);
@@ -146,10 +173,10 @@ function ObjectRow({
         draggable
         onDragStart={async (e) => {
           const cols = await ensureColumns();
-          e.dataTransfer.setData('text/plain', generateSelectSql(schema, obj.name, cols, { includeColumns: true, addLimit: true }));
+          e.dataTransfer.setData('text/plain', generateSelectSql(schema, obj.name, cols, { includeColumns: true, addLimit: true }, connectionType));
         }}
         onClick={() => onToggle(obj.name)}
-        title={qualifiedName(schema, obj.name)}
+        title={qualifiedName(schema, obj.name, connectionType)}
       >
         {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         <Icon size={12} className="sqlw-exp-object-icon" />
@@ -172,23 +199,23 @@ function ObjectRow({
               </button>
               {obj.object_type === 'TABLE' && (
                 <>
-                  <button onClick={async () => { onGenerateSql(generateInsertSql(schema, obj.name, await ensureColumns())); setMenuOpen(false); }}>
+                  <button onClick={async () => { onGenerateSql(generateInsertSql(schema, obj.name, await ensureColumns(), connectionType)); setMenuOpen(false); }}>
                     <FilePlus2 size={12} /> Generate INSERT
                   </button>
-                  <button onClick={async () => { onGenerateSql(generateUpdateSql(schema, obj.name, await ensureColumns())); setMenuOpen(false); }}>
+                  <button onClick={async () => { onGenerateSql(generateUpdateSql(schema, obj.name, await ensureColumns(), connectionType)); setMenuOpen(false); }}>
                     <FilePlus2 size={12} /> Generate UPDATE
                   </button>
-                  <button onClick={async () => { onGenerateSql(generateDeleteSql(schema, obj.name, await ensureColumns())); setMenuOpen(false); }}>
+                  <button onClick={async () => { onGenerateSql(generateDeleteSql(schema, obj.name, await ensureColumns(), connectionType)); setMenuOpen(false); }}>
                     <FilePlus2 size={12} /> Generate DELETE
                   </button>
-                  <button onClick={async () => { onGenerateSql(generateCreateSql(schema, obj.name, await ensureColumns())); setMenuOpen(false); }}>
+                  <button onClick={async () => { onGenerateSql(generateCreateSql(schema, obj.name, await ensureColumns(), connectionType)); setMenuOpen(false); }}>
                     <Code2 size={12} /> Generate CREATE Script
                   </button>
                 </>
               )}
               <div className="sqlw-exp-menu-sep" />
               <button onClick={() => { copyText(obj.name); setMenuOpen(false); }}><Copy size={12} /> Copy Object Name</button>
-              <button onClick={() => { copyText(qualifiedName(schema, obj.name)); setMenuOpen(false); }}><Copy size={12} /> Copy Full Name</button>
+              <button onClick={() => { copyText(qualifiedName(schema, obj.name, connectionType)); setMenuOpen(false); }}><Copy size={12} /> Copy Full Name</button>
             </div>
           )}
           {genPopover && (
@@ -199,7 +226,7 @@ function ObjectRow({
               <label><input type="checkbox" checked={genPopover.addOrderBy} onChange={(e) => setGenPopover((p) => ({ ...p, addOrderBy: e.target.checked }))} /> Add ORDER BY</label>
               <button
                 className="sqlw-exp-genpopover-insert"
-                onClick={async () => { onGenerateSql(generateSelectSql(schema, obj.name, await ensureColumns(), genPopover)); setMenuOpen(false); setGenPopover(null); }}
+                onClick={async () => { onGenerateSql(generateSelectSql(schema, obj.name, await ensureColumns(), genPopover, connectionType)); setMenuOpen(false); setGenPopover(null); }}
               >
                 Insert into Editor
               </button>
@@ -312,7 +339,7 @@ function SearchResults({ connectionId, schemas, query, ...objectProps }) {
 
 // ── Page-level component ────────────────────────────────────────
 
-export default function DatabaseExplorer({ connectionId, refreshKey, onInsertSql, onPreviewObject }) {
+export default function DatabaseExplorer({ connectionId, onInsertSql, onPreviewObject, connectionType }) {
   const [schemas, setSchemas] = useState([]);
   const [loadingSchemas, setLoadingSchemas] = useState(false);
   const [expandedSchema, setExpandedSchema] = useState(null);
@@ -322,6 +349,22 @@ export default function DatabaseExplorer({ connectionId, refreshKey, onInsertSql
 
   const debouncedSetSearch = useMemo(() => debounce(setSearch, 300), []);
 
+  // Deliberately does NOT reset/reload on every query execution — this
+  // tree stays exactly as populated for as long as `connectionId` stays
+  // the same (i.e. for the whole session on this connection), only
+  // re-fetching when the user actually switches to a different
+  // connection. An earlier version bumped a `refreshKey` prop after every
+  // successful Run to bust `objectsCache` (in case a DDL/write changed
+  // the schema), but that only ever emptied the visible tree — the fetch
+  // that would repopulate it is gated on `expanded` changing, which a
+  // cache-only reset never triggers — so the tree just went blank and
+  // stayed blank until the user manually collapsed/re-expanded the
+  // schema. Reported as "schema browser disappears after running a
+  // query." If a real DDL-triggered refresh is wanted later, it needs to
+  // also re-fetch the currently-expanded schema, not just clear the
+  // cache; for now the schema tree simply persists for the connection
+  // session, matching what most SQL IDEs do (explicit refresh, not an
+  // implicit one on every statement).
   useEffect(() => {
     setSchemas([]); setExpandedSchema(null); setObjectsCache({}); setSearchInput(''); setSearch('');
     if (!connectionId) return;
@@ -333,14 +376,10 @@ export default function DatabaseExplorer({ connectionId, refreshKey, onInsertSql
     }).catch(() => setSchemas([])).finally(() => setLoadingSchemas(false));
   }, [connectionId]);
 
-  useEffect(() => {
-    if (!connectionId || refreshKey === 0) return;
-    setObjectsCache({});
-  }, [refreshKey]);
-
   const objectProps = {
     onGenerateSql: (sql) => onInsertSql(sql),
     onPreview: (schema, name, columns) => onPreviewObject(schema, name, columns),
+    connectionType,
   };
 
   if (!connectionId) {

@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_action
-from app.database.connection import get_db
+from app.database.tenant_routing import get_tenant_db
 from app.models.user import User, UserRole
 from app.schemas.pipelines import (
     PipelineCompareOut,
@@ -55,14 +55,14 @@ async def _get_or_404(db: AsyncSession, pipeline_id: int, user: User):
 # ── List / get ───────────────────────────────────────────────────
 
 @router.get("", response_model=PipelineListOut)
-async def list_pipelines(user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def list_pipelines(user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     items, total = await svc.list_pipelines(db, _effective_org_id(user))
     name_map = await svc.user_name_map(db, {p.created_by for p in items} | {p.updated_by for p in items})
     return PipelineListOut(items=[svc.pipeline_to_out(p, name_map) for p in items], total=total)
 
 
 @router.get("/{pipeline_id}", response_model=PipelineWithDefinitionOut)
-async def get_pipeline(pipeline_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_pipeline(pipeline_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     pipeline = await _get_or_404(db, pipeline_id, user)
     current = await svc.get_current_version(db, pipeline)
     if current is None:
@@ -78,7 +78,7 @@ async def get_pipeline(pipeline_id: int, user: User = Depends(_view), db: AsyncS
 # ── Create / Save (save always creates a new version) ─────────────
 
 @router.post("", response_model=PipelineWithDefinitionOut, status_code=status.HTTP_201_CREATED)
-async def create_pipeline(body: PipelineCreateRequest, user: User = Depends(_create), db: AsyncSession = Depends(get_db)):
+async def create_pipeline(body: PipelineCreateRequest, user: User = Depends(_create), db: AsyncSession = Depends(get_tenant_db)):
     pipeline = await svc.create_pipeline(
         db, organization_id=user.organization_id, user_id=user.id,
         name=body.name, nodes=body.nodes, edges=body.edges, settings=body.settings,
@@ -91,7 +91,7 @@ async def create_pipeline(body: PipelineCreateRequest, user: User = Depends(_cre
 
 
 @router.put("/{pipeline_id}", response_model=PipelineWithDefinitionOut)
-async def save_pipeline(pipeline_id: int, body: PipelineSaveRequest, user: User = Depends(_edit), db: AsyncSession = Depends(get_db)):
+async def save_pipeline(pipeline_id: int, body: PipelineSaveRequest, user: User = Depends(_edit), db: AsyncSession = Depends(get_tenant_db)):
     pipeline = await _get_or_404(db, pipeline_id, user)
     pipeline, version = await svc.save_version(
         db, pipeline, user_id=user.id, name=body.name,
@@ -106,7 +106,7 @@ async def save_pipeline(pipeline_id: int, body: PipelineSaveRequest, user: User 
 
 
 @router.delete("/{pipeline_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_pipeline(pipeline_id: int, user: User = Depends(_delete), db: AsyncSession = Depends(get_db)):
+async def delete_pipeline(pipeline_id: int, user: User = Depends(_delete), db: AsyncSession = Depends(get_tenant_db)):
     pipeline = await _get_or_404(db, pipeline_id, user)
     await svc.delete_pipeline(db, pipeline)
 
@@ -114,7 +114,7 @@ async def delete_pipeline(pipeline_id: int, user: User = Depends(_delete), db: A
 # ── Version history ──────────────────────────────────────────────
 
 @router.get("/{pipeline_id}/versions", response_model=PipelineVersionListOut)
-async def list_versions(pipeline_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def list_versions(pipeline_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     pipeline = await _get_or_404(db, pipeline_id, user)
     versions = await svc.list_versions(db, pipeline_id)
     name_map = await svc.user_name_map(db, {v.created_by for v in versions})
@@ -126,7 +126,7 @@ async def list_versions(pipeline_id: int, user: User = Depends(_view), db: Async
 
 
 @router.get("/{pipeline_id}/versions/{version_number}", response_model=PipelineVersionDetailOut)
-async def get_version(pipeline_id: int, version_number: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_version(pipeline_id: int, version_number: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     pipeline = await _get_or_404(db, pipeline_id, user)
     version = await svc.get_version(db, pipeline_id, version_number)
     if version is None:
@@ -138,7 +138,7 @@ async def get_version(pipeline_id: int, version_number: int, user: User = Depend
 @router.get("/{pipeline_id}/compare", response_model=PipelineCompareOut)
 async def compare_versions(
     pipeline_id: int, version_a: int, version_b: int,
-    user: User = Depends(_view), db: AsyncSession = Depends(get_db),
+    user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db),
 ):
     await _get_or_404(db, pipeline_id, user)
     va = await svc.get_version(db, pipeline_id, version_a)
@@ -150,7 +150,7 @@ async def compare_versions(
 
 
 @router.post("/{pipeline_id}/versions/{version_number}/restore", response_model=PipelineWithDefinitionOut, status_code=status.HTTP_201_CREATED)
-async def restore_version(pipeline_id: int, version_number: int, user: User = Depends(_edit), db: AsyncSession = Depends(get_db)):
+async def restore_version(pipeline_id: int, version_number: int, user: User = Depends(_edit), db: AsyncSession = Depends(get_tenant_db)):
     pipeline = await _get_or_404(db, pipeline_id, user)
     try:
         pipeline, version = await svc.restore_version(db, pipeline, version_number, user_id=user.id)

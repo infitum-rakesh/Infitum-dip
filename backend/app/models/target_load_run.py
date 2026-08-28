@@ -48,7 +48,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import TenantBase
 from app.models.pipeline_run import PartitionStatus  # reused as-is — same PENDING/RUNNING/COMPLETE/FAILED/CANCELLED shape
 
 
@@ -66,11 +66,11 @@ class WriteMode(str, enum.Enum):
     UPSERT = "UPSERT"
 
 
-class TargetLoadRun(Base):
+class TargetLoadRun(TenantBase):
     __tablename__ = "target_load_runs"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     mapping_id: Mapped[int] = mapped_column(ForeignKey("column_mappings.id"), nullable=False, index=True)
 
@@ -107,14 +107,14 @@ class TargetLoadRun(Base):
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     def __repr__(self) -> str:
         return f"<TargetLoadRun {self.id} mapping={self.mapping_id} status={self.status}>"
 
 
-class TargetLoadRunPartition(Base):
+class TargetLoadRunPartition(TenantBase):
     """KEY_RANGE mode only — one row per contiguous key range, exactly
     mirroring PipelineRunPartition's shape (see models/pipeline_run.py).
     last_key_read is the real checkpoint: on Resume, a partition that

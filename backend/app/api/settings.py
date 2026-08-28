@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_action
 from app.database.connection import get_db
+from app.database.tenant_routing import get_tenant_db
 from app.models.organization import Organization
 from app.models.user import User
 from app.schemas.settings import OrganizationSettingsOut, UpdateSettingsRequest
@@ -25,10 +26,14 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 _admin = require_action("ADMIN", module=None)
 
 
-async def _get_org_or_404(db: AsyncSession, user: User) -> Organization:
+async def _get_org_or_404(platform_db: AsyncSession, user: User) -> Organization:
+    """Organization is a PlatformBase model — always looked up via the
+    dedicated platform session, never `db` (get_tenant_db()'s session,
+    which for a migrated org is bound to that org's own external
+    database and has no `organizations` table)."""
     if not user.organization_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No organization is associated with this account.")
-    result = await db.execute(select(Organization).where(Organization.id == user.organization_id))
+    result = await platform_db.execute(select(Organization).where(Organization.id == user.organization_id))
     org = result.scalar_one_or_none()
     if org is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Organization not found.")
@@ -36,10 +41,12 @@ async def _get_org_or_404(db: AsyncSession, user: User) -> Organization:
 
 
 @router.get("", response_model=OrganizationSettingsOut)
-async def get_settings(user: User = Depends(_admin), db: AsyncSession = Depends(get_db)):
-    org = await _get_org_or_404(db, user)
+async def get_settings(
+    user: User = Depends(_admin), db: AsyncSession = Depends(get_tenant_db), platform_db: AsyncSession = Depends(get_db),
+):
+    org = await _get_org_or_404(platform_db, user)
     row = await svc.get_or_create(db, org.id)
-    return await svc.to_out(db, org, row)
+    return await svc.to_out(platform_db, org, row)
 
 
 @router.put("", response_model=OrganizationSettingsOut)
@@ -47,12 +54,13 @@ async def update_settings(
     body: UpdateSettingsRequest,
     request: Request,
     user: User = Depends(_admin),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
+    platform_db: AsyncSession = Depends(get_db),
 ):
-    org = await _get_org_or_404(db, user)
+    org = await _get_org_or_404(platform_db, user)
     row = await svc.get_or_create(db, org.id)
     row = await svc.update_settings(
-        db, org, row, body, actor_id=user.id,
+        db, platform_db, org, row, body, actor_id=user.id,
         ip_address=request.client.host if request.client else None,
     )
-    return await svc.to_out(db, org, row)
+    return await svc.to_out(platform_db, org, row)

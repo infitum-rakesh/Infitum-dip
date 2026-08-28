@@ -10,10 +10,10 @@ docstring there for why it currently simulates pipeline output.
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, JSON, String, Text, func
+from sqlalchemy import DateTime, Enum, Float, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import TenantBase
 
 
 class DocumentType(str, enum.Enum):
@@ -35,15 +35,15 @@ class DocumentStatus(str, enum.Enum):
     FAILED = "FAILED"
 
 
-class Document(Base):
+class Document(TenantBase):
     __tablename__ = "documents"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
 
     # Scoping — FK only, no relationship() back-populates so this stays
     # fully additive and doesn't touch models/organization.py or models/user.py.
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
-    uploaded_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
+    uploaded_by_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     filename: Mapped[str] = mapped_column(String(500), nullable=False)
     folder: Mapped[str] = mapped_column(String(500), default="/")

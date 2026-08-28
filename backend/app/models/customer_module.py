@@ -32,10 +32,10 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import PlatformBase
 
 
-class CustomerModule(Base):
+class CustomerModule(PlatformBase):
     __tablename__ = "customer_modules"
     __table_args__ = (UniqueConstraint("organization_id", "module", name="uq_customer_module"),)
 

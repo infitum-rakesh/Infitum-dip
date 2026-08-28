@@ -44,7 +44,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import TenantBase
 
 
 class RunStatus(str, enum.Enum):
@@ -63,11 +63,11 @@ class PartitionStatus(str, enum.Enum):
     CANCELLED = "CANCELLED"
 
 
-class PipelineRun(Base):
+class PipelineRun(TenantBase):
     __tablename__ = "pipeline_runs"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     pipeline_id: Mapped[int] = mapped_column(ForeignKey("pipelines.id"), nullable=False, index=True)
     pipeline_version: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -92,7 +92,10 @@ class PipelineRun(Base):
     worker_count: Mapped[int] = mapped_column(Integer, default=4)
     partition_count: Mapped[int] = mapped_column(Integer, default=4)
 
-    status: Mapped[RunStatus] = mapped_column(Enum(RunStatus), default=RunStatus.PENDING, index=True)
+    # name= required — see schedule.py's ScheduleRun.status for why (two
+    # independent RunStatus classes in this codebase would otherwise
+    # collide on one native "runstatus" DB enum type on Postgres/MySQL).
+    status: Mapped[RunStatus] = mapped_column(Enum(RunStatus, name="pipeline_run_status"), default=RunStatus.PENDING, index=True)
     records_read: Mapped[int] = mapped_column(Integer, default=0)
     records_written: Mapped[int] = mapped_column(Integer, default=0)  # == records_read for the staging writer (1:1, no transform yet)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -101,14 +104,14 @@ class PipelineRun(Base):
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     def __repr__(self) -> str:
         return f"<PipelineRun {self.id} pipeline={self.pipeline_id} status={self.status}>"
 
 
-class PipelineRunPartition(Base):
+class PipelineRunPartition(TenantBase):
     __tablename__ = "pipeline_run_partitions"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)

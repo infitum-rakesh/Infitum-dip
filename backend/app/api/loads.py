@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_action
-from app.database.connection import get_db
+from app.database.tenant_routing import get_tenant_db
 from app.execution import load_executor
 from app.models.rejected_record import RejectSourceType
 from app.models.user import User, UserRole
@@ -39,7 +39,7 @@ async def _get_run_or_404(db: AsyncSession, run_id: int, user: User):
 
 
 @router.post("/mappings/{mapping_id}/load", response_model=LoadRunOut, status_code=status.HTTP_201_CREATED)
-async def start_load(mapping_id: int, body: StartLoadRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_db)):
+async def start_load(mapping_id: int, body: StartLoadRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
     mapping = await mapping_service.get_mapping(db, mapping_id, _effective_org_id(user))
     if mapping is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Mapping not found")
@@ -52,29 +52,29 @@ async def start_load(mapping_id: int, body: StartLoadRequest, user: User = Depen
         )
     except svc.LoadValidationError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
-    await load_executor.start_load(run.id)
+    await load_executor.start_load(run.id, run.organization_id)
     return run
 
 
 @router.get("/mappings/{mapping_id}/loads", response_model=LoadListOut)
-async def list_loads(mapping_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def list_loads(mapping_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     runs, total = await svc.list_loads(db, mapping_id, _effective_org_id(user))
     return LoadListOut(items=runs, total=total)
 
 
 @router.get("/loads/{run_id}/status", response_model=LoadRunOut)
-async def get_status(run_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_status(run_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     return await _get_run_or_404(db, run_id, user)
 
 
 @router.get("/loads/{run_id}/metrics", response_model=LoadMetricsOut)
-async def get_metrics(run_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_metrics(run_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     run = await _get_run_or_404(db, run_id, user)
     return LoadMetricsOut(**svc.compute_metrics(run))
 
 
 @router.post("/loads/{run_id}/cancel", response_model=LoadRunOut)
-async def cancel_load(run_id: int, user: User = Depends(_execute), db: AsyncSession = Depends(get_db)):
+async def cancel_load(run_id: int, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
     run = await _get_run_or_404(db, run_id, user)
     return await svc.cancel_load(db, run)
 
@@ -82,7 +82,7 @@ async def cancel_load(run_id: int, user: User = Depends(_execute), db: AsyncSess
 @router.get("/loads/{run_id}/rejected-records", response_model=RejectedRecordListOut)
 async def list_rejected_records(
     run_id: int, page: int = Query(1, ge=1), page_size: int = Query(100, ge=1, le=500),
-    user: User = Depends(_view), db: AsyncSession = Depends(get_db),
+    user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db),
 ):
     """Real per-row failures from this load (KK2/KK3) — each one's actual
     row data and the real error the target gave, not a summary count.

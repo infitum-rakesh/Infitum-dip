@@ -9,7 +9,7 @@ from datetime import datetime
 from sqlalchemy import DateTime, Enum, Float, ForeignKey, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import TenantBase
 
 
 class ReviewStatus(str, enum.Enum):
@@ -35,16 +35,16 @@ class ReviewType(str, enum.Enum):
     BUSINESS_RULE = "BUSINESS_RULE"
 
 
-class ReviewQueueItem(Base):
+class ReviewQueueItem(TenantBase):
     __tablename__ = "review_queue_items"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
 
     # FK only, no relationship() back-populates — stays additive, doesn't
     # touch models/document.py, models/organization.py or models/user.py.
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
     document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), nullable=False, index=True)
-    assigned_to_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    assigned_to_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     review_type: Mapped[ReviewType] = mapped_column(Enum(ReviewType), default=ReviewType.AI_EXTRACTION)
     issue: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -76,13 +76,13 @@ class ReviewQueueItem(Base):
         return f"<ReviewQueueItem doc={self.document_id} {self.issue} ({self.status})>"
 
 
-class ReviewAuditLog(Base):
+class ReviewAuditLog(TenantBase):
     """Every review action, logged. Never mutated, only appended to."""
     __tablename__ = "review_audit_logs"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     review_item_id: Mapped[int] = mapped_column(ForeignKey("review_queue_items.id"), nullable=False, index=True)
-    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)  # null = system-generated
+    user_id: Mapped[int | None] = mapped_column(nullable=True)  # null = system-generated
 
     action: Mapped[str] = mapped_column(String(100), nullable=False)
     old_value: Mapped[str | None] = mapped_column(Text, nullable=True)

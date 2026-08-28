@@ -72,7 +72,9 @@ import Lineage from '@/pages/lineage/Lineage.jsx';
 
 // Data Quality (implemented)
 import Validation     from '@/pages/validation/Validation.jsx';
-import Reconciliation from '@/pages/reconciliation/Reconciliation.jsx';
+import ValidationList from '@/pages/validation/ValidationList.jsx';
+import Reconciliation     from '@/pages/reconciliation/Reconciliation.jsx';
+import ReconciliationList from '@/pages/reconciliation/ReconciliationList.jsx';
 
 // SQL Workspace (implemented)
 import SqlWorkspace from '@/pages/sql-workspace/SqlWorkspace.jsx';
@@ -192,10 +194,15 @@ export const router = createBrowserRouter([
           { path: 'mapping',           element: <ObjectColumnMapping /> },
           { path: 'mapping/:mappingId', element: <ObjectColumnMapping /> },
 
-          // Data Quality
-          { path: 'validation',              element: <Validation /> },
+          // Data Quality — the bare path is the list view (job name /
+          // object name / Run / Add Rule per row, per the Validation +
+          // Reconciliation UI spec); /new and /:id open the real
+          // rule-set/job editor, same component either way.
+          { path: 'validation',              element: <ValidationList /> },
+          { path: 'validation/new',          element: <Validation /> },
           { path: 'validation/:ruleSetId',   element: <Validation /> },
-          { path: 'reconciliation',          element: <Reconciliation /> },
+          { path: 'reconciliation',          element: <ReconciliationList /> },
+          { path: 'reconciliation/new',      element: <Reconciliation /> },
           { path: 'reconciliation/:jobId',   element: <Reconciliation /> },
 
           // Observability

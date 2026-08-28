@@ -37,7 +37,7 @@ from datetime import datetime
 from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import TenantBase
 
 
 class ValidationRunStatus(str, enum.Enum):
@@ -53,21 +53,33 @@ class RuleStatus(str, enum.Enum):
     WARNING = "WARNING"
 
 
-class ValidationRuleSet(Base):
+class ValidationRuleSet(TenantBase):
     __tablename__ = "validation_rule_sets"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
-    connection_id: Mapped[int] = mapped_column(ForeignKey("connections.id"), nullable=False)
+    # connection_id=0 is the same real, established sentinel reconciliation
+    # and custom_engine.py use — "not a real Connection row, see
+    # uploaded_file_id instead." Kept NOT NULL rather than loosening the
+    # column (would need a SQLite table rebuild, not just an ALTER TABLE
+    # ADD COLUMN) — 0 is never a real Connection.id.
+    #
+    # Deliberately a bare int, not ForeignKey("connections.id") — see
+    # reconciliation.py's ReconciliationJob.source_connection_id for why:
+    # a real DB-level FK can't represent this column's own "0 means no
+    # row" convention, and actively rejects it on Postgres/MySQL. Found
+    # live during Bring-Your-Own-Database Phase 6 verification.
+    connection_id: Mapped[int] = mapped_column(nullable=False)
     schema_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     object_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    uploaded_file_id: Mapped[int | None] = mapped_column(ForeignKey("uploaded_dataset_files.id"), nullable=True)
 
     rules: Mapped[list] = mapped_column(JSON, default=list)  # list[dict] — see module docstring for row shape
 
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
-    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(nullable=True)
+    updated_by: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -75,11 +87,11 @@ class ValidationRuleSet(Base):
         return f"<ValidationRuleSet {self.name} ({self.object_name})>"
 
 
-class ValidationRun(Base):
+class ValidationRun(TenantBase):
     __tablename__ = "validation_runs"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
     rule_set_id: Mapped[int] = mapped_column(ForeignKey("validation_rule_sets.id"), nullable=False, index=True)
 
     status: Mapped[ValidationRunStatus] = mapped_column(Enum(ValidationRunStatus), default=ValidationRunStatus.PENDING)
@@ -88,14 +100,14 @@ class ValidationRun(Base):
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     def __repr__(self) -> str:
         return f"<ValidationRun {self.id} rule_set={self.rule_set_id} status={self.status}>"
 
 
-class ValidationRuleResult(Base):
+class ValidationRuleResult(TenantBase):
     __tablename__ = "validation_rule_results"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)

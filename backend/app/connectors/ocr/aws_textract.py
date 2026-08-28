@@ -55,7 +55,11 @@ class AwsTextractConnector(BaseConnector):
         try:
             from PIL import Image
             buf = BytesIO()
-            Image.new("RGB", (32, 32), "white").save(buf, format="PNG")
+            # Textract also documents a 50x50 pixel minimum for the image
+            # dimensions it will accept — same real-world constraint that
+            # broke the Azure Document Intelligence test with a 32x32
+            # probe image; kept above that floor here too.
+            Image.new("RGB", (200, 200), "white").save(buf, format="PNG")
             client = self._client()
             client.detect_document_text(Document={"Bytes": buf.getvalue()})
             latency_ms = round((time.monotonic() - start) * 1000, 1)

@@ -5,8 +5,8 @@
  * backend/app/reconciliation/engine.py. Tabs: Setup | Results.
  */
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { Play, Save } from 'lucide-react';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { ArrowLeft, Play, Save } from 'lucide-react';
 import { Button, StatusBadge } from '@/components/common/index.js';
 import { reconciliationApi } from '@/services/api/reconciliationApi.js';
 import { ReconciliationRules } from './ReconciliationRules.jsx';
@@ -14,11 +14,12 @@ import { ReconciliationResults } from './ReconciliationResults.jsx';
 import './reconciliation.css';
 
 function apiErrorMessage(err, fallback) { return err?.message || fallback; }
-function emptyRef() { return { connection_id: null, schema_name: '', object_name: '' }; }
+function emptyRef() { return { connection_id: null, schema_name: '', object_name: '', uploaded_file_id: null }; }
 
 export default function Reconciliation() {
   const { jobId } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   const [id, setId] = useState(jobId ? Number(jobId) : null);
   const [name, setName] = useState('Untitled Reconciliation Job');
@@ -27,10 +28,16 @@ export default function Reconciliation() {
   const [keyColumns, setKeyColumns] = useState([]);
   const [compareColumns, setCompareColumns] = useState([]);
   const [comparisonTypes, setComparisonTypes] = useState(['COUNT']);
+  // {source_column: target_column} — only for columns that differ by name
+  // between the two sides; anything not in here falls back to matching by
+  // name on the target, same as before this existed.
+  const [columnMapping, setColumnMapping] = useState({});
   const [savedSnapshot, setSavedSnapshot] = useState(null);
 
   const [jobs, setJobs] = useState([]);
-  const [activeTab, setActiveTab] = useState('setup');
+  // "View Result" from the list page links here with ?tab=results so the
+  // editor opens straight on the Results tab instead of Setup.
+  const [activeTab, setActiveTab] = useState(searchParams.get('tab') === 'results' ? 'results' : 'setup');
   const [running, setRunning] = useState(false);
   const [saving, setSaving] = useState(false);
   const [run, setRun] = useState(null);
@@ -38,44 +45,81 @@ export default function Reconciliation() {
   const [loading, setLoading] = useState(!!jobId);
 
   const locked = !!id;
-  const bothReady = !!(source.connection_id && source.object_name && target.connection_id && target.object_name);
-  const draft = { name, source, target, keyColumns, compareColumns, comparisonTypes };
+  // connection_id can legitimately be 0 (the file-backed sentinel — see
+  // ReconciliationRules.jsx), so this can't just truthy-check connection_id.
+  const bothReady = !!(source.object_name && source.connection_id != null && target.object_name && target.connection_id != null);
+  const draft = { name, source, target, keyColumns, compareColumns, comparisonTypes, columnMapping };
   const dirty = savedSnapshot !== null ? JSON.stringify(draft) !== savedSnapshot : (source.object_name || target.object_name);
 
   useEffect(() => { reconciliationApi.listJobs().then((r) => setJobs(r.items)).catch(() => {}); }, [id]);
 
   useEffect(() => {
-    if (!jobId) return;
+    if (!jobId) {
+      // "+ New job…" from the dropdown navigates here from an existing
+      // job's editor — same routed component re-rendering, not a fresh
+      // mount, so the previous job's state has to be reset by hand or it
+      // would still be sitting in every field below.
+      setId(null); setName('Untitled Reconciliation Job');
+      setSource(emptyRef()); setTarget(emptyRef());
+      setKeyColumns([]); setCompareColumns([]); setComparisonTypes(['COUNT']); setColumnMapping({});
+      setSavedSnapshot(null); setRun(null); setError(''); setActiveTab('setup');
+      setLoading(false);
+      return;
+    }
     setLoading(true);
+    // Switching jobs via the dropdown re-renders this same routed component
+    // with a new :jobId — it does NOT remount, so any state from the
+    // previously open job (its last run, its error banner) would otherwise
+    // still be sitting there while the new job's data loads. Clear both
+    // right away so the Results tab doesn't flash the old job's numbers.
+    setRun(null); setError('');
     reconciliationApi.getJob(jobId).then((d) => {
       setId(d.id); setName(d.name);
-      setSource({ connection_id: d.source_connection_id, schema_name: d.source_schema || '', object_name: d.source_object });
-      setTarget({ connection_id: d.target_connection_id, schema_name: d.target_schema || '', object_name: d.target_object });
+      const src = { connection_id: d.source_connection_id, schema_name: d.source_schema || '', object_name: d.source_object, uploaded_file_id: d.source_uploaded_file_id || null };
+      const tgt = { connection_id: d.target_connection_id, schema_name: d.target_schema || '', object_name: d.target_object, uploaded_file_id: d.target_uploaded_file_id || null };
+      setSource(src);
+      setTarget(tgt);
       setKeyColumns(d.key_columns); setCompareColumns(d.compare_columns); setComparisonTypes(d.comparison_types);
+      setColumnMapping(d.column_mapping || {});
       setSavedSnapshot(JSON.stringify({
-        name: d.name,
-        source: { connection_id: d.source_connection_id, schema_name: d.source_schema || '', object_name: d.source_object },
-        target: { connection_id: d.target_connection_id, schema_name: d.target_schema || '', object_name: d.target_object },
+        name: d.name, source: src, target: tgt,
         keyColumns: d.key_columns, compareColumns: d.compare_columns, comparisonTypes: d.comparison_types,
+        columnMapping: d.column_mapping || {},
       }));
     }).catch((err) => setError(apiErrorMessage(err, 'Could not load this job.'))).finally(() => setLoading(false));
   }, [jobId]);
+
+  // Load this job's real, persisted latest run (not just whatever the user
+  // happens to trigger from this page in the current session) so the
+  // Results tab has something to show the moment it's opened. GET
+  // /reconciliation/jobs/{id}/runs returns a raw JSON array sorted
+  // newest-first, so runs[0] is it. This effect only re-fires when `id`
+  // itself changes (initial load, or the job dropdown switching to a
+  // different job) — never while staying on the same job — so it's always
+  // correct to overwrite `run` outright rather than guard against clobbering
+  // a same-session handleRun() result.
+  useEffect(() => {
+    if (!id) return;
+    reconciliationApi.listRuns(id).then((runs) => setRun(runs[0] ?? null)).catch(() => {});
+  }, [id]);
 
   const runSave = async () => {
     setSaving(true); setError('');
     try {
       if (id) {
-        const r = await reconciliationApi.updateJob(id, { name, key_columns: keyColumns, compare_columns: compareColumns, comparison_types: comparisonTypes });
-        setSavedSnapshot(JSON.stringify({ name: r.name, source, target, keyColumns: r.key_columns, compareColumns: r.compare_columns, comparisonTypes: r.comparison_types }));
+        const r = await reconciliationApi.updateJob(id, { name, key_columns: keyColumns, compare_columns: compareColumns, comparison_types: comparisonTypes, column_mapping: columnMapping });
+        setSavedSnapshot(JSON.stringify({ name: r.name, source, target, keyColumns: r.key_columns, compareColumns: r.compare_columns, comparisonTypes: r.comparison_types, columnMapping: r.column_mapping || {} }));
       } else {
         const r = await reconciliationApi.createJob({
           name,
           source_connection_id: source.connection_id, source_schema: source.schema_name || null, source_object: source.object_name,
+          source_uploaded_file_id: source.uploaded_file_id || null,
           target_connection_id: target.connection_id, target_schema: target.schema_name || null, target_object: target.object_name,
-          key_columns: keyColumns, compare_columns: compareColumns, comparison_types: comparisonTypes,
+          target_uploaded_file_id: target.uploaded_file_id || null,
+          key_columns: keyColumns, compare_columns: compareColumns, comparison_types: comparisonTypes, column_mapping: columnMapping,
         });
         setId(r.id);
-        setSavedSnapshot(JSON.stringify({ name: r.name, source, target, keyColumns: r.key_columns, compareColumns: r.compare_columns, comparisonTypes: r.comparison_types }));
+        setSavedSnapshot(JSON.stringify({ name: r.name, source, target, keyColumns: r.key_columns, compareColumns: r.compare_columns, comparisonTypes: r.comparison_types, columnMapping: r.column_mapping || {} }));
         navigate(`/app/reconciliation/${r.id}`, { replace: true });
       }
     } catch (err) { setError(apiErrorMessage(err, 'Could not save job.')); }
@@ -101,11 +145,12 @@ export default function Reconciliation() {
     <div>
       <div className="rcn-header">
         <div>
+          <Link to="/app/reconciliation" className="rcn-back-link"><ArrowLeft size={13} /> All jobs</Link>
           <input className="rcn-name-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Job name…" />
           <p className="rcn-subtitle">
             Compare source and target datasets for real discrepancies
             {jobs.length > 0 && (
-              <select className="rcn-job-select" value={id ?? ''} onChange={(e) => { if (e.target.value) navigate(`/app/reconciliation/${e.target.value}`); else navigate('/app/reconciliation'); }}>
+              <select className="rcn-job-select" value={id ?? ''} onChange={(e) => { if (e.target.value) navigate(`/app/reconciliation/${e.target.value}`); else navigate('/app/reconciliation/new'); }}>
                 <option value="">+ New job…</option>
                 {jobs.map((j) => <option key={j.id} value={j.id}>{j.name}</option>)}
               </select>
@@ -149,11 +194,12 @@ export default function Reconciliation() {
             keyColumns={keyColumns} setKeyColumns={setKeyColumns}
             compareColumns={compareColumns} setCompareColumns={setCompareColumns}
             comparisonTypes={comparisonTypes} setComparisonTypes={setComparisonTypes}
+            columnMapping={columnMapping} setColumnMapping={setColumnMapping}
             locked={locked}
           />
         )}
         {activeTab === 'results' && (
-          <ReconciliationResults run={run} sourceObject={source.object_name} targetObject={target.object_name} onReRun={handleRun} />
+          <ReconciliationResults run={run} sourceObject={source.object_name} targetObject={target.object_name} onReRun={handleRun} onGoToSetup={() => setActiveTab('setup')} />
         )}
       </div>
     </div>

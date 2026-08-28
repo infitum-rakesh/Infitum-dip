@@ -11,10 +11,10 @@ for the encryption boundary — no other module should read/write
 import enum
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, JSON, String, func
+from sqlalchemy import Boolean, DateTime, Enum, JSON, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import TenantBase
 
 
 class ConnectionCategory(str, enum.Enum):
@@ -86,15 +86,15 @@ class ConnectionStatus(str, enum.Enum):
     INACTIVE = "INACTIVE"  # manually disabled
 
 
-class Connection(Base):
+class Connection(TenantBase):
     __tablename__ = "connections"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
 
     # FK only, no relationship() back-populates — additive, doesn't touch
     # models/organization.py or models/user.py.
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
-    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
+    owner_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     category: Mapped[ConnectionCategory] = mapped_column(Enum(ConnectionCategory), nullable=False)

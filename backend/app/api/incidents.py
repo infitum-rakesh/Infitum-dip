@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_action
-from app.database.connection import get_db
+from app.database.tenant_routing import get_tenant_db
 from app.models.user import User, UserRole
 from app.schemas.incidents import (
     AssignRequest,
@@ -70,7 +70,7 @@ async def _out(db: AsyncSession, incident) -> IncidentOut:
 # Starlette matches by position, not type.
 
 @router.get("/stats", response_model=IncidentStatsOut)
-async def stats(user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def stats(user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     return await svc.get_stats(db, _effective_org_id(user))
 
 
@@ -87,7 +87,7 @@ async def list_incidents(
     sort_by: str = Query("detected_at"),
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
     user: User = Depends(_view),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     incidents, total = await svc.list_incidents(
         db, organization_id=_effective_org_id(user), search=q, severity=severity,
@@ -100,7 +100,7 @@ async def list_incidents(
 
 
 @router.get("/{incident_id}", response_model=IncidentOut)
-async def get_incident(incident_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_incident(incident_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     incident = await _get_or_404(db, incident_id, user)
     return await _out(db, incident)
 
@@ -108,7 +108,7 @@ async def get_incident(incident_id: int, user: User = Depends(_view), db: AsyncS
 # ── Create / update / delete ────────────────────────────────────
 
 @router.post("", response_model=IncidentOut, status_code=status.HTTP_201_CREATED)
-async def create_incident(body: IncidentCreateRequest, user: User = Depends(_create), db: AsyncSession = Depends(get_db)):
+async def create_incident(body: IncidentCreateRequest, user: User = Depends(_create), db: AsyncSession = Depends(get_tenant_db)):
     try:
         incident = await svc.create_incident(db, organization_id=user.organization_id, user_id=user.id, body=body)
     except svc.IncidentValidationError as exc:
@@ -117,7 +117,7 @@ async def create_incident(body: IncidentCreateRequest, user: User = Depends(_cre
 
 
 @router.put("/{incident_id}", response_model=IncidentOut)
-async def update_incident(incident_id: int, body: IncidentUpdateRequest, user: User = Depends(_update), db: AsyncSession = Depends(get_db)):
+async def update_incident(incident_id: int, body: IncidentUpdateRequest, user: User = Depends(_update), db: AsyncSession = Depends(get_tenant_db)):
     incident = await _get_or_404(db, incident_id, user)
     try:
         incident = await svc.update_incident(db, incident, body, user.id)
@@ -127,7 +127,7 @@ async def update_incident(incident_id: int, body: IncidentUpdateRequest, user: U
 
 
 @router.delete("/{incident_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_incident(incident_id: int, user: User = Depends(_delete), db: AsyncSession = Depends(get_db)):
+async def delete_incident(incident_id: int, user: User = Depends(_delete), db: AsyncSession = Depends(get_tenant_db)):
     incident = await _get_or_404(db, incident_id, user)
     await svc.delete_incident(db, incident)
 
@@ -135,7 +135,7 @@ async def delete_incident(incident_id: int, user: User = Depends(_delete), db: A
 # ── Actions ───────────────────────────────────────────────────────
 
 @router.post("/{incident_id}/assign", response_model=IncidentOut)
-async def assign_incident(incident_id: int, body: AssignRequest, user: User = Depends(_assign), db: AsyncSession = Depends(get_db)):
+async def assign_incident(incident_id: int, body: AssignRequest, user: User = Depends(_assign), db: AsyncSession = Depends(get_tenant_db)):
     incident = await _get_or_404(db, incident_id, user)
     try:
         incident = await svc.assign_incident(db, incident, body.owner_id, body.owner_team, user.id)
@@ -145,7 +145,7 @@ async def assign_incident(incident_id: int, body: AssignRequest, user: User = De
 
 
 @router.post("/{incident_id}/start-investigation", response_model=IncidentOut)
-async def start_investigation(incident_id: int, user: User = Depends(_update), db: AsyncSession = Depends(get_db)):
+async def start_investigation(incident_id: int, user: User = Depends(_update), db: AsyncSession = Depends(get_tenant_db)):
     incident = await _get_or_404(db, incident_id, user)
     try:
         incident = await svc.start_investigation(db, incident, user.id)
@@ -155,7 +155,7 @@ async def start_investigation(incident_id: int, user: User = Depends(_update), d
 
 
 @router.post("/{incident_id}/severity", response_model=IncidentOut)
-async def change_severity(incident_id: int, body: ChangeSeverityRequest, user: User = Depends(_update), db: AsyncSession = Depends(get_db)):
+async def change_severity(incident_id: int, body: ChangeSeverityRequest, user: User = Depends(_update), db: AsyncSession = Depends(get_tenant_db)):
     incident = await _get_or_404(db, incident_id, user)
     try:
         incident = await svc.change_severity(db, incident, body.severity, body.reason, user.id)
@@ -165,7 +165,7 @@ async def change_severity(incident_id: int, body: ChangeSeverityRequest, user: U
 
 
 @router.post("/{incident_id}/comments", response_model=IncidentOut)
-async def add_comment(incident_id: int, body: CommentRequest, user: User = Depends(_update), db: AsyncSession = Depends(get_db)):
+async def add_comment(incident_id: int, body: CommentRequest, user: User = Depends(_update), db: AsyncSession = Depends(get_tenant_db)):
     incident = await _get_or_404(db, incident_id, user)
     try:
         incident = await svc.add_comment(db, incident, body.message, user.id)
@@ -175,7 +175,7 @@ async def add_comment(incident_id: int, body: CommentRequest, user: User = Depen
 
 
 @router.post("/{incident_id}/resolve", response_model=IncidentOut)
-async def resolve_incident(incident_id: int, body: ResolveRequest, user: User = Depends(_resolve), db: AsyncSession = Depends(get_db)):
+async def resolve_incident(incident_id: int, body: ResolveRequest, user: User = Depends(_resolve), db: AsyncSession = Depends(get_tenant_db)):
     incident = await _get_or_404(db, incident_id, user)
     try:
         incident = await svc.resolve_incident(db, incident, body.resolution_note, user.id)
@@ -185,7 +185,7 @@ async def resolve_incident(incident_id: int, body: ResolveRequest, user: User = 
 
 
 @router.post("/{incident_id}/reopen", response_model=IncidentOut)
-async def reopen_incident(incident_id: int, body: ReopenRequest, user: User = Depends(_update), db: AsyncSession = Depends(get_db)):
+async def reopen_incident(incident_id: int, body: ReopenRequest, user: User = Depends(_update), db: AsyncSession = Depends(get_tenant_db)):
     incident = await _get_or_404(db, incident_id, user)
     try:
         incident = await svc.reopen_incident(db, incident, body.reason, user.id)
@@ -195,7 +195,7 @@ async def reopen_incident(incident_id: int, body: ReopenRequest, user: User = De
 
 
 @router.post("/{incident_id}/close", response_model=IncidentOut)
-async def close_incident(incident_id: int, user: User = Depends(_resolve), db: AsyncSession = Depends(get_db)):
+async def close_incident(incident_id: int, user: User = Depends(_resolve), db: AsyncSession = Depends(get_tenant_db)):
     incident = await _get_or_404(db, incident_id, user)
     incident = await svc.close_incident(db, incident, user.id)
     return await _out(db, incident)
@@ -204,7 +204,7 @@ async def close_incident(incident_id: int, user: User = Depends(_resolve), db: A
 # ── Timeline / Evidence ───────────────────────────────────────────
 
 @router.get("/{incident_id}/timeline", response_model=IncidentTimelineOut)
-async def get_timeline(incident_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_timeline(incident_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     await _get_or_404(db, incident_id, user)
     events = await svc.get_timeline(db, incident_id)
     name_map = await svc.user_name_map(db, {e.actor_id for e in events})
@@ -212,7 +212,7 @@ async def get_timeline(incident_id: int, user: User = Depends(_view), db: AsyncS
 
 
 @router.get("/{incident_id}/evidence", response_model=IncidentEvidenceListOut)
-async def get_evidence(incident_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_evidence(incident_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     await _get_or_404(db, incident_id, user)
     items = await svc.get_evidence(db, incident_id)
     name_map = await svc.user_name_map(db, {e.created_by for e in items})
@@ -220,7 +220,7 @@ async def get_evidence(incident_id: int, user: User = Depends(_view), db: AsyncS
 
 
 @router.post("/{incident_id}/evidence", response_model=IncidentEvidenceOut, status_code=status.HTTP_201_CREATED)
-async def add_evidence(incident_id: int, body: EvidenceCreateRequest, user: User = Depends(_update), db: AsyncSession = Depends(get_db)):
+async def add_evidence(incident_id: int, body: EvidenceCreateRequest, user: User = Depends(_update), db: AsyncSession = Depends(get_tenant_db)):
     incident = await _get_or_404(db, incident_id, user)
     try:
         evidence = await svc.add_evidence(db, incident, body.evidence_type, body.title, body.content, user.id)

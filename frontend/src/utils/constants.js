@@ -188,6 +188,17 @@ export const SSO_PERMISSIONS = {
 };
 
 /**
+ * Settings -> Database tab (Bring-Your-Own-Database, Phase 1). Mirrored
+ * server-side by /settings/database/* requiring the ADMIN action tier
+ * (see api/settings_database.py) — same tier as every other Settings
+ * sub-section.
+ */
+export const DATABASE_PERMISSIONS = {
+  DATABASE_VIEW: { role: ROLES.ORG_ADMIN, action: ACTIONS.ADMIN },
+  DATABASE_EDIT: { role: ROLES.ORG_ADMIN, action: ACTIONS.ADMIN },
+};
+
+/**
  * Administration → Roles — centralized permission map. Same reasoning as
  * USER_PERMISSIONS: every entry carries `role: ROLES.ORG_ADMIN` so an
  * action check alone can't be satisfied by a lower tier that happens to

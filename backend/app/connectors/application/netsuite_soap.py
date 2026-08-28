@@ -175,15 +175,18 @@ class NetSuiteSoapConnector(BaseConnector):
             raise ConnectorValidationError("No Account ID configured for this NetSuite (SOAP) connection.")
         version = (cfg.get("wsdl_version") or DEFAULT_WSDL_VERSION).strip()
         wsdl_path_version = version if version.count("_") >= 2 else f"{version}_0"
+        print(f"[NetSuite SOAP] Loading WSDL for account {account} (v{wsdl_path_version})...", flush=True)
         try:
             client = zeep.Client(_wsdl_url(account, wsdl_path_version))
         except Exception as exc:  # requests.RequestException, zeep parse errors, etc. — all genuinely real failures
+            print(f"[NetSuite SOAP] WSDL load failed: {self._scrub(str(exc))}", flush=True)
             raise ConnectorError(self._scrub(f"Could not load NetSuite WSDL for account {account}: {exc}")) from exc
         # Direct the binding at the account-specific SOAP endpoint (not
         # the generic webservices.netsuite.com host the WSDL itself was
         # fetched from) — required for any 2019.1+ NetSuite account, per
         # Oracle's account-specific-domain documentation.
         client.service._binding_options["address"] = _endpoint_url(account, wsdl_path_version)
+        print(f"[NetSuite SOAP] Connected — endpoint {_endpoint_url(account, wsdl_path_version)}", flush=True)
         return client
 
     def _token_passport(self, client):
@@ -316,6 +319,7 @@ class NetSuiteSoapConnector(BaseConnector):
         advanced_type = _find_type(client, advanced_type_name)
         search_record = advanced_type(savedSearchId=str(saved_search_id))
 
+        print(f"[NetSuite SOAP] Running saved search {saved_search_id!r} ({record_type}) — page {page_index}, page size {prefs.pageSize}...", flush=True)
         headers = {"tokenPassport": self._token_passport(client), "searchPreferences": prefs}
         try:
             if page_index <= 1:
@@ -332,14 +336,17 @@ class NetSuiteSoapConnector(BaseConnector):
                     raise ConnectorError("NetSuite search did not return a searchId to page through.")
                 result = client.service.searchMoreWithId(search_id, page_index, _soapheaders=headers)
         except ZeepFault as exc:
+            print(f"[NetSuite SOAP] Saved search SOAP fault: {self._scrub(str(exc))}", flush=True)
             raise ConnectorError(self._scrub(f"NetSuite saved search failed: {exc}")) from exc
         except Exception as exc:
+            print(f"[NetSuite SOAP] Saved search failed: {self._scrub(str(exc))}", flush=True)
             raise ConnectorError(self._scrub(f"NetSuite saved search failed: {exc}")) from exc
 
         search_result = getattr(result, "searchResult", result)
         status = getattr(search_result, "status", None)
         if status is not None and not getattr(status, "isSuccess", True):
             details = "; ".join(str(d) for d in (_serialize(getattr(status, "statusDetail", None)) or []))
+            print(f"[NetSuite SOAP] NetSuite rejected the saved search: {self._scrub(details)}", flush=True)
             raise ConnectorError(self._scrub(f"NetSuite rejected the saved search: {details or 'no detail provided'}"))
 
         row_list = getattr(search_result, "searchRowList", None)
@@ -347,7 +354,10 @@ class NetSuiteSoapConnector(BaseConnector):
         rows = [_flatten_row(r) for r in rows_raw]
         total_records = getattr(search_result, "totalRecords", None)
         total_pages = getattr(search_result, "totalPages", None)
-        return rows, (int(total_records) if total_records is not None else len(rows)), (int(total_pages) if total_pages is not None else 1)
+        total_records = int(total_records) if total_records is not None else len(rows)
+        total_pages = int(total_pages) if total_pages is not None else 1
+        print(f"[NetSuite SOAP] Page {page_index}/{total_pages}: fetched {len(rows):,} row(s) (total records across search: {total_records:,}).", flush=True)
+        return rows, total_records, total_pages
 
 
 def _extract_internal_id(object_name: str) -> str:

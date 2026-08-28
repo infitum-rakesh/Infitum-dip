@@ -48,7 +48,11 @@ from app.api.dashboard import router as dashboard_router
 from app.api.extraction import router as extraction_router
 from app.api.monitoring import router as monitoring_router
 from app.api.lineage import router as lineage_router
+from app.api.uploaded_files import router as uploaded_files_router
+from app.api.settings_database import router as settings_database_router
 from app.models.pipeline_source_file import PipelineSourceFile  # noqa: F401 — string FK to pipelines.id needs this imported before init_db()
+from app.models.tenant_database import TenantDatabase  # noqa: F401 — new table, needs registering before init_db()
+from app.models.tenant_migration_job import TenantMigrationJob, TenantMigrationJobLog  # noqa: F401 — new tables, need registering before init_db()
 from app.models.pipeline_job import PipelineJob, PipelineJobLog  # noqa: F401 — new tables, need registering before init_db()
 # Seller/Plan are only referenced by string FK ("sellers.id") from
 # Subscription — SQLAlchemy needs the Seller/Plan classes themselves
@@ -63,6 +67,7 @@ from app.models.sql_export_job import SqlWorkspaceExportJob  # noqa: F401 — ne
 from app.models.monitoring import SlaDefinition, AlertRule, AlertEvent  # noqa: F401 — new tables, need registering before init_db()
 from app.models.user_session import UserSession  # noqa: F401 — new table, needs registering before init_db()
 from app.models.sso_configuration import SsoConfiguration  # noqa: F401 — new table, needs registering before init_db()
+from app.models.uploaded_dataset_file import UploadedDatasetFile  # noqa: F401 — new table, needs registering before init_db()
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -208,11 +213,13 @@ app.include_router(seller_users_router, prefix="/api")
 app.include_router(seller_audit_logs_router, prefix="/api")
 app.include_router(seller_settings_router, prefix="/api")
 app.include_router(pipeline_files_router, prefix="/api")
+app.include_router(uploaded_files_router, prefix="/api")
 app.include_router(pipeline_jobs_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api")
 app.include_router(extraction_router, prefix="/api")
 app.include_router(monitoring_router, prefix="/api")
 app.include_router(lineage_router, prefix="/api")
+app.include_router(settings_database_router, prefix="/api")
 
 
 @app.get("/api/health")

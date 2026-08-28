@@ -52,8 +52,12 @@ async function loadTableColumns(connectionId, schema, table) {
 }
 
 // Bust the cache for a connection after a DDL/write statement runs —
-// called from SqlWorkspace after a successful Run, same "don't trust a
-// stale schema snapshot" rule the DatabaseExplorer's refreshKey follows.
+// called from SqlWorkspace after a successful Run. Silent/lazy by design:
+// this only clears the cached metadata, it doesn't eagerly re-fetch, so
+// autocomplete just picks up fresh data next time it's invoked. (The
+// DatabaseExplorer tree intentionally does NOT get an equivalent bust —
+// see its own comment for why an eager cache-clear there caused a visible
+// "tree goes blank" bug instead of a harmless lazy refresh.)
 export function invalidateEditorMeta(connectionId) {
   _metaCache.delete(connectionId);
 }

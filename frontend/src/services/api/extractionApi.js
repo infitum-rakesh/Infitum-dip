@@ -29,6 +29,10 @@ export const extractionApi = {
       connection_id: connectionId,
       fields: schema.map((f) => ({
         name: f.name, type: f.type ?? 'string', required: !!f.required, instruction: f.instruction ?? '',
+        // Only meaningful for type === 'table' — without this a table
+        // field's column list was silently dropped before it ever
+        // reached the backend, making it impossible to populate.
+        columns: f.columns ?? null,
       })),
     });
     return {

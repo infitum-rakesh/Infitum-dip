@@ -25,10 +25,10 @@ boundary, not a silent gap.
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, JSON, String, Text, func
+from sqlalchemy import DateTime, Enum, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import TenantBase
 
 
 class RejectSourceType(str, enum.Enum):
@@ -36,11 +36,11 @@ class RejectSourceType(str, enum.Enum):
     TARGET_LOAD = "TARGET_LOAD"
 
 
-class RejectedRecord(Base):
+class RejectedRecord(TenantBase):
     __tablename__ = "rejected_records"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     source_type: Mapped[RejectSourceType] = mapped_column(Enum(RejectSourceType), index=True)
     source_id: Mapped[int] = mapped_column(Integer, index=True)  # PipelineJob.id or TargetLoadRun.id, per source_type

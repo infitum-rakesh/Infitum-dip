@@ -6,9 +6,12 @@ from pydantic import BaseModel
 
 class RuleSetCreateRequest(BaseModel):
     name: str
+    # 0 is the real "not a real Connection — see uploaded_file_id instead"
+    # sentinel, same convention reconciliation/custom_engine.py use.
     connection_id: int
     schema_name: str | None = None
     object_name: str
+    uploaded_file_id: int | None = None
     rules: list[dict] = []
 
 
@@ -23,6 +26,7 @@ class RuleSetOut(BaseModel):
     connection_id: int
     schema_name: str | None
     object_name: str
+    uploaded_file_id: int | None = None
     rules: list[dict]
     created_by: int | None
     created_by_name: str | None = None

@@ -20,7 +20,7 @@ from datetime import datetime
 from sqlalchemy import String, DateTime, Float, Boolean, ForeignKey, Enum, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import PlatformBase
 from app.models.plan import BillingCycle
 
 
@@ -33,7 +33,7 @@ class SubscriptionStatus(str, enum.Enum):
     CANCELLED = "CANCELLED"
 
 
-class Subscription(Base):
+class Subscription(PlatformBase):
     __tablename__ = "subscriptions"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)

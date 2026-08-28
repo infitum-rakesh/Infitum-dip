@@ -13,6 +13,8 @@ import threading
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database.connection import AsyncSessionLocal
+
 from app.connectors.base import ConnectorError, ConnectorUnsupportedError, ExplainResult, SqlRunResult
 from app.models.connection import Connection, ConnectionEnvironment
 from app.models.query_execution_log import SQL_TEXT_CAP, QueryExecutionLog
@@ -245,8 +247,9 @@ async def toggle_favorite(db: AsyncSession, row: SqlWorkspaceQuery, user_id: int
 async def user_name_map(db: AsyncSession, ids: set[int]) -> dict[int, str]:
     if not ids:
         return {}
-    result = await db.execute(select(User.id, User.full_name).where(User.id.in_(ids)))
-    return {row.id: row.full_name for row in result.all()}
+    async with AsyncSessionLocal() as platform_db:  # User is a PlatformBase model — never the tenant-routed `db`
+        result = await platform_db.execute(select(User.id, User.full_name).where(User.id.in_(ids)))
+        return {row.id: row.full_name for row in result.all()}
 
 
 # ── Run ──────────────────────────────────────────────────────────

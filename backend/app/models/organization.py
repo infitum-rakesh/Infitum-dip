@@ -4,7 +4,7 @@ from datetime import datetime
 from sqlalchemy import String, Enum, Boolean, DateTime, Integer, JSON, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.database.connection import Base
+from app.database.connection import PlatformBase
 
 
 class LicenseStatus(str, enum.Enum):
@@ -15,7 +15,7 @@ class LicenseStatus(str, enum.Enum):
     SUSPENDED = "suspended"
 
 
-class Organization(Base):
+class Organization(PlatformBase):
     __tablename__ = "organizations"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)

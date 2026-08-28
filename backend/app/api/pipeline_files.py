@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_action
-from app.database.connection import get_db
+from app.database.tenant_routing import get_tenant_db
 from app.models.user import User, UserRole
 from app.schemas.pipeline_files import AttachToPipelineRequest, PipelineSourceFileOut, SetSheetRequest
 from app.services import pipeline_file_service as svc
@@ -36,7 +36,7 @@ async def upload(
     pipeline_id: int | None = Form(None),
     file: UploadFile = File(...),
     user: User = Depends(_create),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     try:
         record = await svc.upload_source_file(
@@ -49,7 +49,7 @@ async def upload(
 
 
 @router.get("/by-node/{node_id}", response_model=PipelineSourceFileOut)
-async def get_by_node(node_id: str, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+async def get_by_node(node_id: str, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     record = await svc.get_by_node(db, node_id, _effective_org_id(user))
     if record is None:
         raise _not_found()
@@ -57,7 +57,7 @@ async def get_by_node(node_id: str, user: User = Depends(_view), db: AsyncSessio
 
 
 @router.post("/{file_id}/attach", response_model=PipelineSourceFileOut)
-async def attach(file_id: int, body: AttachToPipelineRequest, user: User = Depends(_edit), db: AsyncSession = Depends(get_db)):
+async def attach(file_id: int, body: AttachToPipelineRequest, user: User = Depends(_edit), db: AsyncSession = Depends(get_tenant_db)):
     record = await svc.get_by_id(db, file_id, _effective_org_id(user))
     if record is None:
         raise _not_found()
@@ -65,7 +65,7 @@ async def attach(file_id: int, body: AttachToPipelineRequest, user: User = Depen
 
 
 @router.put("/{file_id}/sheet", response_model=PipelineSourceFileOut)
-async def set_sheet(file_id: int, body: SetSheetRequest, user: User = Depends(_edit), db: AsyncSession = Depends(get_db)):
+async def set_sheet(file_id: int, body: SetSheetRequest, user: User = Depends(_edit), db: AsyncSession = Depends(get_tenant_db)):
     record = await svc.get_by_id(db, file_id, _effective_org_id(user))
     if record is None:
         raise _not_found()
@@ -76,7 +76,7 @@ async def set_sheet(file_id: int, body: SetSheetRequest, user: User = Depends(_e
 
 
 @router.delete("/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_file(file_id: int, user: User = Depends(_delete), db: AsyncSession = Depends(get_db)):
+async def delete_file(file_id: int, user: User = Depends(_delete), db: AsyncSession = Depends(get_tenant_db)):
     record = await svc.get_by_id(db, file_id, _effective_org_id(user))
     if record is None:
         raise _not_found()

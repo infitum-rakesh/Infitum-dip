@@ -29,11 +29,21 @@ integration) without changing the flow itself. `domain` selects
 left unset for standard production login — exactly simple-salesforce's
 own `domain` kwarg semantics.
 
-SOQL is NOT SQL — this connector deliberately does NOT implement
-preview_sql()/run_sql() (SQL Workspace's custom-SQL surface); building a
-SOQL-aware SQL editor is real, separate scope this task doesn't cover.
-BaseConnector's own default ("does not support custom SQL ...") surfaces
-that honestly rather than silently mistranslating SOQL as SQL.
+SOQL is NOT SQL, but run_sql() below IS implemented (SQL Workspace's
+custom-SQL surface) — it runs real SOQL, not translated/pretend SQL,
+including a real SELECT-only restriction (SOQL writes go through separate
+sObject DML calls with no INSERT/UPDATE/DELETE grammar to translate).
+This connector deliberately does NOT implement preview_sql() (arbitrary,
+un-object-scoped custom SQL preview) or explain()/query
+cancellation/timeout — those stay on BaseConnector's default
+ConnectorUnsupportedError rather than a fabricated result. One real,
+disclosed convenience run_sql() (and open_sql_stream() below) both apply:
+SOQL has no `SELECT *`, so a bare "SELECT * FROM <Object>" is expanded at
+run time into a real, explicit field list off that object's own
+describe() metadata before ever reaching Salesforce's API — see
+_expand_select_star() — so typing the same SQL habit a user would use
+against any SQL-dialect connection just works here too, instead of
+surfacing Salesforce's own confusing "unexpected token '*'" syntax fault.
 
 open_sql_stream() IS implemented, though — real Salesforce Bulk API 2.0
 (simple-salesforce's own bulk2 module, not hand-rolled HTTP), the
@@ -122,6 +132,9 @@ def _strip_attributes(record: dict) -> dict:
     return {k: v for k, v in record.items() if k != "attributes"}
 
 
+_SELECT_STAR_RE = re.compile(r"\bSELECT\s+\*\s+FROM\s+([A-Za-z_]\w*)", re.IGNORECASE)
+
+
 def _parse_soql_select_fields(soql: str) -> list[str]:
     """Best-effort fallback: pulls the field list straight out of a
     `SELECT a, b, c FROM ...` SOQL string. Only used when a Bulk API 2.0
@@ -155,6 +168,8 @@ class _SalesforceBulkSqlStream(SqlStream):
         self._buffer: list[dict] = []
         self._columns: list[str] = []
         self._exhausted = False
+        self._page_num = 0
+        self._total_rows = 0
         self._pull_page()  # prime — columns are known as soon as the stream opens, matching the SqlStream contract
 
     def _pull_page(self) -> bool:
@@ -164,11 +179,16 @@ class _SalesforceBulkSqlStream(SqlStream):
             csv_text = next(self._pages)
         except StopIteration:
             self._exhausted = True
+            print(f"[SFDC Bulk] Stream exhausted — {self._total_rows:,} total row(s) across {self._page_num} page(s).", flush=True)
             return False
         reader = csv.DictReader(io.StringIO(csv_text))
         if not self._columns:
             self._columns = list(reader.fieldnames or [])
-        self._buffer.extend(dict(row) for row in reader)
+        rows = [dict(row) for row in reader]
+        self._buffer.extend(rows)
+        self._page_num += 1
+        self._total_rows += len(rows)
+        print(f"[SFDC Bulk] Page {self._page_num}: fetched {len(rows):,} row(s) (running total: {self._total_rows:,}).", flush=True)
         return True
 
     @property
@@ -204,6 +224,9 @@ class _SalesforceRestSqlStream(SqlStream):
         self._done = False
         self._next_url: str | None = None
         self._issued_first_query = False
+        self._page_num = 0
+        self._total_rows = 0
+        self._total_size: int | None = None
         self._pull_page()  # prime — columns known as soon as the stream opens
 
     def _pull_page(self) -> bool:
@@ -212,15 +235,24 @@ class _SalesforceRestSqlStream(SqlStream):
         if not self._issued_first_query:
             self._issued_first_query = True
             result = self._sf.query(self._soql)
+            self._total_size = result.get("totalSize")
+            if self._total_size is not None:
+                print(f"[SFDC] REST Query API — total records to fetch: {self._total_size:,}", flush=True)
         else:
             result = self._sf.query_more(self._next_url, identifier_is_url=True)
         records = [_strip_attributes(r) for r in result.get("records", [])]
         if records and not self._columns:
             self._columns = list(records[0].keys())
         self._buffer.extend(records)
+        self._page_num += 1
+        self._total_rows += len(records)
         self._done = result.get("done", True)
         if not self._done:
             self._next_url = result["nextRecordsUrl"]
+        of_total = f"/{self._total_size:,}" if self._total_size is not None else ""
+        print(f"[SFDC] REST page {self._page_num}: fetched {len(records):,} row(s) (running total: {self._total_rows:,}{of_total}).", flush=True)
+        if self._done:
+            print(f"[SFDC] REST Query API stream exhausted — {self._total_rows:,} total row(s) across {self._page_num} page(s).", flush=True)
         return True
 
     @property
@@ -278,12 +310,16 @@ class SalesforceConnector(BaseConnector):
         if consumer_key and consumer_secret:
             kwargs.update(consumer_key=consumer_key, consumer_secret=consumer_secret)
 
+        print(f"[SFDC] Connecting to Salesforce ({domain or 'login'}) as {username}...", flush=True)
         try:
             self._sf = Salesforce(**kwargs)
         except SalesforceAuthenticationFailed as exc:
+            print(f"[SFDC] Authentication failed: {self._scrub(str(exc))}", flush=True)
             raise ConnectorError(self._scrub(f"Salesforce authentication failed: {exc}")) from exc
         except SalesforceError as exc:
+            print(f"[SFDC] Login failed: {self._scrub(str(exc))}", flush=True)
             raise ConnectorError(self._scrub(f"Salesforce login failed: {exc}")) from exc
+        print(f"[SFDC] Connected successfully (API v{self._sf.sf_version}, instance {self._sf.sf_instance}).", flush=True)
         return self._sf
 
     def test_connection(self) -> ConnectionTestResult:
@@ -378,6 +414,19 @@ class SalesforceConnector(BaseConnector):
         rows = [[_strip_attributes(r).get(c) for c in fields] for r in records[:limit]]
         return PreviewResult(columns=fields, rows=rows, row_count=None, truncated=truncated)
 
+    def build_select_all_sql(self, object_name: str, schema: str | None = None) -> str:
+        """Real "read everything" SOQL for object_name, with NO LIMIT
+        clause — unlike preview_object() above (which intentionally caps
+        at _MAX_PAGE_SIZE for its own bounded-preview purpose), this is
+        what execution/pipeline_job_executor.py's _run_source() hands to
+        open_sql_stream() for a genuinely exhaustive extraction. SOQL has
+        no `SELECT *`, so the field list comes from this SObject's own
+        real describe() metadata, same field-selection rule
+        _queryable_field_names() already applies everywhere else in this
+        connector (excludes compound/blob fields — see module docstring)."""
+        fields = self._queryable_field_names(object_name)
+        return f"SELECT {', '.join(fields)} FROM {object_name}"
+
     # ── Streaming extraction (Source Dataset execution) — reuses the
     # generic TABLE key-range partitioning path unmodified: key_column is
     # almost always "Id" (a real, unique, orderable Salesforce field on
@@ -433,6 +482,41 @@ class SalesforceConnector(BaseConnector):
         except SalesforceError as exc:
             raise ConnectorError(self._scrub(f"Salesforce SOQL query failed: {exc}")) from exc
 
+    def _expand_select_star(self, soql: str) -> str:
+        """SOQL has no `SELECT *` — Salesforce's real API rejects it
+        outright with a syntax fault. Both SQL Workspace (run_sql, below)
+        and the streaming/custom-SQL surface (open_sql_stream) accept
+        freeform text a user typed by hand, so a user writing the SQL
+        habit "SELECT * FROM Account" would otherwise always fail with a
+        confusing Salesforce-side error instead of just working like
+        every SQL-dialect connector's SELECT * already does. This expands
+        it at run time into a real, explicit field list off the object's
+        own describe() metadata (same _queryable_field_names() rule
+        get_columns()/preview_object()/read_key_range_chunk() already use
+        — excludes compound address/location fields and blob fields, same
+        as everywhere else in this connector), then substitutes it back
+        into the query text so WHERE/ORDER BY/LIMIT clauses the user wrote
+        are preserved unchanged. A no-op (returns soql unchanged) for any
+        query that isn't a bare `SELECT * FROM <Object>` shape — SOQL
+        subqueries and multi-object joins aren't rewritten here, same
+        disclosed narrow scope the reference ETL engine's own
+        _expand_sfdc_select_star() uses."""
+        match = _SELECT_STAR_RE.search(soql)
+        if not match:
+            return soql
+        object_name = match.group(1)
+        print(f"[SFDC] Expanding SELECT * for object: {object_name}...", flush=True)
+        try:
+            fields = self._queryable_field_names(object_name)
+        except ConnectorError as exc:
+            print(f"[SFDC] Could not expand SELECT * for {object_name}: {exc}", flush=True)
+            raise
+        print(f"[SFDC] Found {len(fields)} queryable field(s) for {object_name}.", flush=True)
+        field_list = ", ".join(fields)
+        expanded = _SELECT_STAR_RE.sub(f"SELECT {field_list} FROM {object_name}", soql, count=1)
+        print(f"[SFDC] Expanded query length: {len(expanded)} character(s).", flush=True)
+        return expanded
+
     # ── Bulk API 2.0 streaming (Run Load / QUERY-mode Run Extraction /
     # Run Pipeline customSql — anywhere open_sql_stream() is the real,
     # genuinely-unbounded chunked-read primitive) — see module docstring
@@ -440,10 +524,31 @@ class SalesforceConnector(BaseConnector):
     # mechanism from _run_soql()'s REST Query API pagination, not just
     # this same call reused with a bigger loop. ─────────────────────────
 
-    def open_sql_stream(self, sql: str, parameters: dict) -> SqlStream:
+    def open_sql_stream(self, sql: str, parameters: dict, *, extraction_mode: str | None = None) -> SqlStream:
+        """extraction_mode threads through the Source Dataset node's real
+        "Load Type" setting (BULK / AUTO / ROW_BY_ROW — see
+        SourceDatasetConfig.jsx, Salesforce-only field) so a user's
+        explicit choice actually changes what happens here, instead of
+        being saved into the pipeline definition and then silently
+        ignored (the bug this fixes):
+          BULK       — force real Bulk API 2.0; still falls back to the
+                       REST Query API on a genuine job failure (an org
+                       without Bulk API enabled, or a transient job-queue
+                       issue) rather than hard-failing the whole
+                       extraction, but logs it clearly as the user's own
+                       BULK choice being unable to run, not a routine path.
+          ROW_BY_ROW — skip Bulk API entirely and go straight to the REST
+                       Query API's standard query()/query_more()
+                       pagination — the right choice for small objects or
+                       orgs where Bulk API 2.0 isn't available/desired.
+          AUTO/None  — this connector's original behavior: try Bulk API
+                       2.0 first, fall back to REST silently-but-logged on
+                       any failure.
+        """
         stripped = (sql or "").strip()
         if not stripped:
             raise ConnectorValidationError("SOQL text is empty.")
+        stripped = self._expand_select_star(stripped)
         # Named-parameter substitution — SOQL has no client-side bind-
         # parameter API the way SQLAlchemy's text() does, so each :name
         # token is resolved to a real, escaped SOQL literal (_soql_literal
@@ -452,9 +557,20 @@ class SalesforceConnector(BaseConnector):
         for key, value in (parameters or {}).items():
             stripped = re.sub(rf":{re.escape(key)}\b", lambda _m, v=value: _soql_literal(v), stripped)
         sf = self._client()
+        mode = (extraction_mode or "AUTO").upper()
+
+        if mode == "ROW_BY_ROW":
+            print(f"[SFDC] Load Type = ROW_BY_ROW — using the REST Query API's standard queryMore() pagination (Bulk API 2.0 not attempted).", flush=True)
+            stream = _SalesforceRestSqlStream(sf, stripped)
+            if not stream.columns:
+                stream._columns = _parse_soql_select_fields(stripped)
+            return stream
+
+        print(f"[SFDC Bulk] Load Type = {mode} — creating a real Bulk API 2.0 query job (page size {_BULK_PAGE_SIZE:,})...", flush=True)
         try:
             page_generator = sf.bulk2.Query.query(stripped, max_records=_BULK_PAGE_SIZE)
             stream = _SalesforceBulkSqlStream(page_generator)
+            print(f"[SFDC Bulk] Bulk API 2.0 job accepted — streaming results.", flush=True)
         except Exception as bulk_exc:  # job creation, polling, or first-page fetch can all fail — SalesforceError, SalesforceOperationError, or a bare network error
             # Real automatic fallback (not a hard failure): some orgs don't
             # have Bulk API 2.0 enabled at all, and a Bulk job can fail for
@@ -462,8 +578,11 @@ class SalesforceConnector(BaseConnector):
             # a timeout waiting for JobComplete). Retry the SAME read via
             # the REST Query API's own real pagination instead of giving up
             # — slower and more API-call-hungry at real scale, but a real,
-            # working read. Logged, never silent.
-            print(f"[salesforce] Bulk API 2.0 query failed, falling back to REST Query API: {self._scrub(str(bulk_exc))}")
+            # working read. Logged, never silent — and logged louder when
+            # the user explicitly asked for BULK, since that's the one
+            # case where "it quietly fell back" is itself the complaint.
+            level = "BULK mode requested but Bulk API 2.0 failed" if mode == "BULK" else "Bulk API 2.0 query failed"
+            print(f"[SFDC Bulk] {level}, falling back to the REST Query API: {self._scrub(str(bulk_exc))}", flush=True)
             try:
                 stream = _SalesforceRestSqlStream(sf, stripped)
             except Exception as rest_exc:
@@ -493,6 +612,14 @@ class SalesforceConnector(BaseConnector):
                 "Salesforce only supports SOQL SELECT queries here — writes go through Salesforce's own "
                 "record create/update/delete APIs, not a SQL-style INSERT/UPDATE/DELETE statement."
             )
+        # SOQL has no `SELECT *` and Salesforce's real API rejects it
+        # outright — expand it to a real, explicit field list off the
+        # object's own describe() metadata before ever reaching the API,
+        # so writing "SELECT * FROM Account" in SQL Workspace just works
+        # the way it does against every SQL-dialect connection, instead of
+        # surfacing a confusing Salesforce-side syntax fault. See
+        # _expand_select_star() above.
+        stripped = self._expand_select_star(stripped)
         # Bounded read: stop pulling further pages once we already have
         # enough rows to answer `limit` (+1 to detect truncation), the same
         # real-cap discipline every other connector's run_sql() applies —

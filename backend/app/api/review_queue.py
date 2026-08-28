@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_user, require_action
-from app.database.connection import get_db
+from app.database.tenant_routing import get_tenant_db
 from app.models.user import User, UserRole
 from app.schemas.review_queue import (
     AssignRequest,
@@ -48,19 +48,19 @@ async def _get_or_404(db: AsyncSession, item_id: int, user: User):
 # ── KPIs / count ──────────────────────────────────────────────────
 
 @router.get("/stats", response_model=ReviewQueueStatsOut)
-async def stats(user: User = Depends(require_action("VIEW")), db: AsyncSession = Depends(get_db)):
+async def stats(user: User = Depends(require_action("VIEW")), db: AsyncSession = Depends(get_tenant_db)):
     return await svc.get_stats(db, _effective_org_id(user), user.id)
 
 
 @router.get("/count", response_model=ReviewQueueCountOut)
-async def count(user: User = Depends(require_action("VIEW")), db: AsyncSession = Depends(get_db)):
+async def count(user: User = Depends(require_action("VIEW")), db: AsyncSession = Depends(get_tenant_db)):
     """Backs the sidebar's Review Queue badge — never hardcode this number."""
     n = await svc.get_count(db, _effective_org_id(user))
     return ReviewQueueCountOut(pending=n)
 
 
 @router.get("/facets", response_model=ReviewQueueFacetsOut)
-async def facets(user: User = Depends(require_action("VIEW")), db: AsyncSession = Depends(get_db)):
+async def facets(user: User = Depends(require_action("VIEW")), db: AsyncSession = Depends(get_tenant_db)):
     assignees = await svc.get_assignable_users(db, _effective_org_id(user))
     return ReviewQueueFacetsOut(assignees=assignees)
 
@@ -81,7 +81,7 @@ async def list_items(
     sort_by: str = Query("created_at"),
     sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
     user: User = Depends(require_action("VIEW")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ):
     entries, total = await svc.list_items(
         db,
@@ -104,7 +104,7 @@ async def list_items(
 # first (with "bulk" captured as review_id) and 422 on int coercion.
 
 @router.post("/bulk/assign")
-async def bulk_assign(body: BulkAssignRequest, user: User = Depends(require_action("EDIT")), db: AsyncSession = Depends(get_db)):
+async def bulk_assign(body: BulkAssignRequest, user: User = Depends(require_action("EDIT")), db: AsyncSession = Depends(get_tenant_db)):
     results = {"succeeded": [], "failed": []}
     for review_id in body.review_ids:
         item = await svc.get_item(db, review_id, _effective_org_id(user))
@@ -117,7 +117,7 @@ async def bulk_assign(body: BulkAssignRequest, user: User = Depends(require_acti
 
 
 @router.post("/bulk/approve")
-async def bulk_approve(body: BulkApproveRequest, user: User = Depends(require_action("APPROVE")), db: AsyncSession = Depends(get_db)):
+async def bulk_approve(body: BulkApproveRequest, user: User = Depends(require_action("APPROVE")), db: AsyncSession = Depends(get_tenant_db)):
     results = {"succeeded": [], "failed": []}
     for review_id in body.review_ids:
         item = await svc.get_item(db, review_id, _effective_org_id(user))
@@ -130,7 +130,7 @@ async def bulk_approve(body: BulkApproveRequest, user: User = Depends(require_ac
 
 
 @router.post("/bulk/reject")
-async def bulk_reject(body: BulkRejectRequest, user: User = Depends(require_action("APPROVE")), db: AsyncSession = Depends(get_db)):
+async def bulk_reject(body: BulkRejectRequest, user: User = Depends(require_action("APPROVE")), db: AsyncSession = Depends(get_tenant_db)):
     if not body.reason or not body.reason.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "A rejection reason is required.")
     results = {"succeeded": [], "failed": []}
@@ -147,7 +147,7 @@ async def bulk_reject(body: BulkRejectRequest, user: User = Depends(require_acti
 # ── Get single item ───────────────────────────────────────────────
 
 @router.get("/{review_id}", response_model=ReviewQueueDetailOut)
-async def get_item(review_id: int, user: User = Depends(require_action("VIEW")), db: AsyncSession = Depends(get_db)):
+async def get_item(review_id: int, user: User = Depends(require_action("VIEW")), db: AsyncSession = Depends(get_tenant_db)):
     item = await _get_or_404(db, review_id, user)
     return await svc.get_detail(db, item)
 
@@ -155,28 +155,28 @@ async def get_item(review_id: int, user: User = Depends(require_action("VIEW")),
 # ── Actions ───────────────────────────────────────────────────────
 
 @router.post("/{review_id}/assign", response_model=ReviewQueueDetailOut)
-async def assign_item(review_id: int, body: AssignRequest, user: User = Depends(require_action("EDIT")), db: AsyncSession = Depends(get_db)):
+async def assign_item(review_id: int, body: AssignRequest, user: User = Depends(require_action("EDIT")), db: AsyncSession = Depends(get_tenant_db)):
     item = await _get_or_404(db, review_id, user)
     item = await svc.assign(db, item, body.user_id, user)
     return await svc.get_detail(db, item)
 
 
 @router.patch("/{review_id}/fields", response_model=ReviewQueueDetailOut)
-async def update_fields(review_id: int, body: FieldUpdateRequest, user: User = Depends(require_action("EDIT")), db: AsyncSession = Depends(get_db)):
+async def update_fields(review_id: int, body: FieldUpdateRequest, user: User = Depends(require_action("EDIT")), db: AsyncSession = Depends(get_tenant_db)):
     item = await _get_or_404(db, review_id, user)
     item = await svc.update_field(db, item, body.field_name, body.corrected_value, body.reason, user)
     return await svc.get_detail(db, item)
 
 
 @router.post("/{review_id}/approve", response_model=ReviewQueueDetailOut)
-async def approve_item(review_id: int, user: User = Depends(require_action("APPROVE")), db: AsyncSession = Depends(get_db)):
+async def approve_item(review_id: int, user: User = Depends(require_action("APPROVE")), db: AsyncSession = Depends(get_tenant_db)):
     item = await _get_or_404(db, review_id, user)
     item = await svc.approve(db, item, user)
     return await svc.get_detail(db, item)
 
 
 @router.post("/{review_id}/reject", response_model=ReviewQueueDetailOut)
-async def reject_item(review_id: int, body: RejectRequest, user: User = Depends(require_action("APPROVE")), db: AsyncSession = Depends(get_db)):
+async def reject_item(review_id: int, body: RejectRequest, user: User = Depends(require_action("APPROVE")), db: AsyncSession = Depends(get_tenant_db)):
     if not body.reason or not body.reason.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "A rejection reason is required.")
     item = await _get_or_404(db, review_id, user)
@@ -185,7 +185,7 @@ async def reject_item(review_id: int, body: RejectRequest, user: User = Depends(
 
 
 @router.post("/{review_id}/escalate", response_model=ReviewQueueDetailOut)
-async def escalate_item(review_id: int, body: EscalateRequest, user: User = Depends(require_action("APPROVE")), db: AsyncSession = Depends(get_db)):
+async def escalate_item(review_id: int, body: EscalateRequest, user: User = Depends(require_action("APPROVE")), db: AsyncSession = Depends(get_tenant_db)):
     item = await _get_or_404(db, review_id, user)
     item = await svc.escalate(db, item, body.reason, body.assign_to_user_id, user)
     return await svc.get_detail(db, item)

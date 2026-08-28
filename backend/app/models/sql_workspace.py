@@ -22,14 +22,14 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import TenantBase
 
 
-class SqlWorkspaceQuery(Base):
+class SqlWorkspaceQuery(TenantBase):
     __tablename__ = "sql_workspace_queries"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     connection_id: Mapped[int] = mapped_column(ForeignKey("connections.id"), nullable=False)
@@ -37,8 +37,8 @@ class SqlWorkspaceQuery(Base):
     sql_text: Mapped[str] = mapped_column(Text, nullable=False)
     is_shared: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
 
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
-    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(nullable=True)
+    updated_by: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -46,7 +46,7 @@ class SqlWorkspaceQuery(Base):
         return f"<SqlWorkspaceQuery {self.name} (connection={self.connection_id})>"
 
 
-class SqlWorkspaceQueryFavorite(Base):
+class SqlWorkspaceQueryFavorite(TenantBase):
     """Per-user favorite marker on a saved query — a many-to-many join,
     not a boolean on SqlWorkspaceQuery, because favoriting is inherently
     per-viewer: two teammates can each favorite (or not) the same shared
@@ -57,6 +57,6 @@ class SqlWorkspaceQueryFavorite(Base):
     __table_args__ = (UniqueConstraint("user_id", "query_id", name="uq_sql_workspace_query_favorite"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(nullable=False, index=True)
     query_id: Mapped[int] = mapped_column(ForeignKey("sql_workspace_queries.id"), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

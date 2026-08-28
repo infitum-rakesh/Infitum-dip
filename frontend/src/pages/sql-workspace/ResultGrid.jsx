@@ -9,6 +9,7 @@
  * ever sees.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ArrowUp, ArrowDown, Filter, Pin, Download, Workflow, Loader2, AlertTriangle, X } from 'lucide-react';
 import RowInspector from './RowInspector.jsx';
 import ExportsPanel from './ExportsPanel.jsx';
@@ -46,6 +47,14 @@ export default function ResultGrid({
   columns, rows, queryName, canExport = true,
   onSendToTransform, sendingToTransform = false, sendToTransformError = '',
   connectionId, sqlText,
+  // Real DOM nodes (from SqlWorkspace.jsx) this grid portals its toolbar
+  // buttons and "N selected" text into — see that file's comment on why:
+  // the old in-grid toolbar row got removed, filter/freeze/export now live
+  // right-aligned in the result-tabs banner, and the selection count moved
+  // into the bottom execution-status footer. All the state/logic driving
+  // them (filters, frozenFirst, export menu, selected) still lives here;
+  // only where the JSX renders changed.
+  toolbarSlotEl, selectionSlotEl,
 }) {
   const [colOrder, setColOrder] = useState(() => columns.map((_, i) => i));
   const [colWidths, setColWidths] = useState({});
@@ -200,79 +209,88 @@ export default function ResultGrid({
     setBgExportOpen(true);
   };
 
-  return (
-    <div className="sqlw-grid-wrap" onContextMenu={(e) => e.preventDefault()}>
-      <div className="sqlw-grid-meta">
-        <span>{selected.size > 0 && `${selected.size} selected`}</span>
-        <div className="sqlw-grid-toolbar">
-          <button className={`sqlw-grid-tool ${showFilters ? 'active' : ''}`} onClick={() => setShowFilters((s) => !s)} title="Toggle column filters">
-            <Filter size={13} />
+  const toolbar = (
+    <div className="sqlw-grid-toolbar">
+      <button className={`sqlw-grid-tool ${showFilters ? 'active' : ''}`} onClick={() => setShowFilters((s) => !s)} title="Toggle column filters">
+        <Filter size={13} />
+      </button>
+      <button className={`sqlw-grid-tool ${frozenFirst ? 'active' : ''}`} onClick={() => setFrozenFirst((f) => !f)} title="Freeze first column">
+        <Pin size={13} />
+      </button>
+      {canExport && (
+        <div className="sqlw-grid-export-wrap">
+          <button
+            ref={exportBtnRef}
+            className="sqlw-grid-tool"
+            onClick={(e) => {
+              e.stopPropagation();
+              setBgExportOpen(false);
+              if (!exportOpen) setExportMenuPos(computeFloatingMenuPos(e.currentTarget.getBoundingClientRect(), { width: 210, minHeight: 200 }));
+              setExportOpen((o) => !o);
+            }}
+            title="Export"
+          >
+            <Download size={13} />
           </button>
-          <button className={`sqlw-grid-tool ${frozenFirst ? 'active' : ''}`} onClick={() => setFrozenFirst((f) => !f)} title="Freeze first column">
-            <Pin size={13} />
-          </button>
-          {canExport && (
-            <div className="sqlw-grid-export-wrap">
-              <button
-                ref={exportBtnRef}
-                className="sqlw-grid-tool"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setBgExportOpen(false);
-                  if (!exportOpen) setExportMenuPos(computeFloatingMenuPos(e.currentTarget.getBoundingClientRect(), { width: 210, minHeight: 200 }));
-                  setExportOpen((o) => !o);
-                }}
-                title="Export"
-              >
-                <Download size={13} />
+          {exportOpen && exportMenuPos && (
+            <div
+              className="sqlw-grid-export-menu"
+              style={{ position: 'fixed', ...exportMenuPos, overflowY: 'auto' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button onClick={() => doExport('csv')}>Export CSV</button>
+              <button onClick={() => doExport('json')}>Export JSON</button>
+              <button onClick={() => doExport('xlsx')}>Export Excel</button>
+              <button onClick={() => doExport('txt')}>Export TXT</button>
+              <button onClick={doBackgroundExport} title="Parquet is generated server-side — this starts a real background export job">
+                Export Parquet (background)
               </button>
-              {exportOpen && exportMenuPos && (
-                <div
-                  className="sqlw-grid-export-menu"
-                  style={{ position: 'fixed', ...exportMenuPos, overflowY: 'auto' }}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <button onClick={() => doExport('csv')}>Export CSV</button>
-                  <button onClick={() => doExport('json')}>Export JSON</button>
-                  <button onClick={() => doExport('xlsx')}>Export Excel</button>
-                  <button onClick={() => doExport('txt')}>Export TXT</button>
-                  <button onClick={doBackgroundExport} title="Parquet is generated server-side — this starts a real background export job">
-                    Export Parquet (background)
+              {onSendToTransform && rows.length > 0 && (
+                <>
+                  <hr />
+                  <button onClick={doSendToTransform} disabled={sendingToTransform}>
+                    {sendingToTransform ? <Loader2 size={12} className="sqlw-spin" /> : <Workflow size={12} />}
+                    {sendingToTransform ? 'Sending…' : 'Send to Transform Workspace'}
                   </button>
-                  {onSendToTransform && rows.length > 0 && (
-                    <>
-                      <hr />
-                      <button onClick={doSendToTransform} disabled={sendingToTransform}>
-                        {sendingToTransform ? <Loader2 size={12} className="sqlw-spin" /> : <Workflow size={12} />}
-                        {sendingToTransform ? 'Sending…' : 'Send to Transform Workspace'}
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
-              {bgExportOpen && bgExportPos && (
-                <div
-                  className="sqlw-grid-export-menu sqlw-grid-bgexport-panel"
-                  style={{ position: 'fixed', ...bgExportPos }}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div className="sqlw-grid-bgexport-header">
-                    <span>Background Export</span>
-                    <button className="sqlw-panel-control" onClick={() => setBgExportOpen(false)} title="Close"><X size={13} /></button>
-                  </div>
-                  <ExportsPanel
-                    connectionId={connectionId}
-                    sqlText={sqlText}
-                    queryName={queryName}
-                    autoExportFormat={bgAutoFormat}
-                    onAutoExportHandled={() => setBgAutoFormat(null)}
-                  />
-                </div>
+                </>
               )}
             </div>
           )}
+          {bgExportOpen && bgExportPos && (
+            <div
+              className="sqlw-grid-export-menu sqlw-grid-bgexport-panel"
+              style={{ position: 'fixed', ...bgExportPos }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="sqlw-grid-bgexport-header">
+                <span>Background Export</span>
+                <button className="sqlw-panel-control" onClick={() => setBgExportOpen(false)} title="Close"><X size={13} /></button>
+              </div>
+              <ExportsPanel
+                connectionId={connectionId}
+                sqlText={sqlText}
+                queryName={queryName}
+                autoExportFormat={bgAutoFormat}
+                onAutoExportHandled={() => setBgAutoFormat(null)}
+              />
+            </div>
+          )}
         </div>
-      </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="sqlw-grid-wrap" onContextMenu={(e) => e.preventDefault()}>
+      {/* Filter/Freeze/Export now render in SqlWorkspace.jsx's result-tabs
+          banner, right-aligned alongside Results/Messages/Statistics/
+          Execution Plan — not in a dedicated row here anymore. Portaling
+          (rather than lifting this state up) keeps all the filter/freeze/
+          export logic right next to the state it operates on. */}
+      {toolbarSlotEl && createPortal(toolbar, toolbarSlotEl)}
+      {/* "N selected" now renders in the bottom execution-status footer
+          instead of its own row here. */}
+      {selectionSlotEl && createPortal(selected.size > 0 ? `${selected.size} selected` : null, selectionSlotEl)}
 
       {sendToTransformError && (
         <div className="sqlw-banner error small" style={{ margin: '0 0 6px' }}>
@@ -288,7 +306,7 @@ export default function ResultGrid({
           <table className="sqlw-grid sqlw-grid-interactive">
             <thead>
               <tr>
-                <th className="sqlw-grid-selectcol"><input type="checkbox" checked={selected.size > 0 && selected.size === displayIndices.length} onChange={toggleAll} /></th>
+                <th className={`sqlw-grid-selectcol ${frozenFirst ? 'sqlw-frozen-select' : ''}`}><input type="checkbox" checked={selected.size > 0 && selected.size === displayIndices.length} onChange={toggleAll} /></th>
                 {colOrder.map((c, pos) => (
                   <th
                     key={c}
@@ -311,7 +329,7 @@ export default function ResultGrid({
               </tr>
               {showFilters && (
                 <tr className="sqlw-grid-filterrow">
-                  <th className="sqlw-grid-selectcol" />
+                  <th className={`sqlw-grid-selectcol ${frozenFirst ? 'sqlw-frozen-select' : ''}`} />
                   {colOrder.map((c) => (
                     <th key={c} style={{ width: colWidths[c], minWidth: colWidths[c] }}>
                       <input
@@ -328,7 +346,7 @@ export default function ResultGrid({
             <tbody>
               {displayIndices.map((origIdx) => (
                 <tr key={origIdx} className={selected.has(origIdx) ? 'sqlw-row-selected' : ''}>
-                  <td className="sqlw-grid-selectcol">
+                  <td className={`sqlw-grid-selectcol ${frozenFirst ? 'sqlw-frozen-select' : ''}`}>
                     <input type="checkbox" checked={selected.has(origIdx)} onChange={() => toggleRow(origIdx)} onClick={(e) => e.stopPropagation()} />
                   </td>
                   {colOrder.map((c, pos) => (

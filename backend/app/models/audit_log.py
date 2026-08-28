@@ -17,10 +17,10 @@ incident_service.report_incident().
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, JSON, String, Text, func
+from sqlalchemy import DateTime, Enum, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.database.connection import Base
+from app.database.connection import TenantBase
 
 
 class AuditStatus(str, enum.Enum):
@@ -42,14 +42,14 @@ AUDIT_MODULES = [
 ]
 
 
-class AuditLog(Base):
+class AuditLog(TenantBase):
     __tablename__ = "audit_log"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
+    organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
-    actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    actor_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     action: Mapped[str] = mapped_column(String(100), nullable=False)
     module: Mapped[str] = mapped_column(String(60), nullable=False, index=True)  # one of AUDIT_MODULES

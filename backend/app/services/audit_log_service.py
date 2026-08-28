@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database.connection import AsyncSessionLocal
 from app.models.audit_log import AUDIT_MODULES, AuditLog
 from app.models.incident import Incident, IncidentTimelineEvent
 from app.models.role import Role, RoleAuditLog
@@ -89,108 +90,119 @@ INCIDENT_LABEL = {
 }
 
 
-async def _org_user_ids(db: AsyncSession, organization_id: int | None) -> set[int] | None:
-    """None = unscoped (super admin viewing everything)."""
+async def _org_user_ids(platform_db: AsyncSession, organization_id: int | None) -> set[int] | None:
+    """None = unscoped (super admin viewing everything). User is a
+    PlatformBase model — always queried via a dedicated platform session,
+    never whatever `db` this service was handed (that's get_tenant_db()'s
+    session — routes to each org's own database once they've migrated,
+    which never has a `users` table)."""
     if organization_id is None:
         return None
-    result = await db.execute(select(User.id).where(User.organization_id == organization_id))
+    result = await platform_db.execute(select(User.id).where(User.organization_id == organization_id))
     return {row[0] for row in result.all()}
 
 
 async def _fetch_entries(db: AsyncSession, organization_id: int | None) -> list[dict]:
+    """`db` is the tenant-routed session (AuditLog/IncidentTimelineEvent/
+    Incident all live on TenantBase) — but User/Role/UserActivityLog/
+    RoleAuditLog are all PlatformBase, so every read of those four uses
+    `platform_db` (a dedicated AsyncSessionLocal) instead, regardless of
+    which physical database `db` itself is bound to."""
     entries: list[dict] = []
-    org_user_ids = await _org_user_ids(db, organization_id)
+    async with AsyncSessionLocal() as platform_db:
+        org_user_ids = await _org_user_ids(platform_db, organization_id)
 
-    # ── UserActivityLog -> Authentication / User Management ──────
-    stmt = select(UserActivityLog).order_by(UserActivityLog.created_at.desc()).limit(SOURCE_LIMIT)
-    if org_user_ids is not None:
-        stmt = stmt.where(UserActivityLog.user_id.in_(org_user_ids))
-    rows = (await db.execute(stmt)).scalars().all()
-    subject_ids = {r.user_id for r in rows} | {r.actor_id for r in rows if r.actor_id}
-    users = await _users_by_id(db, subject_ids)
-    for r in rows:
-        module, action, status = USER_ACTIVITY_LABEL.get(r.event_type.value if hasattr(r.event_type, "value") else r.event_type, ("User Management", r.event_type, "SUCCESS"))
-        actor = users.get(r.actor_id) if r.actor_id else users.get(r.user_id)
-        subject = users.get(r.user_id)
-        entries.append({
-            "id": f"ual-{r.id}", "timestamp": _as_utc(r.created_at),
-            "user_id": r.actor_id or r.user_id, "user_name": actor.full_name if actor else None,
-            "action": action, "module": module,
-            "resource": subject.full_name if subject else None, "resource_id": str(r.user_id),
-            "ip_address": r.ip_address, "status": status, "details": r.message,
-            "before_value": None, "after_value": None, "user_agent": r.user_agent,
-        })
+        # ── UserActivityLog -> Authentication / User Management ──────
+        stmt = select(UserActivityLog).order_by(UserActivityLog.created_at.desc()).limit(SOURCE_LIMIT)
+        if org_user_ids is not None:
+            stmt = stmt.where(UserActivityLog.user_id.in_(org_user_ids))
+        rows = (await platform_db.execute(stmt)).scalars().all()
+        subject_ids = {r.user_id for r in rows} | {r.actor_id for r in rows if r.actor_id}
+        users = await _users_by_id(platform_db, subject_ids)
+        for r in rows:
+            module, action, status = USER_ACTIVITY_LABEL.get(r.event_type.value if hasattr(r.event_type, "value") else r.event_type, ("User Management", r.event_type, "SUCCESS"))
+            actor = users.get(r.actor_id) if r.actor_id else users.get(r.user_id)
+            subject = users.get(r.user_id)
+            entries.append({
+                "id": f"ual-{r.id}", "timestamp": _as_utc(r.created_at),
+                "user_id": r.actor_id or r.user_id, "user_name": actor.full_name if actor else None,
+                "action": action, "module": module,
+                "resource": subject.full_name if subject else None, "resource_id": str(r.user_id),
+                "ip_address": r.ip_address, "status": status, "details": r.message,
+                "before_value": None, "after_value": None, "user_agent": r.user_agent,
+            })
 
-    # ── RoleAuditLog -> Role Management / Permission Changes ─────
-    stmt = select(RoleAuditLog).order_by(RoleAuditLog.created_at.desc()).limit(SOURCE_LIMIT)
-    role_org_filter_ids = None
-    if organization_id is not None:
-        role_ids = (await db.execute(select(Role.id).where(Role.organization_id == organization_id))).scalars().all()
-        role_org_filter_ids = set(role_ids)
-        stmt = stmt.where(RoleAuditLog.role_id.in_(role_org_filter_ids))
-    rows = (await db.execute(stmt)).scalars().all()
-    role_ids = {r.role_id for r in rows}
-    roles = await _roles_by_id(db, role_ids)
-    actor_ids = {r.actor_id for r in rows if r.actor_id}
-    users = await _users_by_id(db, actor_ids)
-    for r in rows:
-        module, action = ROLE_AUDIT_LABEL.get(r.event_type.value if hasattr(r.event_type, "value") else r.event_type, ("Role Management", r.event_type))
-        actor = users.get(r.actor_id)
-        role = roles.get(r.role_id)
-        entries.append({
-            "id": f"ral-{r.id}", "timestamp": _as_utc(r.created_at),
-            "user_id": r.actor_id, "user_name": actor.full_name if actor else "System",
-            "action": action, "module": module,
-            "resource": role.name if role else None, "resource_id": str(r.role_id),
-            "ip_address": None, "status": "SUCCESS", "details": r.message,
-            "before_value": None, "after_value": None, "user_agent": None,
-        })
+        # ── RoleAuditLog -> Role Management / Permission Changes ─────
+        # Role/RoleAuditLog are also PlatformBase — platform_db throughout.
+        stmt = select(RoleAuditLog).order_by(RoleAuditLog.created_at.desc()).limit(SOURCE_LIMIT)
+        if organization_id is not None:
+            role_ids = (await platform_db.execute(select(Role.id).where(Role.organization_id == organization_id))).scalars().all()
+            stmt = stmt.where(RoleAuditLog.role_id.in_(set(role_ids)))
+        rows = (await platform_db.execute(stmt)).scalars().all()
+        role_ids = {r.role_id for r in rows}
+        roles = await _roles_by_id(platform_db, role_ids)
+        actor_ids = {r.actor_id for r in rows if r.actor_id}
+        users = await _users_by_id(platform_db, actor_ids)
+        for r in rows:
+            module, action = ROLE_AUDIT_LABEL.get(r.event_type.value if hasattr(r.event_type, "value") else r.event_type, ("Role Management", r.event_type))
+            actor = users.get(r.actor_id)
+            role = roles.get(r.role_id)
+            entries.append({
+                "id": f"ral-{r.id}", "timestamp": _as_utc(r.created_at),
+                "user_id": r.actor_id, "user_name": actor.full_name if actor else "System",
+                "action": action, "module": module,
+                "resource": role.name if role else None, "resource_id": str(r.role_id),
+                "ip_address": None, "status": "SUCCESS", "details": r.message,
+                "before_value": None, "after_value": None, "user_agent": None,
+            })
 
-    # ── IncidentTimelineEvent -> Incident ─────────────────────────
-    stmt = select(IncidentTimelineEvent).order_by(IncidentTimelineEvent.created_at.desc()).limit(SOURCE_LIMIT)
-    if organization_id is not None:
-        incident_ids = (await db.execute(select(Incident.id).where(Incident.organization_id == organization_id))).scalars().all()
-        stmt = stmt.where(IncidentTimelineEvent.incident_id.in_(set(incident_ids)))
-    rows = (await db.execute(stmt)).scalars().all()
-    incident_ids = {r.incident_id for r in rows}
-    incidents = await _incidents_by_id(db, incident_ids)
-    actor_ids = {r.actor_id for r in rows if r.actor_id}
-    users = await _users_by_id(db, actor_ids)
-    for r in rows:
-        etype = r.event_type.value if hasattr(r.event_type, "value") else r.event_type
-        action = INCIDENT_LABEL.get(etype, etype)
-        actor = users.get(r.actor_id)
-        incident = incidents.get(r.incident_id)
-        status = "FAILURE" if etype in ("REOPENED",) else "WARNING" if etype in ("SEVERITY_CHANGED",) else "SUCCESS"
-        entries.append({
-            "id": f"ite-{r.id}", "timestamp": _as_utc(r.created_at),
-            "user_id": r.actor_id, "user_name": actor.full_name if actor else "System",
-            "action": action, "module": "Incident",
-            "resource": incident.incident_number if incident else None, "resource_id": str(r.incident_id),
-            "ip_address": None, "status": status, "details": r.message,
-            "before_value": None, "after_value": None, "user_agent": None,
-        })
+        # ── IncidentTimelineEvent -> Incident ─────────────────────────
+        # Incident/IncidentTimelineEvent are TenantBase — `db` (tenant-routed).
+        stmt = select(IncidentTimelineEvent).order_by(IncidentTimelineEvent.created_at.desc()).limit(SOURCE_LIMIT)
+        if organization_id is not None:
+            incident_ids = (await db.execute(select(Incident.id).where(Incident.organization_id == organization_id))).scalars().all()
+            stmt = stmt.where(IncidentTimelineEvent.incident_id.in_(set(incident_ids)))
+        rows = (await db.execute(stmt)).scalars().all()
+        incident_ids = {r.incident_id for r in rows}
+        incidents = await _incidents_by_id(db, incident_ids)
+        actor_ids = {r.actor_id for r in rows if r.actor_id}
+        users = await _users_by_id(platform_db, actor_ids)
+        for r in rows:
+            etype = r.event_type.value if hasattr(r.event_type, "value") else r.event_type
+            action = INCIDENT_LABEL.get(etype, etype)
+            actor = users.get(r.actor_id)
+            incident = incidents.get(r.incident_id)
+            status = "FAILURE" if etype in ("REOPENED",) else "WARNING" if etype in ("SEVERITY_CHANGED",) else "SUCCESS"
+            entries.append({
+                "id": f"ite-{r.id}", "timestamp": _as_utc(r.created_at),
+                "user_id": r.actor_id, "user_name": actor.full_name if actor else "System",
+                "action": action, "module": "Incident",
+                "resource": incident.incident_number if incident else None, "resource_id": str(r.incident_id),
+                "ip_address": None, "status": status, "details": r.message,
+                "before_value": None, "after_value": None, "user_agent": None,
+            })
 
-    # ── AuditLog -> everything else (Connection Changes, License Changes, ─
-    #    Settings, Document Upload, OCR, AI Extraction, Transformation,
-    #    Validation, Reconciliation, Pipeline, Schedule) ───────────────
-    stmt = select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(SOURCE_LIMIT)
-    if organization_id is not None:
-        stmt = stmt.where(AuditLog.organization_id == organization_id)
-    rows = (await db.execute(stmt)).scalars().all()
-    actor_ids = {r.actor_id for r in rows if r.actor_id}
-    users = await _users_by_id(db, actor_ids)
-    for r in rows:
-        actor = users.get(r.actor_id)
-        entries.append({
-            "id": f"aud-{r.id}", "timestamp": _as_utc(r.timestamp),
-            "user_id": r.actor_id, "user_name": actor.full_name if actor else "System",
-            "action": r.action, "module": r.module,
-            "resource": r.resource, "resource_id": r.resource_id,
-            "ip_address": r.ip_address, "status": r.status.value if hasattr(r.status, "value") else r.status,
-            "details": r.details, "before_value": r.before_value, "after_value": r.after_value,
-            "user_agent": r.user_agent,
-        })
+        # ── AuditLog -> everything else (Connection Changes, License Changes, ─
+        #    Settings, Document Upload, OCR, AI Extraction, Transformation,
+        #    Validation, Reconciliation, Pipeline, Schedule) ───────────────
+        # AuditLog is TenantBase — `db` (tenant-routed); actor names via platform_db.
+        stmt = select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(SOURCE_LIMIT)
+        if organization_id is not None:
+            stmt = stmt.where(AuditLog.organization_id == organization_id)
+        rows = (await db.execute(stmt)).scalars().all()
+        actor_ids = {r.actor_id for r in rows if r.actor_id}
+        users = await _users_by_id(platform_db, actor_ids)
+        for r in rows:
+            actor = users.get(r.actor_id)
+            entries.append({
+                "id": f"aud-{r.id}", "timestamp": _as_utc(r.timestamp),
+                "user_id": r.actor_id, "user_name": actor.full_name if actor else "System",
+                "action": r.action, "module": r.module,
+                "resource": r.resource, "resource_id": r.resource_id,
+                "ip_address": r.ip_address, "status": r.status.value if hasattr(r.status, "value") else r.status,
+                "details": r.details, "before_value": r.before_value, "after_value": r.after_value,
+                "user_agent": r.user_agent,
+            })
 
     entries.sort(key=lambda e: e["timestamp"], reverse=True)
     return entries

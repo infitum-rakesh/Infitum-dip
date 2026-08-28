@@ -40,6 +40,42 @@
   color: var(--color-info-dark); border-radius: var(--radius-md); font-size: 13px;
 }
 
+/* Connection / Upload File toggle — mirrors reconciliation.css's
+   .rcn-mode-toggle, scaled for this page's inline (not card) picker. */
+.vld-mode-toggle {
+  display: inline-flex; gap: 4px; padding: 3px; margin-bottom: 10px;
+  background: var(--bg-body); border: 1px solid var(--border); border-radius: var(--radius-md);
+}
+.vld-mode-btn {
+  padding: 6px 14px; border: none; border-radius: var(--radius-sm);
+  background: none; color: var(--text-muted); font-size: var(--fs-xs); font-weight: 600;
+  cursor: pointer; transition: var(--transition);
+}
+.vld-mode-btn:disabled { cursor: not-allowed; opacity: 0.6; }
+.vld-mode-btn.active { background: var(--bg-card); color: var(--color-primary); box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+
+.vld-upload-btn {
+  display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-card); color: var(--text-primary); font-size: var(--fs-sm); font-weight: 600;
+  transition: var(--transition);
+}
+.vld-upload-btn:hover { background: var(--color-primary); color: white; border-color: var(--color-primary); }
+.vld-uploaded-file-card {
+  display: flex; align-items: center; gap: 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-md); padding: 8px 12px;
+  background: var(--bg-card);
+}
+.vld-uploaded-file-name { font-size: var(--fs-sm); font-weight: 600; color: var(--text-primary); }
+.vld-icon-btn {
+  width: 22px; height: 22px; border-radius: var(--radius-sm); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; background: none; color: var(--text-muted); cursor: pointer; transition: var(--transition);
+}
+.vld-icon-btn:hover { background: var(--color-danger-bg); color: var(--color-danger-dark); border-color: var(--color-danger); }
+.vld-upload-error { display: block; margin-top: 6px; font-size: var(--fs-xs); color: var(--color-danger-dark); }
+.vld-spin { animation: vld-spin 0.8s linear infinite; }
+
 .vld-tab-nav  { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 0; }
 .vld-tab-btn  {
   padding: 10px 16px; font-size: var(--fs-sm); font-weight: var(--fw-medium);
@@ -152,6 +188,13 @@
 .vld-rule-type-card.selected {
   border-color: var(--color-primary); background: var(--color-primary-light);
 }
+/* File-backed rule set — REF_INTEGRITY/SQL_CONDITION need real SQL, so
+   these two cards are shown but not selectable, same "visible but
+   disabled" treatment as a disabled <select>. */
+.vld-rule-type-card.disabled {
+  cursor: not-allowed; opacity: 0.45;
+}
+.vld-rule-type-card.disabled:hover { border-color: var(--border); background: none; }
 .vld-rule-type-icon  { font-size: 20px; margin-bottom: 4px; }
 .vld-rule-type-label { font-size: var(--fs-xs); font-weight: 600; color: var(--text-primary); }
 
@@ -160,3 +203,61 @@
   .vld-rule-row      { grid-template-columns: 1fr 100px auto; }
   .vld-result-row    { grid-template-columns: 1fr auto; }
 }
+
+/* ── List page (/app/validation) ──────────────────────────────
+   Landing page: real rule sets in a table, each with a one-click
+   Run + Add Rule action — see ValidationList.jsx. */
+.vld-list-title {
+  font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary);
+  display: flex; align-items: center; gap: 8px;
+}
+.vld-list-table-panel { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); overflow: hidden; }
+.vld-list-name-link {
+  background: none; border: none; padding: 0; font: inherit; cursor: pointer;
+  font-weight: 600; color: var(--color-primary); text-align: left;
+}
+.vld-list-name-link:hover { text-decoration: underline; }
+.vld-list-row-actions { display: flex; gap: 6px; align-items: center; }
+.vld-list-icon-btn {
+  width: 26px; height: 26px; border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); border: 1px solid transparent; transition: var(--transition);
+  background: none; flex-shrink: 0; cursor: pointer;
+}
+.vld-list-icon-btn:hover { background: var(--color-danger-bg); color: var(--color-danger); border-color: var(--color-danger); }
+/* View Result icon button reuses the same square icon-button shape as
+   Delete, but hovers primary (not danger) — it's a navigation action, not
+   a destructive one. */
+.vld-list-icon-btn-view:hover { background: var(--color-primary-light); color: var(--color-primary); border-color: var(--color-primary); }
+/* Add Rule — same square shape, neutral hover so it reads as a plain
+   navigation action distinct from View Result's primary tint. */
+.vld-list-icon-btn-addrule:hover { background: var(--bg-body); color: var(--text-primary); border-color: var(--border-dark); }
+/* Run — filled solid so it stands out as the primary row action, matching
+   the same visual weight the old <Button variant="primary"> had. */
+.vld-list-icon-btn-run {
+  background: var(--color-primary); color: var(--text-on-primary); border-color: var(--color-primary);
+}
+.vld-list-icon-btn-run:hover:not(:disabled) { background: var(--color-primary-dark); border-color: var(--color-primary-dark); }
+.vld-list-icon-btn-run:disabled { opacity: 0.6; cursor: not-allowed; }
+.vld-list-icon-spinner {
+  width: 13px; height: 13px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff;
+  border-radius: 50%; animation: vld-spin 0.65s linear infinite; display: inline-block;
+}
+@keyframes vld-spin { to { transform: rotate(360deg); } }
+
+.vld-list-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+.vld-list-kpi-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 14px 16px; }
+.vld-list-kpi-val { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; color: var(--text-primary); line-height: 1.2; }
+.vld-list-kpi-val-success { color: var(--color-success-dark); }
+.vld-list-kpi-val-danger  { color: var(--color-danger-dark); }
+.vld-list-kpi-label { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600; }
+@media (max-width: 900px) { .vld-list-kpis { grid-template-columns: repeat(2, 1fr); } }
+
+/* ── Editor header back-link (Validation.jsx) ─────────────────── */
+.vld-back-link {
+  /* display:flex (not inline-flex) — a block-level box, so it always
+     starts its own line above the rule-set-name input below it. */
+  display: flex; width: fit-content; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600;
+  color: var(--text-muted); text-decoration: none; margin-bottom: 8px;
+}
+.vld-back-link:hover { color: var(--color-primary); }
