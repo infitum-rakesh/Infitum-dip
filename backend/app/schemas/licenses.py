@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class UsageMetric(BaseModel):
@@ -47,3 +47,27 @@ class LicenseStatusOut(BaseModel):
     trial_end: datetime | None
     days_remaining: int | None
     usage_limits: dict[str, int | None]
+
+
+class ContactSalesRequest(BaseModel):
+    # Which module(s) prompted the inquiry, e.g. "SQL_WORKSPACE" or
+    # "Not sure / general inquiry" — free text so the frontend's picker
+    # (including modules the org doesn't have yet) never gets out of sync
+    # with ALL_MODULES on the backend.
+    module_interest: str | None = None
+    contact_name: str
+    contact_email: str
+    contact_phone: str | None = None
+    message: str
+
+    @field_validator("contact_name", "contact_email", "message")
+    @classmethod
+    def _required(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("This field is required.")
+        return v.strip()
+
+
+class ContactSalesResult(BaseModel):
+    delivered: bool
+    detail: str

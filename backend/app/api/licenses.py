@@ -5,7 +5,7 @@ controls purchased modules/subscription/limits/expiration (see
 services/license_service.py docstring); org admins only control which of
 their users get access to purchased modules (Administration -> Users).
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +15,8 @@ from app.database.tenant_routing import get_tenant_db
 from app.models.organization import Organization
 from app.models.user import User
 from app.schemas.licenses import (
+    ContactSalesRequest,
+    ContactSalesResult,
     LicenseDashboardOut,
     LicenseStatusOut,
     LicenseUsageOut,
@@ -59,3 +61,20 @@ async def get_usage(user: User = Depends(_admin), db: AsyncSession = Depends(get
 async def get_status(user: User = Depends(_admin), db: AsyncSession = Depends(get_db)):
     org = await _get_org_or_404(db, user)
     return await svc.build_status(db, org)
+
+
+@router.post("/contact-sales", response_model=ContactSalesResult)
+async def contact_sales(body: ContactSalesRequest, request: Request, user: User = Depends(_admin), db: AsyncSession = Depends(get_db)):
+    """Administration -> Licenses' "Contact Sales" form — the only write
+    this read-only page offers. Sends the inquiry to the Seller's contact
+    email (services/license_service.contact_sales) and always returns 200
+    with a delivered flag, same "never silently pretend to have sent
+    something" honesty contract as EmailService itself."""
+    org = await _get_org_or_404(db, user)
+    ip_address = request.client.host if request.client else None
+    result = await svc.contact_sales(
+        db, org, user, module_interest=body.module_interest, contact_name=body.contact_name,
+        contact_email=body.contact_email, contact_phone=body.contact_phone, message=body.message,
+        ip_address=ip_address,
+    )
+    return ContactSalesResult(**result)

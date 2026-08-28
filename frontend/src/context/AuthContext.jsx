@@ -115,6 +115,18 @@ export function AuthProvider({ children }) {
   // impersonate()'s stash-and-swap.
   const completeSsoLogin = useCallback((data) => { _setSession(data); }, [_setSession]);
 
+  // Called after POST /auth/change-password succeeds — patches the flag
+  // that forced the redirect so ProtectedRoute lets the user through on
+  // the very next render, without a full re-login round trip.
+  const clearMustChangePassword = useCallback(() => {
+    setUser((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, must_change_password: false };
+      _persist(STORAGE_KEYS.USER, next);
+      return next;
+    });
+  }, []);
+
   const isImpersonating = !!_load(STORAGE_KEYS.IMPERSONATION_ORIGINAL);
 
   const exitImpersonation = useCallback(() => {
@@ -142,6 +154,7 @@ export function AuthProvider({ children }) {
     completeSsoLogin,
     exitImpersonation,
     isImpersonating,
+    clearMustChangePassword,
     isAuthenticated: !!user,
   };
 

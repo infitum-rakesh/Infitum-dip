@@ -36,6 +36,7 @@ SELLER_AUDIT_ACTIONS = [
     "Seller Settings Updated",
     "Tenant Database Configured", "Tenant Database Updated", "Tenant Database Tested",
     "Platform Database Migration Completed",
+    "Module Purchase Inquiry",
 ]
 
 

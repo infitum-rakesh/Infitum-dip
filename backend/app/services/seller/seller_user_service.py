@@ -134,6 +134,7 @@ async def invite_user(db: AsyncSession, *, actor: User, body, ip_address: str | 
         is_active=body.is_active,
         is_verified=False,
         organization_id=None,
+        must_change_password=True,
     )
     db.add(user)
     await db.flush()
@@ -236,6 +237,7 @@ async def enable_user(db: AsyncSession, user: User, actor: User, ip_address: str
 async def reset_password(db: AsyncSession, user: User, actor: User, ip_address: str | None = None) -> tuple[User, str]:
     temp_password = _generate_temp_password()
     user.hashed_password = hash_password(temp_password)
+    user.must_change_password = True
     db.add(UserActivityLog(user_id=user.id, event_type=UserActivityType.PASSWORD_RESET, message="Password reset by administrator", actor_id=actor.id))
     await db.commit()
     await db.refresh(user)

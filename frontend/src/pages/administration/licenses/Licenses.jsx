@@ -7,15 +7,16 @@
  * and utils/permissions.js' MODULE_META — no duplicated module labels.
  */
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
 import {
-  ShieldCheck, Gauge, Clock, Layers, ArrowRight, Info,
+  ShieldCheck, Gauge, Clock, Layers, Headset,
 } from 'lucide-react';
-import { DataTable, StatusBadge, PermissionGate, FullPageSpinner, EmptyState } from '@/components/common/index.js';
+import { DataTable, StatusBadge, PermissionGate, FullPageSpinner, EmptyState, Button } from '@/components/common/index.js';
 import { LICENSE_PERMISSIONS } from '@/utils/constants.js';
 import { MODULE_META } from '@/utils/permissions.js';
 import { formatDate, formatNumber } from '@/utils/formatters.js';
 import { licenseApi } from '@/services/api/licenseApi.js';
+import { useAuth } from '@/hooks/useAuth.js';
+import { ContactSalesModal } from './ContactSalesModal.jsx';
 import './licenses.css';
 
 const STATUS_VARIANT = { trial: 'info', active: 'success', expiring: 'warning', expired: 'danger', suspended: 'danger' };
@@ -32,10 +33,12 @@ function usageFillClass(used, limit) {
 }
 
 export default function Licenses() {
+  const { user } = useAuth();
   const [dashboard, setDashboard] = useState(null);
   const [modules, setModules] = useState(null);
   const [status, setStatus] = useState(null);
   const [error, setError] = useState(null);
+  const [contactSalesOpen, setContactSalesOpen] = useState(false);
 
   useEffect(() => {
     Promise.all([licenseApi.getDashboard(), licenseApi.getModules(), licenseApi.getStatus()])
@@ -86,17 +89,20 @@ export default function Licenses() {
             <h1 className="lic-title">Licenses</h1>
             <p className="lic-subtitle">Your organization's purchased modules and license usage.</p>
           </div>
+          <div className="lic-header-actions">
+            <Button variant="primary" icon={<Headset size={15} />} onClick={() => setContactSalesOpen(true)}>
+              Contact Sales
+            </Button>
+          </div>
         </div>
 
-        {/* Hierarchy banner */}
+        {/* Sales banner */}
         <div className="lic-hierarchy-banner">
-          <Info size={15} style={{ flexShrink: 0, color: 'var(--color-primary)' }} />
+          <Headset size={15} style={{ flexShrink: 0, color: 'var(--color-primary)' }} />
           <span>
-            <span className="lic-hierarchy-chain">
-              Seller <ArrowRight size={12} className="lic-hierarchy-sep" /> Organization <ArrowRight size={12} className="lic-hierarchy-sep" /> Org Admin <ArrowRight size={12} className="lic-hierarchy-sep" /> Users
-            </span>
-            {' '}— this page is read-only. Your Seller controls which modules are purchased, plan limits and expiration.
-            You control <Link to="/app/admin/users" style={{ color: 'var(--color-primary)', fontWeight: 600 }}>which users</Link> get access to purchased modules.
+            To purchase a new module, add seats, or change your plan, please connect with our Sales team —
+            {' '}
+            <button type="button" className="lic-inline-link" onClick={() => setContactSalesOpen(true)}>get in touch</button>.
           </span>
         </div>
 
@@ -181,6 +187,8 @@ export default function Licenses() {
           <DataTable columns={columns} data={modules} />
         </div>
       </div>
+
+      <ContactSalesModal open={contactSalesOpen} onClose={() => setContactSalesOpen(false)} user={user} modules={modules} />
     </PermissionGate>
   );
 }

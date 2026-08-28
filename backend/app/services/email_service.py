@@ -80,6 +80,24 @@ async def send_test_email(db: AsyncSession, *, to: str) -> EmailDeliveryResult:
     )
 
 
+def build_sales_inquiry_email(
+    *, org_name: str, module_interest: str | None, contact_name: str, contact_email: str,
+    contact_phone: str | None, message: str,
+) -> tuple[str, str]:
+    subject = f"Module purchase inquiry — {org_name}"
+    body = (
+        f"A customer has requested to purchase or expand modules.\n\n"
+        f"Organization: {org_name}\n"
+        f"Module(s) of interest: {module_interest or 'Not specified'}\n"
+        f"Contact name: {contact_name}\n"
+        f"Contact email: {contact_email}\n"
+        f"Contact phone: {contact_phone or 'Not provided'}\n\n"
+        f"Message:\n{message}\n\n"
+        f"— Sent from Administration → Licenses"
+    )
+    return subject, body
+
+
 def build_welcome_email(*, org_name: str, full_name: str, email: str, temp_password: str, login_url: str) -> tuple[str, str]:
     subject = f"Your DataIntelligence Platform account for {org_name} is ready"
     body = (

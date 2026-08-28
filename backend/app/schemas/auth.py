@@ -37,6 +37,23 @@ class ResetPasswordRequest(BaseModel):
     new_password: str
 
 
+class ChangePasswordRequest(BaseModel):
+    # current_password is optional — required unless the account is
+    # currently flagged must_change_password (a dummy password an admin
+    # just issued isn't something the user should have to re-type back to
+    # prove they know it). api/auth.py enforces that distinction; this
+    # schema alone can't, since it has no access to the authenticated user.
+    current_password: str | None = None
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        return v
+
+
 # ── Response schemas ────────────────────────────────────────────
 
 class UserOut(BaseModel):
@@ -48,6 +65,12 @@ class UserOut(BaseModel):
     is_verified: bool
     organization_id: int | None
     created_at: datetime
+    # True whenever the account's current password is a one-time dummy
+    # value (just invited, or an admin/Seller just reset it) — never true
+    # for an SSO-provisioned account, since SSO never sets hashed_password
+    # via one of these flows. The frontend router hard-gates every /app/*
+    # route behind this until POST /auth/change-password clears it.
+    must_change_password: bool = False
     # Layer-3a of utils/permissions.js evaluateAccess() — null means "inherits
     # every module the org is licensed for" (frontend's userHasModule()
     # already treats null this way); set by an org admin via Users admin

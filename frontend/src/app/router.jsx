@@ -10,10 +10,11 @@ import { AuthLayout }  from '@/layouts/AuthLayout.jsx';
 import { MainLayout }  from '@/layouts/MainLayout.jsx';
 
 // Auth pages
-import Login          from '@/pages/auth/Login.jsx';
-import Register       from '@/pages/auth/Register.jsx';
-import ForgotPassword from '@/pages/auth/ForgotPassword.jsx';
-import SsoCallback    from '@/pages/auth/SsoCallback.jsx';
+import Login              from '@/pages/auth/Login.jsx';
+import Register           from '@/pages/auth/Register.jsx';
+import ForgotPassword     from '@/pages/auth/ForgotPassword.jsx';
+import SsoCallback        from '@/pages/auth/SsoCallback.jsx';
+import MustChangePassword from '@/pages/auth/MustChangePassword.jsx';
 
 // Dashboard (implemented)
 import Dashboard from '@/pages/dashboard/Dashboard.jsx';
@@ -114,9 +115,17 @@ import { FullPageSpinner } from '@/components/common/LoadingSpinner.jsx';
 import { isSeller } from '@/utils/permissions.js';
 
 function ProtectedRoute() {
-  const { isAuthenticated, isInitialised } = useAuth();
+  const { isAuthenticated, isInitialised, user } = useAuth();
   if (!isInitialised) return <FullPageSpinner />;
-  return isAuthenticated ? <Outlet /> : <Navigate to="/login" replace />;
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  // Forced password reset — set on login/refresh whenever the account's
+  // current password is a dummy value an admin/Seller just issued (see
+  // schemas/auth.py's UserOut.must_change_password). Blocks every /app/*
+  // route, including the Seller Portal subtree below (it reuses this same
+  // component), until POST /auth/change-password clears it. Never true for
+  // an SSO account, so SSO logins are unaffected without any extra check.
+  if (user?.must_change_password) return <Navigate to="/must-change-password" replace />;
+  return <Outlet />;
 }
 
 // SELLER PORTAL spec section 15: direct navigation to /app/seller/* without
@@ -133,8 +142,21 @@ function SellerRoute() {
 // Keeps unauthenticated users out of /login|/register when already logged in.
 // Home page is deliberately outside this gate so anyone can visit it.
 function PublicRoute() {
-  const { isAuthenticated } = useAuth();
-  return isAuthenticated ? <Navigate to="/app/dashboard" replace /> : <Outlet />;
+  const { isAuthenticated, user } = useAuth();
+  if (!isAuthenticated) return <Outlet />;
+  // Send a forced-reset account straight to that page instead of dashboard
+  // — ProtectedRoute would only bounce it there anyway on the next render.
+  return <Navigate to={user?.must_change_password ? '/must-change-password' : '/app/dashboard'} replace />;
+}
+
+// Gate for the forced-reset page itself: must be logged in, and only worth
+// showing while the flag that sent them here is actually still set — once
+// cleared (or if it was never set), there's nothing to do on this page.
+function MustChangePasswordRoute() {
+  const { isAuthenticated, isInitialised, user } = useAuth();
+  if (!isInitialised) return <FullPageSpinner />;
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  return user?.must_change_password ? <Outlet /> : <Navigate to="/app/dashboard" replace />;
 }
 
 /** Shorthand to produce a lazy placeholder element */
@@ -158,6 +180,22 @@ export const router = createBrowserRouter([
           { path: '/register',        element: <Register /> },
           { path: '/forgot-password', element: <ForgotPassword /> },
           { path: '/sso/callback',    element: <SsoCallback /> },
+        ],
+      },
+    ],
+  },
+
+  // Forced password-reset — reachable only while authenticated AND
+  // user.must_change_password is true (see MustChangePasswordRoute above).
+  // Uses the same AuthLayout shell as /login et al since it's the same kind
+  // of full-bleed auth-flow page, just requiring an existing session.
+  {
+    element: <MustChangePasswordRoute />,
+    children: [
+      {
+        element: <AuthLayout />,
+        children: [
+          { path: '/must-change-password', element: <MustChangePassword /> },
         ],
       },
     ],

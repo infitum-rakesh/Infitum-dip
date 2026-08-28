@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.connection import get_db
 from app.schemas.auth import (
+    ChangePasswordRequest,
     ForgotPasswordRequest,
     LoginRequest,
     MessageResponse,
@@ -17,11 +18,14 @@ from app.schemas.auth import (
 from app.services.auth_service import (
     AuthError,
     authenticate_user,
+    change_password,
     get_org_by_id,
     issue_tokens,
     refresh_access_token,
     register_user,
 )
+from app.core.deps import get_current_user
+from app.models.user import User
 from app.services import session_service
 from app.services.session_service import SeatLimitError
 from app.core.security import decode_token
@@ -132,6 +136,27 @@ async def logout(token: str | None = Depends(_oauth2_scheme), db: AsyncSession =
         except JWTError:
             pass
     return MessageResponse(message="Logged out successfully.")
+
+
+@router.post("/change-password", response_model=UserOut)
+async def change_password_route(
+    body: ChangePasswordRequest, request: Request,
+    user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db),
+):
+    """Self-service password change — the one path that clears
+    must_change_password. Reachable regardless of that flag's state (it
+    only depends on get_current_user, not on the flag being clear
+    already), since a forced-reset account has to be able to call this
+    before anything else. See auth_service.change_password for the
+    current-password-required-unless-flagged rule."""
+    ip_address = request.client.host if request.client else None
+    try:
+        updated = await change_password(
+            db, user, current_password=body.current_password, new_password=body.new_password, ip_address=ip_address,
+        )
+    except AuthError as exc:
+        raise _http_400(str(exc))
+    return UserOut.model_validate(updated)
 
 
 @router.get("/me", response_model=UserOut)

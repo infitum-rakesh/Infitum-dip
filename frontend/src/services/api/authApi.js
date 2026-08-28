@@ -23,6 +23,13 @@ export const authApi = {
   me: () =>
     apiClient.get('/auth/me').then((r) => r.data),
 
+  /** Self-service change — called both for the forced must_change_password
+   * flow (currentPassword omitted, backend skips that check) and a normal
+   * voluntary change (currentPassword required). Returns the updated
+   * UserOut (must_change_password now false). */
+  changePassword: (newPassword, currentPassword) =>
+    apiClient.post('/auth/change-password', { new_password: newPassword, current_password: currentPassword || undefined }).then((r) => r.data),
+
   /**
    * Real SAML 2.0 SSO handoff (see backend app/api/sso.py's POST /acs
    * redirect -> this exchange). `code` is a short-lived, single-use token

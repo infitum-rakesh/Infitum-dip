@@ -29,6 +29,16 @@ class User(PlatformBase):
     # services/user_admin_service.status_of().
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    # True whenever this account's current password is a one-time dummy
+    # value the user never chose themselves — every temp-password issuance
+    # site sets this (user_admin_service.invite_user/reset_password,
+    # seller_user_service.invite_user/reset_password, customer_service.
+    # create_customer/resend_admin_welcome_email). auth_service checked
+    # only after a successful PASSWORD login (never SSO — an SSO account's
+    # hashed_password is never used to authenticate, so this flag would be
+    # meaningless there); the frontend router hard-gates every /app/* route
+    # behind it until POST /auth/change-password clears it.
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     department: Mapped[str | None] = mapped_column(String(120), nullable=True)
     # Layer-3a of the frontend's evaluateAccess() (utils/permissions.js
     # userHasModule): null = inherits every module the org is licensed for;

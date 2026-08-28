@@ -242,6 +242,7 @@ async def create_customer(db: AsyncSession, *, body, actor: User, ip_address: st
                 is_active=True,
                 is_verified=False,
                 organization_id=org.id,
+                must_change_password=True,
             )
             db.add(contact_user)
             await db.flush()
@@ -294,6 +295,7 @@ async def resend_admin_welcome_email(db: AsyncSession, org: Organization, actor:
 
     temp_password = _generate_temp_password()
     target.hashed_password = hash_password(temp_password)
+    target.must_change_password = True
     db.add(UserActivityLog(
         user_id=target.id, event_type=UserActivityType.INVITED,
         message="Password reset and welcome email resent by Seller",

@@ -132,6 +132,35 @@ async def register_user(db: AsyncSession, data: RegisterRequest) -> Tuple[User, 
     return user, org
 
 
+async def change_password(
+    db: AsyncSession, user: User, *, current_password: str | None, new_password: str,
+    ip_address: str | None = None,
+) -> User:
+    """Self-service password change — the one path that clears
+    must_change_password. When the account is currently flagged (a dummy
+    password an admin/Seller just issued), the caller isn't required to
+    re-type that dummy value back; otherwise this is a normal "prove you
+    know the current password" change and current_password must verify.
+    Never touches SSO accounts — nothing in this app routes an SSO login
+    through here, since sso.py's ACS handler calls issue_tokens() directly
+    and never authenticate_user()/this function."""
+    if not user.must_change_password:
+        if not current_password or not verify_password(current_password, user.hashed_password):
+            raise AuthError("Current password is incorrect.")
+    if verify_password(new_password, user.hashed_password):
+        raise AuthError("New password must be different from your current password.")
+
+    user.hashed_password = hash_password(new_password)
+    user.must_change_password = False
+    db.add(UserActivityLog(
+        user_id=user.id, event_type=UserActivityType.PASSWORD_RESET,
+        message="Password changed by user", actor_id=user.id, ip_address=ip_address,
+    ))
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
 async def get_user_by_id(db: AsyncSession, user_id: int) -> User | None:
     result = await db.execute(select(User).where(User.id == user_id))
     return result.scalar_one_or_none()

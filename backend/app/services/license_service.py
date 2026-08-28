@@ -21,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document
 from app.models.organization import LicenseStatus, Organization
+from app.models.seller import Seller
+from app.models.seller_audit_log import record_seller_event
 from app.models.user import User
 
 # Mirrors frontend/src/utils/permissions.js SUBSCRIPTION_PLANS exactly —
@@ -185,3 +187,41 @@ async def build_status(db: AsyncSession, org: Organization) -> dict:
         "days_remaining": _days_remaining(org),
         "usage_limits": {k: _limit_for(org.plan, k) for k in ("users", "documents", "ai_calls", "storage_gb")},
     }
+
+
+async def contact_sales(
+    db: AsyncSession, org: Organization, actor: User, *, module_interest: str | None,
+    contact_name: str, contact_email: str, contact_phone: str | None, message: str,
+    ip_address: str | None = None,
+) -> dict:
+    """Org admin -> Seller module-purchase inquiry (Administration -> Licenses'
+    "Contact Sales" form). There's no per-customer sales-rep assignment in this
+    build, so every inquiry goes to the singleton Seller's billing/support
+    inbox (same "one Seller" assumption as models/seller.py) — reuses the
+    existing EmailService rather than a new mailer, and is recorded on
+    SellerAuditLog (seller_user_id=None, since no Seller-tier user initiated
+    it) so it surfaces in Seller Audit Logs / Seller Dashboard like every
+    other customer-facing event."""
+    from app.services import email_service
+
+    result = await db.execute(select(Seller).limit(1))
+    seller = result.scalar_one_or_none()
+    to_email = (seller.billing_email or seller.support_email) if seller else None
+
+    if not to_email:
+        delivery = {"delivered": False, "detail": "No Seller contact email is configured yet — reach your Seller directly."}
+    else:
+        subject, body_text = email_service.build_sales_inquiry_email(
+            org_name=org.name, module_interest=module_interest, contact_name=contact_name,
+            contact_email=contact_email, contact_phone=contact_phone, message=message,
+        )
+        email_result = await email_service.send_email(db, to=to_email, subject=subject, body=body_text)
+        delivery = email_result.to_dict()
+
+    await record_seller_event(
+        db, seller_user_id=None, customer_id=org.id, action="Module Purchase Inquiry",
+        resource=contact_email, resource_id=str(org.id), ip_address=ip_address,
+        details=f"{module_interest or 'General inquiry'} — {message}"[:2000],
+        after_value={"delivered": delivery["delivered"], "contact_name": contact_name, "contact_phone": contact_phone},
+    )
+    return delivery
