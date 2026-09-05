@@ -59,6 +59,16 @@ class Document(TenantBase):
     # separate Document row (e.g. reprocessing after a fix).
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
+    # Scheduled Document Intelligence Workflow (additive) — set only for
+    # documents created by document_service.save_from_source() rather than
+    # a manual/bulk upload. FK-free (no relationship()), same convention as
+    # organization_id/uploaded_by_id above. Lets Document Processing
+    # History (spec section 44) show "discovered via Schedule X /
+    # Connection Y / path Z" instead of just "uploaded".
+    source_connection_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    source_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    source_schedule_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
+
     status: Mapped[DocumentStatus] = mapped_column(Enum(DocumentStatus), default=DocumentStatus.UPLOADED, index=True)
     pipeline: Mapped[str | None] = mapped_column(String(150), nullable=True)
 
@@ -74,6 +84,22 @@ class Document(TenantBase):
     extraction_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # {schema: [{field,type}], table: {columns:[...], rows:[[...]]}, json: {...}}
     dataset: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Raw AI extraction response (the model's own JSON payload, verbatim)
+    # that extraction_service already computes internally but previously
+    # discarded after parsing into extraction_result. Persisted so
+    # downstream consumers (e.g. Invoice Intelligence's canonical
+    # materialization) don't need a second AI call — see INV3.
+    ai_raw_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # INV22 — the real AI Provider connection's model name (e.g. "gpt-4o-mini")
+    # or "CUSTOM_ENGINE" when the no-AI rule-based fallback ran instead;
+    # extraction_service.extract_fields() already computes this per call
+    # (see its own "model" return key) but it was previously discarded —
+    # persisted here so Lineage's AI_MODEL node can show a real value
+    # instead of leaving evidence's "model/version" gap silently unfilled.
+    # Nullable — genuinely unknown for documents processed before this
+    # column existed, or via a path this build doesn't thread it through
+    # yet; never backfilled with a guess.
+    extraction_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 

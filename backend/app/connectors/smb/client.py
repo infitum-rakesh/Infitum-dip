@@ -94,7 +94,22 @@ class NetworkFileConnector(FileConnectorBase):
         except (SMBException, OSError, ConnectorValidationError) as exc:
             return ConnectionTestResult(False, self._scrub(str(exc)), round((time.monotonic() - start) * 1000, 1))
 
-    def list_files(self, pattern: str | None = None) -> list[FileInfo]:
+    def _scandir_recursive(self, base: str, relative_prefix: str, kwargs: dict) -> list[tuple[str, str]]:
+        """Real recursive walk (Scheduled Document Intelligence Workflow —
+        spec "recursive scan" option), one scandir() round trip per
+        directory. Returns (name_relative_to_base, full_unc_path) pairs
+        for files only."""
+        out = []
+        for entry in smbclient.scandir(base, **kwargs):
+            child_path = f"{base}\\{entry.name}"
+            child_relative = f"{relative_prefix}{entry.name}"
+            if entry.is_dir():
+                out.extend(self._scandir_recursive(child_path, f"{child_relative}\\", kwargs))
+            else:
+                out.append((child_relative, child_path))
+        return out
+
+    def list_files(self, pattern: str | None = None, recursive: bool = False) -> list[FileInfo]:
         base = self._base_path()
         effective_pattern = pattern or "*"
         is_regex = effective_pattern.startswith("re:")
@@ -103,11 +118,12 @@ class NetworkFileConnector(FileConnectorBase):
 
         results = []
         try:
-            for entry in smbclient.scandir(base, **kwargs):
-                if entry.is_dir():
-                    continue
-                name = entry.name
-                matched = regex.search(name) if is_regex else fnmatch.fnmatch(name, effective_pattern)
+            if recursive:
+                entries = self._scandir_recursive(base, "", kwargs)
+            else:
+                entries = [(entry.name, f"{base}\\{entry.name}") for entry in smbclient.scandir(base, **kwargs) if not entry.is_dir()]
+            for display_name, full_path in entries:
+                matched = regex.search(display_name) if is_regex else fnmatch.fnmatch(display_name, effective_pattern)
                 if not matched:
                     continue
                 # entry.stat() (SMBDirEntry's own bound method) doesn't
@@ -116,9 +132,9 @@ class NetworkFileConnector(FileConnectorBase):
                 # what scandir() above was actually called with. Calling
                 # smbclient.stat() directly with our own kwargs avoids
                 # that and reuses the same already-open connection.
-                stat = smbclient.stat(f"{base}\\{name}", **kwargs)
+                stat = smbclient.stat(full_path, **kwargs)
                 results.append(FileInfo(
-                    name=name, path=f"{base}\\{name}", size=stat.st_size,
+                    name=display_name, path=full_path, size=stat.st_size,
                     modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc) if stat.st_mtime else None,
                 ))
         except (SMBException, OSError) as exc:

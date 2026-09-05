@@ -1,0 +1,25 @@
+.aeb-wrap { display: flex; align-items: center; justify-content: center; min-height: 60vh; padding: 24px; }
+.aeb-card {
+  max-width: 480px; width: 100%; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 14px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl, 16px);
+  padding: 40px 32px;
+}
+.aeb-icon {
+  width: 52px; height: 52px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  background: #FEE2E2; color: #B91C1C;
+}
+.aeb-title { font-size: var(--fs-xl, 20px); font-weight: var(--fw-bold); color: var(--text-primary); margin: 0; }
+.aeb-message { font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.7; margin: 0; }
+
+.aeb-actions { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 6px; width: 100%; }
+.aeb-btn {
+  display: inline-flex; align-items: center; gap: 7px; padding: 10px 20px; border-radius: var(--radius-md, 8px);
+  font-size: var(--fs-sm); font-weight: var(--fw-medium); transition: var(--transition);
+}
+.aeb-btn-primary { background: var(--color-primary); color: #fff; }
+.aeb-btn-primary:hover { opacity: 0.9; }
+.aeb-btn-secondary { background: var(--bg-body); border: 1px solid var(--border); color: var(--text-primary); }
+.aeb-btn-secondary:hover { background: var(--bg-hover, #F1F5F9); }
+
+.aeb-contact { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; }
+.aeb-contact-name { font-size: var(--fs-xs); color: var(--text-faint); width: 100%; }

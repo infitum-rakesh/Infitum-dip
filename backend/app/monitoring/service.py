@@ -129,6 +129,12 @@ async def get_overview(db: AsyncSession, organization_id: int | None, days: int 
     }
 
 
+async def get_invoice_processing(db: AsyncSession, organization_id: int | None, days: int = 7) -> dict:
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    data = await repository.invoice_processing_overview(db, organization_id, since)
+    return {**data, "window_days": days}
+
+
 def _job_summary(job: PipelineJob) -> dict:
     duration_s = None
     if job.started_at and job.completed_at:
@@ -212,6 +218,9 @@ async def get_job_detail(db: AsyncSession, job_id: int, organization_id: int | N
 async def get_data_quality(db: AsyncSession, organization_id: int | None, page: int, page_size: int) -> dict:
     v_rows, v_total = await repository.list_validation_runs(db, organization_id, limit=page_size, offset=(page - 1) * page_size)
     r_rows, r_total = await repository.list_reconciliation_runs(db, organization_id, limit=page_size, offset=(page - 1) * page_size)
+    a_rows, a_total = await repository.list_anomaly_executions(db, organization_id, limit=page_size, offset=(page - 1) * page_size)
+    inv_dl_rows, inv_dl_total = await repository.list_invoice_erp_dead_letters(db, organization_id, limit=page_size, offset=(page - 1) * page_size)
+    inv_mm_rows, inv_mm_total = await repository.list_invoice_reconciliation_mismatches(db, organization_id, limit=page_size, offset=(page - 1) * page_size)
     return {
         "validation_runs": [
             {
@@ -230,6 +239,33 @@ async def get_data_quality(db: AsyncSession, organization_id: int | None, page: 
             } for r in r_rows
         ],
         "reconciliation_total": r_total,
+        "anomaly_executions": [
+            {
+                "id": e.id, "job_id": e.job_id, "status": e.status.value if hasattr(e.status, "value") else e.status,
+                "overall_status": e.overall_status.value if e.overall_status else None,
+                "records_scanned": e.records_scanned, "anomalies_found": e.anomalies_found,
+                "critical_count": e.critical_count, "warning_count": e.warning_count,
+                "trigger": e.trigger, "started_at": e.started_at, "completed_at": e.completed_at,
+            } for e in a_rows
+        ],
+        "anomaly_total": a_total,
+        # INV12
+        "invoice_erp_dead_letters": [
+            {
+                "id": txn.id, "invoice_id": txn.invoice_id, "invoice_number": invoice_number,
+                "erp_connection_id": txn.erp_connection_id, "attempt_number": txn.attempt_number,
+                "error_code": txn.error_code, "error_message": txn.error_message, "created_at": txn.created_at,
+            } for txn, invoice_number in inv_dl_rows
+        ],
+        "invoice_erp_dead_letter_total": inv_dl_total,
+        "invoice_reconciliation_mismatches": [
+            {
+                "id": row.id, "invoice_id": row.invoice_id, "invoice_number": invoice_number,
+                "mismatched_fields": [c["field"] for c in (row.field_comparisons or []) if c.get("result") == "MISMATCH"],
+                "created_at": row.created_at,
+            } for row, invoice_number in inv_mm_rows
+        ],
+        "invoice_reconciliation_mismatch_total": inv_mm_total,
         "page": page, "page_size": page_size,
     }
 

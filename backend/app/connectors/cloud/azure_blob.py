@@ -94,7 +94,11 @@ class AzureBlobConnector(FileConnectorBase):
         except (AzureError, ConnectorValidationError) as exc:
             return ConnectionTestResult(False, self._scrub(str(exc)), round((time.monotonic() - start) * 1000, 1))
 
-    def list_files(self, pattern: str | None = None) -> list[FileInfo]:
+    def list_files(self, pattern: str | None = None, recursive: bool = False) -> list[FileInfo]:
+        # recursive is accepted-and-ignored — Blob Storage has no real
+        # directories (see AwsS3Connector's identical note); list_blobs()
+        # over the whole container already returns every blob at every
+        # nesting level.
         effective_pattern = pattern or "*"
         is_regex = effective_pattern.startswith("re:")
         regex = re.compile(effective_pattern[3:]) if is_regex else None

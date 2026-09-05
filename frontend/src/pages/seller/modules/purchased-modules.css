@@ -46,6 +46,8 @@
 .pm-configure-btn:hover { text-decoration: underline; }
 
 .pm-form-error { background: var(--color-danger-bg); color: var(--color-danger-dark); padding: 8px 12px; border-radius: var(--radius-md); font-size: 12.5px; margin-bottom: 12px; }
+.pm-form-message { background: var(--color-success-bg); color: var(--color-success-dark); padding: 8px 12px; border-radius: var(--radius-md); font-size: 12.5px; margin-bottom: 12px; }
+.pm-pending-payment { display: flex; align-items: center; gap: 6px; }
 .pm-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
 .pm-field { display: flex; flex-direction: column; gap: 5px; }
 .pm-field-full { grid-column: 1 / -1; }

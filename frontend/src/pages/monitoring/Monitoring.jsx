@@ -18,6 +18,7 @@ import './monitoring.css';
 
 const TABS = [
   { id: 'overview', label: 'Overview' },
+  { id: 'invoice_processing', label: 'Invoice Processing' },
   { id: 'pipeline_runs', label: 'Pipeline Runs' },
   { id: 'job_runs', label: 'Job Runs' },
   { id: 'data_quality', label: 'Data Quality' },
@@ -29,7 +30,7 @@ const TABS = [
 
 const STATUS_VARIANT = {
   PENDING: 'gray', RUNNING: 'info', SUCCEEDED: 'success', FAILED: 'danger', CANCELLED: 'gray',
-  SUCCESS: 'success', WARNING: 'warning',
+  SUCCESS: 'success', WARNING: 'warning', CRITICAL: 'danger', PASS: 'success', ERROR: 'danger',
 };
 
 function fmtDuration(sec) {
@@ -73,6 +74,7 @@ export default function Monitoring() {
       </div>
 
       {activeTab === 'overview' && <OverviewTab onOpenJob={openJob} onGoTab={selectTab} />}
+      {activeTab === 'invoice_processing' && <InvoiceProcessingTab />}
       {activeTab === 'pipeline_runs' && <PipelineRunsTab onOpenJob={openJob} onGoLineage={goToLineage} />}
       {activeTab === 'job_runs' && <JobRunsTab />}
       {activeTab === 'data_quality' && <DataQualityTab />}
@@ -113,6 +115,8 @@ function OverviewTab({ onOpenJob, onGoTab }) {
         <div className="mon-kpi-card"><span className="mon-kpi-label">Open Incidents</span><span className={`mon-kpi-value ${data.incidents_open ? 'danger' : ''}`}>{data.incidents_open}</span></div>
         <div className="mon-kpi-card"><span className="mon-kpi-label">Load Failures</span><span className="mon-kpi-value">{data.loads_failed}</span></div>
         <div className="mon-kpi-card"><span className="mon-kpi-label">Validation Failures</span><span className="mon-kpi-value">{data.validations_failed}</span></div>
+        <div className="mon-kpi-card"><span className="mon-kpi-label">Critical Anomalies</span><span className={`mon-kpi-value ${data.anomalies_critical ? 'danger' : ''}`}>{data.anomalies_critical}</span></div>
+        <div className="mon-kpi-card"><span className="mon-kpi-label">Warning Anomalies</span><span className={`mon-kpi-value ${data.anomalies_warning ? 'warning' : ''}`}>{data.anomalies_warning}</span></div>
       </div>
 
       <div className="mon-card">
@@ -137,6 +141,65 @@ function OverviewTab({ onOpenJob, onGoTab }) {
             </tbody>
           </table>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── Invoice Processing (INV21) — real decision/ERP/review rollup off
+// Invoice Intelligence's own lifecycle events, see monitoring/repository.
+// py's invoice_processing_overview() for exactly what backs each number. ──
+
+function fmtSeconds(sec) {
+  if (sec == null) return '—';
+  if (sec < 1) return `${Math.round(sec * 1000)}ms`;
+  if (sec < 60) return `${sec.toFixed(1)}s`;
+  return `${Math.floor(sec / 60)}m ${Math.round(sec % 60)}s`;
+}
+
+function InvoiceProcessingTab() {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+
+  const load = useCallback(() => {
+    monitoringApi.getInvoiceProcessing(7).then(setData).catch((e) => setError(apiErrorMessage(e, 'Could not load invoice processing metrics.')));
+  }, []);
+  useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
+
+  if (error) return <div className="mon-error-text">{error}</div>;
+  if (!data) return <div className="mon-muted">Loading…</div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div className="mon-kpi-grid">
+        <div className="mon-kpi-card"><span className="mon-kpi-label">Decided (7d)</span><span className="mon-kpi-value">{data.decided_total}</span></div>
+        <div className="mon-kpi-card"><span className="mon-kpi-label">Straight-Through Rate</span><span className={`mon-kpi-value ${data.straight_through_rate_pct >= 70 ? 'success' : data.straight_through_rate_pct >= 40 ? 'warning' : 'danger'}`}>{data.straight_through_rate_pct != null ? `${data.straight_through_rate_pct}%` : '—'}</span></div>
+        <div className="mon-kpi-card"><span className="mon-kpi-label">Review Required</span><span className="mon-kpi-value">{data.review_required_count}</span></div>
+        <div className="mon-kpi-card"><span className="mon-kpi-label">Review Queue Depth</span><span className={`mon-kpi-value ${data.review_queue_depth ? 'warning' : ''}`}>{data.review_queue_depth}</span></div>
+        <div className="mon-kpi-card"><span className="mon-kpi-label">ERP Calls (7d)</span><span className="mon-kpi-value">{data.erp_calls_total}</span></div>
+        <div className="mon-kpi-card"><span className="mon-kpi-label">ERP Succeeded</span><span className="mon-kpi-value success">{data.erp_succeeded}</span></div>
+        <div className="mon-kpi-card"><span className="mon-kpi-label">ERP Failed</span><span className={`mon-kpi-value ${data.erp_failed ? 'danger' : ''}`}>{data.erp_failed}</span></div>
+        <div className="mon-kpi-card"><span className="mon-kpi-label">ERP Dead-Lettered</span><span className={`mon-kpi-value ${data.erp_dead_letter ? 'danger' : ''}`}>{data.erp_dead_letter}</span></div>
+        <div className="mon-kpi-card"><span className="mon-kpi-label">ERP Retry Attempts</span><span className="mon-kpi-value">{data.erp_retry_attempts}</span></div>
+        <div className="mon-kpi-card"><span className="mon-kpi-label">ERP In Flight</span><span className={`mon-kpi-value ${data.erp_in_flight ? 'warning' : ''}`}>{data.erp_in_flight}</span></div>
+      </div>
+
+      <div className="mon-card">
+        <div className="mon-card-title">Average Stage Duration</div>
+        <p className="mon-muted" style={{ margin: '0 0 10px' }}>
+          Real deltas between this invoice module's own lifecycle-event timestamps — never estimated. There is no
+          persistent worker-pool concept in this build (ERP posting runs as a background task, not a worker with an
+          id), so "worker activity" is reported above as ERP In Flight (real PENDING/RETRYING attempts right now)
+          rather than fabricated worker identities.
+        </p>
+        <table className="data-table" style={{ width: '100%' }}>
+          <thead><tr><th>Stage</th><th>Average Duration</th></tr></thead>
+          <tbody>
+            <tr><td>Decision → ERP Submitted</td><td>{fmtSeconds(data.avg_decision_to_erp_submit_seconds)}</td></tr>
+            <tr><td>ERP Submitted → Succeeded</td><td>{fmtSeconds(data.avg_erp_submit_to_succeeded_seconds)}</td></tr>
+            <tr><td>ERP Succeeded → Reconciled</td><td>{fmtSeconds(data.avg_succeeded_to_reconciled_seconds)}</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -280,6 +343,25 @@ function DataQualityTab() {
                   <td>{r.id}</td><td><StatusBadge variant={STATUS_VARIANT[r.status] ?? 'gray'}>{r.status}</StatusBadge></td>
                   <td>{r.source_count ?? '—'}</td><td>{r.target_count ?? '—'}</td><td>{r.matched_count ?? '—'}</td>
                   <td>{r.missing_count ?? '—'}</td><td>{r.extra_count ?? '—'}</td><td>{r.mismatched_count ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+      <div className="mon-card">
+        <div className="mon-card-title">Anomaly Executions <span className="mon-muted">({data.anomaly_total})</span></div>
+        {data.anomaly_executions.length === 0 ? <div className="mon-muted">No anomaly executions yet — see the Anomaly Detection module.</div> : (
+          <table className="data-table" style={{ width: '100%' }}>
+            <thead><tr><th>Execution #</th><th>Job #</th><th>Status</th><th>Overall</th><th>Anomalies</th><th>Critical</th><th>Warning</th><th>Trigger</th><th>Started</th></tr></thead>
+            <tbody>
+              {data.anomaly_executions.map((e) => (
+                <tr key={e.id}>
+                  <td>{e.id}</td><td>{e.job_id}</td>
+                  <td><StatusBadge variant={STATUS_VARIANT[e.status] ?? 'gray'}>{e.status}</StatusBadge></td>
+                  <td>{e.overall_status ? <StatusBadge variant={STATUS_VARIANT[e.overall_status] ?? 'gray'}>{e.overall_status}</StatusBadge> : '—'}</td>
+                  <td>{e.anomalies_found}</td><td>{e.critical_count}</td><td>{e.warning_count}</td>
+                  <td>{e.trigger}</td><td>{fmtDate(e.started_at)}</td>
                 </tr>
               ))}
             </tbody>

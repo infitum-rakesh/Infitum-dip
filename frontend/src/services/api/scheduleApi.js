@@ -44,4 +44,12 @@ export const scheduleApi = {
   getRun: (id, runId) => apiClient.get(`/schedules/${id}/runs/${runId}`).then((r) => r.data),
 
   rerun: (id, runId) => apiClient.post(`/schedules/${id}/runs/${runId}/rerun`).then((r) => r.data),
+
+  /** Scheduled Document Intelligence Workflow — cooperative cancellation
+   * (checked between files, never mid-file) and the per-file breakdown a
+   * document-schedule run detail screen drills into. */
+  cancelRun: (id, runId) => apiClient.post(`/schedules/${id}/runs/${runId}/cancel`).then((r) => r.data),
+
+  getRunDocuments: (id, runId, params = {}) =>
+    apiClient.get(`/schedules/${id}/runs/${runId}/documents`, { params: cleanParams(params) }).then((r) => r.data),
 };

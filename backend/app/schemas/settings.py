@@ -65,6 +65,14 @@ class PipelineSettings(BaseModel):
     max_concurrent_pipelines: int
 
 
+class AnomalyDetectionDefaultSettings(BaseModel):
+    default_score_bands: list[dict]
+    default_retention_days: int | None
+    default_baseline_source: str
+    default_require_baseline_approval: bool
+    default_create_incident_on_critical: bool
+
+
 # ── Full response ────────────────────────────────────────────────
 
 class OrganizationSettingsOut(BaseModel):
@@ -80,6 +88,7 @@ class OrganizationSettingsOut(BaseModel):
     security: SecuritySettings
     audit: AuditSettings
     pipelines: PipelineSettings
+    anomaly_detection: AnomalyDetectionDefaultSettings
 
     updated_by: int | None
     updated_by_name: str | None = None
@@ -101,3 +110,4 @@ class UpdateSettingsRequest(BaseModel):
     security: dict | None = None
     audit: dict | None = None
     pipelines: dict | None = None
+    anomaly_detection: dict | None = None

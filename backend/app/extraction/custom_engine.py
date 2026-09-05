@@ -69,7 +69,7 @@ import json
 import re
 
 from app.models.document import Document
-from app.services import document_taxonomies
+from app.services import document_taxonomies, evidence_service
 
 MODEL_LABEL = "custom-rule-engine (offline, no AI)"
 MAX_TABLE_ROWS = 60  # runaway guard — real invoices/receipts never have more genuine line items than this
@@ -298,8 +298,12 @@ def _find_label_value(field: dict, rows: list[dict]) -> tuple | None:
     """Scans rows in reading order for one of this field's label
     candidates. A label with real text after it on the same row uses
     that remainder as the value; a label alone on its row falls through
-    to the row immediately below. Returns (value, confidence, page) or
-    None if nothing usable was found anywhere."""
+    to the row immediately below. Returns (value, confidence, page, bbox)
+    — bbox is the real, merged bounding box of the matched row's own OCR
+    regions (see evidence_service.merge_bboxes()), the geometry this
+    engine already computes internally for row-clustering but previously
+    discarded once a value was found — or None if nothing usable was
+    found anywhere."""
     ftype = field.get("type", "string")
     prefer_last = field["name"].lower() in PREFER_LAST_FIELDS
     candidates = _label_candidates(field)
@@ -318,7 +322,8 @@ def _find_label_value(field: dict, rows: list[dict]) -> tuple | None:
                     conf_row = below
                 if cleaned is None or cleaned == "":
                     continue
-                found.append((cleaned, _row_confidence(conf_row), conf_row["page"]))
+                bbox = evidence_service.merge_bboxes([r["bbox"] for r in conf_row["regions"] if r.get("bbox")])
+                found.append((cleaned, _row_confidence(conf_row), conf_row["page"], bbox))
             if found and not prefer_last:
                 break
         if found and not prefer_last:
@@ -326,8 +331,8 @@ def _find_label_value(field: dict, rows: list[dict]) -> tuple | None:
 
     if not found:
         return None
-    value, conf, page = found[-1] if prefer_last else found[0]
-    return value, round(min(conf, 92.0), 1), page  # 92 cap — a heuristic label match, never claimed as certain as a direct read
+    value, conf, page, bbox = found[-1] if prefer_last else found[0]
+    return value, round(min(conf, 92.0), 1), page, bbox  # 92 cap — a heuristic label match, never claimed as certain as a direct read
 
 
 def _type_fallback(field: dict, full_text: str) -> tuple | None:
@@ -376,11 +381,21 @@ def _type_fallback(field: dict, full_text: str) -> tuple | None:
 
 
 def _extract_scalar(field: dict, rows: list[dict], full_text: str) -> dict:
-    found = _find_label_value(field, rows) or _type_fallback(field, full_text)
-    if found is None:
-        return {"name": field["name"], "type": "scalar", "value": "", "confidence": 0.0, "page": 1}
-    value, conf, page = found
-    return {"name": field["name"], "type": "scalar", "value": value, "confidence": round(conf, 1), "page": page}
+    # _find_label_value() found the value via a real, matched OCR row —
+    # carries a genuine bbox. _type_fallback() finds a value via a
+    # regex over the whole page's concatenated text with no single
+    # originating region to point at — honestly bbox=None rather than
+    # guessing one (see its own docstring).
+    found = _find_label_value(field, rows)
+    if found is not None:
+        value, conf, page, bbox = found
+    else:
+        fallback = _type_fallback(field, full_text)
+        if fallback is None:
+            return {"name": field["name"], "type": "scalar", "value": "", "confidence": 0.0, "page": 1, "bbox": None}
+        value, conf, page = fallback
+        bbox = None
+    return {"name": field["name"], "type": "scalar", "value": value, "confidence": round(conf, 1), "page": page, "bbox": bbox}
 
 
 # ── Table extraction ─────────────────────────────────────────────────

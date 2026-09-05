@@ -14,8 +14,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document, DocumentStatus
+from app.models.document_schedule import DocumentScheduleConfig, DocumentSourceRegistry, DocumentSourceStatus
 from app.models.incident import Incident, IncidentStatus
 from app.models.pipeline_job import JobStatus, PipelineJob
+from app.models.schedule import Schedule, ScheduleStatus
 from app.models.validation import ValidationRuleResult
 
 ACTIVE_INCIDENT_STATUSES = (IncidentStatus.OPEN, IncidentStatus.INVESTIGATING, IncidentStatus.MITIGATED)
@@ -79,6 +81,30 @@ async def get_dashboard(db: AsyncSession, organization_id: int | None) -> dict:
     succeeded_total = await count(scoped(select(PipelineJob).where(PipelineJob.status == JobStatus.SUCCEEDED), PipelineJob))
     pipeline_success_rate = round(succeeded_total / terminal_total * 100, 1) if terminal_total else None
 
+    # ── Scheduled Document Intelligence Workflow ─────────────
+    # Real counts off DocumentScheduleConfig/DocumentSourceRegistry — the
+    # same tables schedule_service.py's document-schedule branch and
+    # document_schedule_service.py write to. No separate rollup table.
+    active_document_schedules = await count(
+        scoped(select(Schedule).join(DocumentScheduleConfig, DocumentScheduleConfig.schedule_id == Schedule.id)
+               .where(Schedule.status == ScheduleStatus.ACTIVE), Schedule)
+    )
+    scheduled_docs_today = await count(
+        scoped(select(DocumentSourceRegistry).where(
+            DocumentSourceRegistry.status == DocumentSourceStatus.PROCESSED,
+            DocumentSourceRegistry.last_processed_at >= today_start,
+        ), DocumentSourceRegistry)
+    )
+    scheduled_docs_review_required = await count(
+        scoped(select(DocumentSourceRegistry).where(DocumentSourceRegistry.status == DocumentSourceStatus.REVIEW_REQUIRED), DocumentSourceRegistry)
+    )
+    scheduled_docs_failed_today = await count(
+        scoped(select(DocumentSourceRegistry).where(
+            DocumentSourceRegistry.status == DocumentSourceStatus.FAILED,
+            DocumentSourceRegistry.last_processed_at >= today_start,
+        ), DocumentSourceRegistry)
+    )
+
     # ── Recent runs (last 5, newest first) ──────────────────
     recent_stmt = scoped(select(PipelineJob), PipelineJob).order_by(PipelineJob.created_at.desc()).limit(5)
     recent_result = await db.execute(recent_stmt)
@@ -103,6 +129,10 @@ async def get_dashboard(db: AsyncSession, organization_id: int | None) -> dict:
             "pipeline_runs_today": pipeline_runs_today,
             "pipeline_runs_today_trend_pct": _pct_change(pipeline_runs_today, pipeline_runs_yesterday),
             "pipeline_success_rate": pipeline_success_rate,
+            "active_document_schedules": active_document_schedules,
+            "scheduled_docs_today": scheduled_docs_today,
+            "scheduled_docs_review_required": scheduled_docs_review_required,
+            "scheduled_docs_failed_today": scheduled_docs_failed_today,
         },
         "recent_runs": recent_runs,
     }

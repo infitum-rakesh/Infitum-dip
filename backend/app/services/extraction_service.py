@@ -459,6 +459,16 @@ async def extract_fields(
             {f["name"]: (f["rows"] if f.get("type") == "table" else f["value"]) for f in fields_out},
             indent=2, default=str,
         ),
+        # The AI model's own response, verbatim (before this function's type
+        # coercion/table-dedup post-processing above) — previously computed
+        # here and immediately discarded. Persisted onto Document.ai_raw_
+        # response by document_service so downstream consumers (e.g. Invoice
+        # Intelligence's canonical materialization, INV5) can reuse it
+        # without a second AI call. None for the Custom Extraction Engine
+        # path (CUSTOM_ENGINE_CONNECTION_ID returns before this point) — no
+        # AI model was actually called there, so there's honestly nothing to
+        # persist under this key.
+        "raw_model_response": parsed,
     }
 
 

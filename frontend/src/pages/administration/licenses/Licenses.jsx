@@ -43,7 +43,12 @@ export default function Licenses() {
   useEffect(() => {
     Promise.all([licenseApi.getDashboard(), licenseApi.getModules(), licenseApi.getStatus()])
       .then(([d, m, s]) => { setDashboard(d); setModules(m.items); setStatus(s); })
-      .catch(() => setError('Failed to load license information.'));
+      // Surface the real reason (apiClient already unwraps FastAPI's
+      // `detail`) rather than a blanket message — this page is
+      // organization-scoped, so a Seller/Super Admin account (which has
+      // no organization) hitting it via a direct link sees exactly why,
+      // not a generic failure.
+      .catch((err) => setError(err?.message || 'Failed to load license information.'));
   }, []);
 
   if (error) {

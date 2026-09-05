@@ -19,6 +19,7 @@ from app.models.seller_audit_log import record_seller_event
 from app.models.subscription import Subscription, SubscriptionStatus
 from app.models.user import User, UserRole
 from app.models.user_activity import UserActivityLog, UserActivityType
+from app.database import tenant_engine_registry
 from app.services import license_service, user_admin_service
 from app.services.audit_log_service import list_entries as list_org_audit_entries
 
@@ -75,10 +76,32 @@ async def list_customers(
     result = await db.execute(stmt.offset((page - 1) * page_size).limit(page_size))
     orgs = result.scalars().all()
 
+    # One extra query for this page's orgs' most recent Invoice each
+    # (status + id), rather than N+1 — same pattern subscription_service.
+    # list_subscriptions() already uses (SB28). Drives the Customers
+    # table's Payment Status column + "Pay" row action (pending_invoice_id).
+    org_ids = [org.id for org in orgs]
+    payment_by_org: dict[int, dict] = {}
+    if org_ids:
+        from app.models.billing.invoice import Invoice, InvoiceStatus
+        inv_result = await db.execute(
+            select(Invoice.organization_id, Invoice.id, Invoice.status, Invoice.issue_date)
+            .where(Invoice.organization_id.in_(org_ids))
+            .order_by(Invoice.issue_date.desc())
+        )
+        for org_id, inv_id, inv_status, _issue_date in inv_result.all():
+            if org_id in payment_by_org:
+                continue  # already have this org's most recent invoice (rows are ordered desc)
+            payment_by_org[org_id] = {
+                "payment_status": inv_status.value,
+                "pending_invoice_id": inv_id if inv_status in (InvoiceStatus.PAYMENT_PENDING, InvoiceStatus.OVERDUE, InvoiceStatus.PARTIALLY_PAID) else None,
+            }
+
     items = []
     for org in orgs:
         sub = await _latest_subscription(db, org.id)
         users_count = await _users_count(db, org.id)
+        payment = payment_by_org.get(org.id, {"payment_status": None, "pending_invoice_id": None})
         items.append({
             "id": org.id,
             "name": org.name,
@@ -94,6 +117,8 @@ async def list_customers(
             "subscription_end": sub.end_date if sub else (org.license_expires_at or org.trial_expires_at),
             "created_at": org.created_at,
             "is_active": org.is_active,
+            "payment_status": payment["payment_status"],
+            "pending_invoice_id": payment["pending_invoice_id"],
         })
     return items, total
 
@@ -109,8 +134,17 @@ async def get_customer_detail(db: AsyncSession, customer_id: int) -> dict | None
     )
     subs = all_subs_result.scalars().all()
 
-    usage = await license_service.build_usage(db, org)
-    modules = await license_service.build_module_licenses(db, org)
+    # license_service.build_usage()/build_module_licenses() read the
+    # CUSTOMER's own tenant database (document/record counts live there,
+    # not in the platform db this function otherwise runs against) — a
+    # Seller has no request-scoped tenant_db (they aren't attached to any
+    # one org), so resolve it explicitly the same way background tasks
+    # do (see tenant_engine_registry.get_background_sessionmaker's
+    # docstring) rather than the get_tenant_db request dependency.
+    tenant_sessionmaker = await tenant_engine_registry.get_background_sessionmaker(org.id)
+    async with tenant_sessionmaker() as tenant_db:
+        usage = await license_service.build_usage(db, tenant_db, org)
+        modules = await license_service.build_module_licenses(tenant_db, org)
     users_result = await db.execute(select(User).where(User.organization_id == org.id).order_by(User.created_at.asc()))
     users = users_result.scalars().all()
 
@@ -125,6 +159,12 @@ async def get_customer_detail(db: AsyncSession, customer_id: int) -> dict | None
         for log, name in activity_result.all()
     ]
 
+    company_name = None
+    if org.company_id:
+        from app.models.company import Company
+        company = await db.get(Company, org.company_id)
+        company_name = company.name if company else None
+
     return {
         "id": org.id,
         "name": org.name,
@@ -136,6 +176,12 @@ async def get_customer_detail(db: AsyncSession, customer_id: int) -> dict | None
         "primary_contact_name": org.primary_contact_name,
         "primary_contact_email": org.primary_contact_email,
         "primary_contact_phone": org.primary_contact_phone,
+        "address_line": org.address_line,
+        "city": org.city,
+        "branch": org.branch,
+        "postal_code": org.postal_code,
+        "company_id": org.company_id,
+        "company_name": company_name,
         "plan": org.plan,
         "license_status": org.license_status.value,
         "is_active": org.is_active,
@@ -170,22 +216,30 @@ def _slugify(name: str) -> str:
 
 
 async def create_customer(db: AsyncSession, *, body, actor: User, ip_address: str | None = None) -> tuple[Organization, str | None]:
+    # Without a real email there is nowhere to send login credentials —
+    # the org would be created with no way for anyone to actually sign
+    # into it. Reject outright rather than silently onboarding a customer
+    # nobody can log in as.
+    if not body.primary_contact_email:
+        raise CustomerServiceError("A primary contact email is required — without one, login credentials can't be generated or delivered.")
+
     slug = _slugify(body.organization_name)
     existing = await db.execute(select(Organization).where(Organization.slug == slug))
     if existing.scalar_one_or_none():
         raise CustomerServiceError("An organization with this name already exists.")
 
+    # "custom" is not a real Plan row — it means "price these individual
+    # modules from the catalog instead of a fixed bundle" (frontend Plan
+    # dropdown's Custom option). Anything else must resolve to a real Plan.
     plan = None
-    if body.plan_code:
+    is_custom_plan = body.plan_code == "custom"
+    if body.plan_code and not is_custom_plan:
         plan_result = await db.execute(select(Plan).where(Plan.code == body.plan_code))
         plan = plan_result.scalar_one_or_none()
         if plan is None:
             raise CustomerServiceError(f"Unknown plan: {body.plan_code}")
 
     license_status = LicenseStatus(body.status) if body.status else LicenseStatus.TRIAL
-    now = datetime.now(timezone.utc)
-    trial_expires = body.expiry_date if license_status == LicenseStatus.TRIAL else None
-    license_expires = body.expiry_date if license_status != LicenseStatus.TRIAL else None
 
     org = Organization(
         name=body.organization_name,
@@ -197,35 +251,51 @@ async def create_customer(db: AsyncSession, *, body, actor: User, ip_address: st
         primary_contact_name=body.primary_contact_name,
         primary_contact_email=body.primary_contact_email,
         primary_contact_phone=body.primary_contact_phone,
-        license_status=license_status,
+        address_line=body.address_line,
+        city=body.city,
+        branch=body.branch,
+        postal_code=body.postal_code,
+        company_id=body.company_id,
+        # Placeholder — subscription_service.create_subscription() (below)
+        # immediately overwrites license_status/plan/licensed_modules/
+        # max_users/*_expires_at via its own _sync_org_from_subscription(),
+        # derived from the real Subscription it creates, not guessed here.
+        license_status=LicenseStatus.TRIAL,
         plan=body.plan_code or "trial",
-        licensed_modules=plan.modules if plan else [],
-        max_users=(plan.limits or {}).get("users", 5) if plan else 5,
-        trial_expires_at=trial_expires,
-        license_expires_at=license_expires,
+        licensed_modules=[],
+        max_users=5,
         is_active=license_status != LicenseStatus.SUSPENDED,
     )
     db.add(org)
     await db.flush()
 
-    from app.models.plan import BillingCycle
-    from app.models.seller import Seller
-    seller_row = (await db.execute(select(Seller).limit(1))).scalar_one_or_none()
-
-    sub = Subscription(
-        seller_id=seller_row.id if seller_row else None,
+    # Delegate the actual Subscription + CustomerModule entitlements +
+    # Invoice creation to subscription_service.create_subscription() — the
+    # single, already-correct implementation of this (reused, not
+    # duplicated, to avoid the exact "two divergent paths" bug class found
+    # live here before: a hand-rolled inline Subscription block in this
+    # function once created a Subscription with no CustomerModule rows at
+    # all, and separately never generated an invoice for a new customer).
+    # This also means new paid (non-trial) customers now correctly start
+    # PENDING — no module access — until a real payment is recorded; only
+    # a TRIAL request activates immediately (see create_subscription()'s
+    # own gating docstring).
+    from app.schemas.seller.subscriptions import CreateSubscriptionRequest
+    from app.services.seller import subscription_service
+    sub_body = CreateSubscriptionRequest(
         organization_id=org.id,
         plan_id=plan.id if plan else None,
-        status=SubscriptionStatus(license_status.value.upper()),
-        start_date=body.start_date or now,
+        status=SubscriptionStatus(license_status.value.upper()).value,
+        start_date=body.start_date,
         end_date=body.expiry_date,
-        billing_cycle=plan.billing_cycle if plan else BillingCycle.MONTHLY,
-        amount=plan.price if (plan and license_status != LicenseStatus.TRIAL) else 0.0,
-        currency=plan.currency if plan else "USD",
+        billing_cycle=(plan.billing_cycle.value if plan else "MONTHLY"),
+        amount=None,
+        currency=(plan.currency if plan else "USD"),
         auto_renew=False,
-        created_by=actor.id,
+        modules=(body.modules or []) if is_custom_plan else None,
     )
-    db.add(sub)
+    sub = await subscription_service.create_subscription(db, body=sub_body, actor=actor)
+    await db.refresh(org)
 
     temp_password = None
     admin_email = None
@@ -318,7 +388,12 @@ async def resend_admin_welcome_email(db: AsyncSession, org: Organization, actor:
 
 async def update_customer(db: AsyncSession, org: Organization, body, actor: User, ip_address: str | None = None) -> Organization:
     before = {"name": org.name, "industry": org.industry, "country": org.country}
-    for field in ("name", "legal_name", "industry", "country", "timezone", "primary_contact_name", "primary_contact_email", "primary_contact_phone", "max_users"):
+    for field in (
+        "name", "legal_name", "industry", "country", "timezone",
+        "primary_contact_name", "primary_contact_email", "primary_contact_phone",
+        "address_line", "city", "branch", "postal_code", "company_id",
+        "max_users",
+    ):
         value = getattr(body, field, None)
         if value is not None:
             setattr(org, field, value)

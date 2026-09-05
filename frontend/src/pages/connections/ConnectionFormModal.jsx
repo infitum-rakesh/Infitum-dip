@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
 import { Loader2, CheckCircle2, XCircle, AlertTriangle, PlayCircle, Pencil } from 'lucide-react';
 import { Button, Modal, StatusBadge, PermissionGate } from '@/components/common/index.js';
 import { CONNECTION_PERMISSIONS } from '@/utils/constants.js';
 import { formatDateTime } from '@/utils/formatters.js';
 import { usePermission } from '@/hooks/usePermission.js';
+import { AuthContext } from '@/context/AuthContext.jsx';
 import { connectionApi } from '@/services/api/connectionApi.js';
 import { DynamicConnectionFields } from './DynamicConnectionFields.jsx';
 
@@ -18,7 +19,25 @@ const ENVIRONMENTS = ['PRODUCTION', 'STAGING', 'DEVELOPMENT', 'TEST'];
  */
 export function ConnectionFormModal({ open, onClose, catalogue, category, connectionType, connection, startEditable, onSaved }) {
   const { can } = usePermission();
-  const canEditSecrets = can(CONNECTION_PERMISSIONS.CONNECTION_MANAGE_SECRET);
+  const { user } = useContext(AuthContext);
+  // MANAGE_SECRET (ADMIN tier) only gates *rotating* a secret on an
+  // existing connection someone else owns — CONNECTION_CREATE already
+  // covers typing in the initial password/key while creating a brand-new
+  // one, since there's no existing secret to protect yet, and the
+  // connection's own OWNER is exempted from the ADMIN-tier check below for
+  // the same reason: they already typed that secret in themselves at
+  // create time, so requiring ADMIN just to update it later isn't
+  // protecting anything from them — it was only ever meant to stop a
+  // *different*, lower-privileged user from rotating a credential they
+  // never had. Left ADMIN-only for every case, this made a connection's own
+  // creator permanently unable to ever update its password again (e.g. a
+  // rotated Fabric/NetSuite credential, a typo) unless a separate admin did
+  // it for them — reported live as "not able to set connection password in
+  // edit mode" while editing a Fabric connection as its own Data Engineer-
+  // role owner (the default trial-signup role — see QQ1 — which has EDIT
+  // but not ADMIN tier).
+  const isOwner = !!connection && !!user && connection.owner_id === user.id;
+  const canEditSecrets = !connection || isOwner ? true : can(CONNECTION_PERMISSIONS.CONNECTION_MANAGE_SECRET);
 
   const [name, setName] = useState('');
   const [environment, setEnvironment] = useState('DEVELOPMENT');

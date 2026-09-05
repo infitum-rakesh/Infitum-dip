@@ -21,7 +21,8 @@ const STATUS_VARIANT = { OPEN: 'gray', INVESTIGATING: 'info', MITIGATED: 'warnin
 const SOURCE_LABEL = {
   PIPELINE: 'Pipeline', CONNECTION: 'Connection', OCR: 'OCR', AI_EXTRACTION: 'AI Extraction',
   TRANSFORMATION: 'Transformation', VALIDATION: 'Validation', RECONCILIATION: 'Reconciliation',
-  SCHEDULE: 'Scheduled Job', DATA_QUALITY: 'Data Quality',
+  SCHEDULE: 'Scheduled Job', DATA_QUALITY: 'Data Quality', ANOMALY_DETECTION: 'Anomaly Detection',
+  INVOICE_ERP_POSTING: 'Invoice ERP Posting', INVOICE_RECONCILIATION: 'Invoice Reconciliation',
 };
 
 const EMPTY_FILTERS = { severity: 'All', status: 'All', source: 'All' };

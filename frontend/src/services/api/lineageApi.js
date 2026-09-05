@@ -20,6 +20,12 @@ export const lineageApi = {
 
   getColumnMappingLineage: (mappingId) => apiClient.get(`/lineage/column-mappings/${mappingId}`).then((r) => r.data),
 
+  // INV22 — real Document -> OCR -> AI/Custom-Engine extraction -> ApInvoice
+  // header/lines -> validation -> ERP mapping -> ERP posting ->
+  // reconciliation chain for one invoice (see backend graph.py's
+  // build_invoice_lineage()).
+  getInvoiceLineage: (invoiceId) => apiClient.get(`/lineage/invoices/${invoiceId}`).then((r) => r.data),
+
   getImpact: (params) => apiClient.get('/lineage/impact', { params }).then((r) => r.data),
 
   search: (q) => apiClient.get('/lineage/search', { params: { q } }).then((r) => r.data.items),
@@ -45,7 +51,11 @@ export const LINEAGE_NODE_META = {
   TRANSFORMATION: { icon: '🔀', color: '#F97316', bg: '#FFF7ED', label: 'Transformation' },
   VALIDATION: { icon: '✅', color: '#10B981', bg: '#ECFDF5', label: 'Validation' },
   RECONCILIATION: { icon: '⚖️', color: '#F97316', bg: '#FFF7ED', label: 'Reconciliation' },
+  ANOMALY_DETECTION: { icon: '🔎', color: '#8B5CF6', bg: '#F5F3FF', label: 'Anomaly Detection' },
   TARGET: { icon: '🎯', color: '#10B981', bg: '#ECFDF5', label: 'Target' },
+  // INV22 — Invoice Intelligence lineage node types.
+  INVOICE: { icon: '🧾', color: '#DC2626', bg: '#FEF2F2', label: 'Invoice' },
+  ERP_TRANSACTION: { icon: '📤', color: '#F97316', bg: '#FFF7ED', label: 'ERP Transaction' },
 };
 
 export const MAPPING_TYPE_LABELS = {

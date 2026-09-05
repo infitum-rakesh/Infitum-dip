@@ -20,6 +20,10 @@ import { PipelineCanvas }  from '@/components/pipeline/PipelineCanvas.jsx';
 import { PALETTE_GROUPS, NODE_TYPES, createNode, createEdge } from '@/components/pipeline/nodeTypes.js';
 import { SourceDatasetConfig } from '@/components/pipeline/SourceDatasetConfig.jsx';
 import { TargetDatasetConfig } from '@/components/pipeline/TargetDatasetConfig.jsx';
+import { AnomalyDetectionConfig } from '@/components/pipeline/AnomalyDetectionConfig.jsx';
+import { ColumnMappingConfig } from '@/components/pipeline/ColumnMappingConfig.jsx';
+import { InvoiceIntakeConfig } from '@/components/pipeline/InvoiceIntakeConfig.jsx';
+import { InvoiceErpPostingConfig } from '@/components/pipeline/InvoiceErpPostingConfig.jsx';
 import { Button } from '@/components/common/Button.jsx';
 import { pipelineVersionApi } from '@/services/api/pipelineApi.js';
 import { pipelineFileApi } from '@/services/api/pipelineFileApi.js';
@@ -158,7 +162,7 @@ function ConfigNotice({ children }) {
 
 // ── Node configuration panel — local draft, committed only on Apply ────
 
-function NodeConfigPanel({ node, onApply, onClose, pipelineId, pipelineDirty }) {
+function NodeConfigPanel({ node, onApply, onClose, pipelineId, pipelineDirty, nodes, edges }) {
   const [draft, setDraft] = useState(null); // { label, config }
 
   // Reset the draft whenever a DIFFERENT node is selected (not on every
@@ -234,7 +238,7 @@ function NodeConfigPanel({ node, onApply, onClose, pipelineId, pipelineDirty }) 
           {/* Target — Dataset (DB via BulkWriter) / File (local disk) /
               SFTP (real upload) / API (real batched POST/PUT/PATCH) */}
           {node.type === 'target' && (
-            <TargetDatasetConfig cfg={cfg} set={set} />
+            <TargetDatasetConfig cfg={cfg} set={set} nodeId={node.id} nodes={nodes} edges={edges} />
           )}
 
           {/* Filter */}
@@ -480,6 +484,19 @@ function NodeConfigPanel({ node, onApply, onClose, pipelineId, pipelineDirty }) 
             </>
           )}
 
+          {/* Anomaly Detection — real, job-referencing or inline (AD10) */}
+          {node.type === 'anomaly_detection_step' && (
+            <AnomalyDetectionConfig cfg={cfg} set={set} />
+          )}
+
+          {/* Column Mapping — real, references a saved PUBLISHED
+              ColumnMapping (id, version); resolved and applied for real
+              at execution time (execution/mapping_execution.py). Not the
+              unrelated inline `mapping` rename node above. */}
+          {node.type === 'column_mapping_step' && (
+            <ColumnMappingConfig cfg={cfg} set={set} pipelineId={pipelineId} nodeId={node.id} nodes={nodes} edges={edges} />
+          )}
+
           {/* Notification — only Webhook actually sends */}
           {node.type === 'notification' && (
             <>
@@ -612,6 +629,58 @@ function NodeConfigPanel({ node, onApply, onClose, pipelineId, pipelineDirty }) 
                 </select>
               </div>
             </>
+          )}
+
+          {/* Invoice Intake — real SFTP/FTP/Network File discovery */}
+          {node.type === 'invoice_intake' && (
+            <InvoiceIntakeConfig cfg={cfg} set={set} />
+          )}
+
+          {/* Invoice Processing — no config, real OCR+extraction per document */}
+          {node.type === 'invoice_processing' && (
+            <ConfigNotice>
+              No configuration — runs the real OCR + AI/Custom extraction chain (document_service.process_document()) on every document flowing in from Invoice Intake. Materialize/Validate/Decide happen downstream in Invoice Validation, not here.
+            </ConfigNotice>
+          )}
+
+          {/* Invoice Validation — no config, real materialize+validate+decide */}
+          {node.type === 'invoice_validation' && (
+            <ConfigNotice>
+              No configuration — runs the real materialize_invoice() → evaluate_invoice() → decide() chain per document, using this organization's current published validation rules (manage them in Invoice Intelligence → Settings → Rules) and the real Anomaly Detection check as part of decide()'s own decision matrix.
+            </ConfigNotice>
+          )}
+
+          {/* Review Gate — pure sync filter on the real decision outcome */}
+          {node.type === 'invoice_review_gate' && (
+            <>
+              <ConfigNotice>
+                A real filter — only rows whose decide() outcome (set by the upstream Invoice Validation node) is checked below continue past this node.
+              </ConfigNotice>
+              {['STRAIGHT_THROUGH', 'REVIEW_REQUIRED', 'REJECT', 'RETRY'].map((outcome) => {
+                const passOn = Array.isArray(cfg.passOn) ? cfg.passOn : ['STRAIGHT_THROUGH'];
+                return (
+                  <label className="pc-config-checkbox-row" key={outcome}>
+                    <input
+                      type="checkbox"
+                      checked={passOn.includes(outcome)}
+                      onChange={(e) => set('passOn', e.target.checked ? [...passOn, outcome] : passOn.filter((o) => o !== outcome))}
+                    /> {outcome.replaceAll('_', ' ')}
+                  </label>
+                );
+              })}
+            </>
+          )}
+
+          {/* ERP Posting — real idempotent post + settle-poll */}
+          {node.type === 'invoice_erp_posting' && (
+            <InvoiceErpPostingConfig cfg={cfg} set={set} />
+          )}
+
+          {/* Reconciliation — no config, real re-verification */}
+          {node.type === 'invoice_reconciliation' && (
+            <ConfigNotice>
+              No configuration — runs the real invoice_reconciliation_service.reconcile_invoice() field-by-field platform-vs-ERP comparison for every invoice that reached this node.
+            </ConfigNotice>
           )}
         </div>
       </div>
@@ -788,6 +857,8 @@ export function TransformationDesigner({ initialPipeline = null, onSaved = null 
         onClose={() => setSelectedId(null)}
         pipelineId={pipelineId}
         pipelineDirty={dirty}
+        nodes={pipeline.nodes}
+        edges={pipeline.edges}
       />
 
       {/* ── Version History drawer ── */}

@@ -38,7 +38,7 @@ PLAN_LABELS = {"trial": "Free Trial", "basic": "Basic", "professional": "Profess
 ALL_MODULES = [
     "DOCUMENT_INTELLIGENCE", "OCR", "AI_EXTRACTION", "TRANSFORMATION", "VALIDATION",
     "RECONCILIATION", "SQL_WORKSPACE", "DATA_CATALOG", "LINEAGE", "PIPELINE_SCHEDULER",
-    "OBSERVABILITY", "INCIDENTS",
+    "OBSERVABILITY", "INCIDENTS", "ANOMALY_DETECTION", "INVOICE_INTELLIGENCE",
 ]
 
 # module -> which PLAN_LIMITS resource its usage counts against, or None
@@ -56,6 +56,12 @@ MODULE_USAGE_RESOURCE: dict[str, str | None] = {
     "PIPELINE_SCHEDULER": None,
     "OBSERVABILITY": None,
     "INCIDENTS": None,
+    "ANOMALY_DETECTION": None,
+    # Invoices processed piggybacks on the existing "documents" counter
+    # (an invoice IS a Document under the hood — see
+    # services/invoice/invoice_processing_service.py) rather than
+    # inventing a second, overlapping usage metric.
+    "INVOICE_INTELLIGENCE": "documents",
 }
 
 

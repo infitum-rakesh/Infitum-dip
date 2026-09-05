@@ -38,6 +38,7 @@ from app.schemas.sql_workspace import (
     SqlPermissionsOut,
 )
 from app.services import role_service, sql_ai_service, sql_export_service, sql_workspace_service as svc
+from app.services.billing.access_service import access_service
 
 _ELEVATED_ROLES = (UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
 _SQL_WORKSPACE_MODULE = "SQL_WORKSPACE"
@@ -55,7 +56,20 @@ def require_sql_action(action: str):
     require_action() — that one only knows the platform's generic 6-action
     vocabulary shared across every module; this one speaks SQL Workspace's
     own granular actions (VIEW/EXECUTE/WRITE/DELETE/EXPORT/AI_ASSISTANT/
-    DDL/DML/PRODUCTION_ACCESS — see models/role.py)."""
+    DDL/DML/PRODUCTION_ACCESS — see models/role.py).
+
+    Multi-Subscription Billing & Payments Platform (2026): the license
+    check below now calls access_service.has_module_access() instead of
+    reading org.licensed_modules directly — same real, live,
+    multi-subscription-aware evaluation core.deps.require_action() uses.
+    `db` here is get_tenant_db's session; Subscription/CustomerModule/
+    Organization are PlatformBase tables, but per this file's existing
+    role_service.effective_sql_permissions() call two lines below (same
+    pattern, already relying on it), PlatformBase and TenantBase rows are
+    still colocated in one physical database today (no org has actually
+    cut over — see database/connection.py's init_db() docstring), so this
+    works correctly; it would need its own get_db() session if that ever
+    changes."""
     async def _checker(
         user: User = Depends(get_current_user),
         org: Organization | None = Depends(get_current_organization),
@@ -64,8 +78,10 @@ def require_sql_action(action: str):
         permissions = await role_service.effective_sql_permissions(db, user)
         if action not in permissions:
             raise HTTPException(status.HTTP_403_FORBIDDEN, f"Your SQL Workspace permissions don't include '{action}'.")
-        if org is not None and _SQL_WORKSPACE_MODULE not in (org.licensed_modules or []):
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "SQL Workspace is not licensed for your organization.")
+        if org is not None:
+            result = await access_service.has_module_access(db, org.id, _SQL_WORKSPACE_MODULE)
+            if not result.granted:
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "SQL Workspace is not licensed for your organization.")
         return user
     return _checker
 

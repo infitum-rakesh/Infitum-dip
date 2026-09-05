@@ -81,6 +81,14 @@
   min-width: 16px; text-align: center;
 }
 
+/* SB30 — a purchased-but-expired module: still a real nav link (clicking
+   it shows the real SubscriptionExpiredNotice on that page), just dimmed
+   with a lock icon instead of hidden like a never-purchased module. */
+.nav-item-locked { opacity: 0.55; }
+.nav-item-locked .nav-icon { opacity: 0.5; }
+.nav-item-locked:hover { opacity: 0.85; }
+.nav-lock-icon { flex-shrink: 0; opacity: 0.7; color: var(--color-warning, #D97706); }
+
 /* Collapsed nav */
 .sidebar-collapsed .nav-section-label,
 .sidebar-collapsed .nav-label,

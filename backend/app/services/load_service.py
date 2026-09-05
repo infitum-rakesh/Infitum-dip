@@ -4,6 +4,17 @@ saved ColumnMapping into a TargetLoadRun row and answers status/metrics
 queries. The actual load work happens in execution/load_executor.py,
 kicked off as a background asyncio task from the API route — this module
 never blocks on it, same split as execution_service.py/Phase 3.
+
+CM4 — version-pinning: a run's `mapping_version` is resolved and pinned
+ONCE here, at start time, to the mapping's effective version (current
+published, else latest — see mapping_service.get_effective_mappings()'s
+docstring for why Run Load stays unblocked by the publish concept unlike
+the stricter Pipeline Builder attach path). load_executor.py then reads
+that exact pinned ColumnMappingVersion, never anything "current" at
+execute time — so a mapping edited/republished after this run started
+can never change what this run actually loads, matching "never silently
+change production mappings" for the Run Load path exactly as CM1-CM3
+already did for Pipeline Builder.
 """
 from __future__ import annotations
 
@@ -15,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.execution import load_executor
 from app.models.column_mapping import ColumnMapping
 from app.models.target_load_run import LoadStatus, TargetLoadRun, WriteMode
+from app.services import mapping_service
 
 
 class LoadValidationError(Exception):
@@ -30,9 +42,15 @@ async def create_load(
     create_table: bool = False, recreate_table: bool = False,
     worker_count: int | None = None, partition_count: int | None = None,
 ) -> TargetLoadRun:
-    if not mapping.mappings:
+    version = await mapping_service.get_effective_mappings(db, mapping)
+    if version is None or not version.mappings:
         raise LoadValidationError("This mapping has no column mapping rows to load — add at least one in the Mapping page first.")
-    if mapping.status == "CONFLICT":
+    if version.status == "RETIRED":
+        raise LoadValidationError("This mapping's effective version has been retired — publish a new version before running a load.")
+    # A version's own persisted validation_result (from the last real
+    # Validate call, CM2's run_validate_version()) is the source of truth
+    # for "unresolved conflicts" now, not the header's legacy status field.
+    if version.validation_result and version.validation_result.get("overall_status") == "CONFLICT":
         raise LoadValidationError("This mapping has unresolved conflicts (see Validate) — fix them before running a load.")
 
     try:
@@ -43,6 +61,7 @@ async def create_load(
     run = TargetLoadRun(
         organization_id=organization_id,
         mapping_id=mapping.id,
+        mapping_version=version.version_number,
         write_mode=mode,
         chunk_size=chunk_size or DEFAULT_CHUNK_SIZE,
         create_table=create_table,

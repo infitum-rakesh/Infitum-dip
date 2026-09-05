@@ -76,7 +76,7 @@ function ParamList({ cfg, set, cfgKey, addLabel }) {
   );
 }
 
-export function TargetDatasetConfig({ cfg, set, sourceColumns = [] }) {
+export function TargetDatasetConfig({ cfg, set, sourceColumns = [], nodeId, nodes = [], edges = [] }) {
   const [connections, setConnections] = useState([]);
   const [connectionsLoading, setConnectionsLoading] = useState(true);
   const targetType = cfg.targetType ?? 'dataset';
@@ -142,7 +142,7 @@ export function TargetDatasetConfig({ cfg, set, sourceColumns = [] }) {
             <label className="pc-config-label">Dataset name</label>
             <input className="pc-config-input" value={cfg.datasetName ?? ''} onChange={(e) => set('datasetName', e.target.value)} placeholder="e.g. INVOICE_DATASET" />
           </div>
-          <LoadStrategyConfig cfg={cfg} set={set} sourceColumns={sourceColumns} />
+          <LoadStrategyConfig cfg={cfg} set={set} sourceColumns={sourceColumns} nodeId={nodeId} nodes={nodes} edges={edges} />
         </>
       )}
 

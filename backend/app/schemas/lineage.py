@@ -28,6 +28,16 @@ class PipelineLineageOut(BaseModel):
     edges: list[LineageEdgeOut]
 
 
+class InvoiceLineageOut(BaseModel):
+    """INV22 — the real Document -> OCR -> AI/Custom-Engine extraction ->
+    ApInvoice header/lines -> validation -> ERP mapping -> ERP posting ->
+    reconciliation chain for one specific invoice. See
+    lineage/graph.py::build_invoice_lineage()."""
+    invoice: dict[str, Any]
+    nodes: list[LineageNodeOut]
+    edges: list[LineageEdgeOut]
+
+
 class PipelineVersionOut(BaseModel):
     version_number: int
     is_current: bool

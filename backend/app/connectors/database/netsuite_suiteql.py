@@ -59,6 +59,44 @@ except ImportError:  # pragma: no cover - pyodbc is in requirements.txt; guarded
 
 _ALLOWED_PREVIEW_PREFIXES = ("select", "with")
 
+# NetSuite's SuiteAnalytics Connect ODBC driver reports its native (Oracle-
+# derived) type names via cursor.columns().type_name — most commonly the
+# generic Oracle "NUMBER" for every numeric column (integer or decimal
+# alike) rather than a SQL-standard INTEGER/DECIMAL/NUMERIC name. Bug
+# report: "when created table based on netsuite data then it seems most
+# column datatype consider as clob even for integer column" — root cause
+# is exactly this: loading/writers/base.py's _sa_type_for_column_info()
+# only recognizes SQL-standard type-name substrings (int/decimal/numeric/
+# ...), so a bare "NUMBER" (and "FLOAT", NetSuite's other common native
+# numeric alias) matched none of them and fell through to its safe-default
+# Text()/CLOB. Normalizing NetSuite's native type name to a SQL-standard
+# one here — using the ODBC driver's own decimal_digits (scale) to tell
+# a real integer NUMBER(p,0) apart from a decimal NUMBER(p,s) — fixes it
+# at the source without loosening that mapper's matching for every other
+# connector that already reports standard type names correctly.
+_NETSUITE_NATIVE_NUMERIC_TYPES = {"number", "float"}
+
+
+def _column_info_from_odbc_row(row, pk_cols: set) -> ColumnInfo:
+    type_name = str(row.type_name or "unknown").strip()
+    decimal_digits = getattr(row, "decimal_digits", None)
+    column_size = getattr(row, "column_size", None)
+    if type_name.lower() in _NETSUITE_NATIVE_NUMERIC_TYPES:
+        type_name = "integer" if not decimal_digits else "decimal"
+    max_length = None
+    if type_name.lower() not in _NETSUITE_NATIVE_NUMERIC_TYPES and isinstance(column_size, int) and 0 < column_size <= 4000:
+        # Only meaningful for string-ish types — a numeric column's
+        # column_size is its precision (digit count), not a character
+        # length, so it's deliberately left as None for those above.
+        max_length = column_size
+    return ColumnInfo(
+        name=row.column_name,
+        data_type=type_name,
+        nullable=bool(row.nullable),
+        primary_key=row.column_name in pk_cols,
+        max_length=max_length,
+    )
+
 
 class NetSuiteSuiteQlConnector(BaseConnector):
     connection_type = "NETSUITE_SUITEQL"
@@ -154,12 +192,7 @@ class NetSuiteSuiteQlConnector(BaseConnector):
                 pass  # not every NetSuite "table" (saved-search-backed views especially) exposes a PK
             columns = []
             for row in cursor.columns(table=object_name, schema=schema):
-                columns.append(ColumnInfo(
-                    name=row.column_name,
-                    data_type=str(row.type_name or "unknown"),
-                    nullable=bool(row.nullable),
-                    primary_key=row.column_name in pk_cols,
-                ))
+                columns.append(_column_info_from_odbc_row(row, pk_cols))
             return columns
         except pyodbc.Error as exc:
             raise ConnectorError(self._scrub(f"Could not read columns for {object_name}: {exc}")) from exc
@@ -274,7 +307,17 @@ class NetSuiteSuiteQlConnector(BaseConnector):
         finally:
             conn.close()
 
-    def open_sql_stream(self, sql: str, parameters: dict) -> SqlStream:
+    def open_sql_stream(self, sql: str, parameters: dict, *, extraction_mode: str | None = None) -> SqlStream:
+        # extraction_mode (BULK/AUTO/ROW_BY_ROW) is a Salesforce-only
+        # concept (see SalesforceConnector.open_sql_stream) — accepted here
+        # only for interface compatibility with the generic caller in
+        # pipeline_job_executor.py (which always passes it as a keyword
+        # argument) and otherwise ignored; NetSuite's ODBC driver has no
+        # equivalent mode to switch on. Omitting this parameter (as this
+        # override originally did) raised "open_sql_stream() got an
+        # unexpected keyword argument 'extraction_mode'" the moment a
+        # Custom Query Source Dataset ran against a NetSuite connection —
+        # found live running a real pipeline.
         stripped = (sql or "").strip()
         if not stripped:
             raise ConnectorValidationError("SQL text is empty.")

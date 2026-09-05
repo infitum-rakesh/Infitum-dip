@@ -50,20 +50,39 @@ export const connectionApi = {
   // All hit the live source. A 501 means this connection type has no
   // working connector yet (see connectors/registry.py UNVERIFIED) —
   // callers should surface that message as-is, not retry or hide it.
+  //
+  // BROWSE_TIMEOUT overrides apiClient's default 30s Axios timeout for
+  // these five calls only. The backend itself imposes no timeout on
+  // list_schemas/list_objects/get_columns/preview (see
+  // connection_service.py — each just awaits asyncio.to_thread(...) with
+  // no wait_for wrapped around it), so for a local Postgres/MySQL/SQL
+  // Server 30s was already generous — but NetSuite's SuiteAnalytics
+  // Connect ODBC driver (and, similarly, Salesforce/REST/SOAP) is a real
+  // cloud round trip that can legitimately take well over 30s, especially
+  // cursor.tables() scanning every standard + custom record type on the
+  // first schema load. Without this override, Axios's client-side timeout
+  // fires before NetSuite ever answers and apiClient.js's normaliseError()
+  // reports it as "No response from server. Check your connection." —
+  // indistinguishable in the UI from an actual network failure, even
+  // though the backend was still working. Found live against a real
+  // NetSuite account. 120s is generous without being unbounded, matching
+  // the upper end of SQL Workspace's own configurable execution timeout.
+  BROWSE_TIMEOUT: 120_000,
 
-  getSchemas: (id) => apiClient.get(`/connections/${id}/schemas`).then((r) => r.data),
+  getSchemas: (id) => apiClient.get(`/connections/${id}/schemas`, { timeout: connectionApi.BROWSE_TIMEOUT }).then((r) => r.data),
 
   /** params: { schema, q } */
-  getObjects: (id, params = {}) => apiClient.get(`/connections/${id}/objects`, { params: cleanParams(params) }).then((r) => r.data),
+  getObjects: (id, params = {}) =>
+    apiClient.get(`/connections/${id}/objects`, { params: cleanParams(params), timeout: connectionApi.BROWSE_TIMEOUT }).then((r) => r.data),
 
   /** params: { schema, include_row_count } */
   getColumns: (id, objectName, params = {}) =>
-    apiClient.get(`/connections/${id}/objects/${encodeURIComponent(objectName)}/columns`, { params: cleanParams(params) }).then((r) => r.data),
+    apiClient.get(`/connections/${id}/objects/${encodeURIComponent(objectName)}/columns`, { params: cleanParams(params), timeout: connectionApi.BROWSE_TIMEOUT }).then((r) => r.data),
 
   /** body: { schema_name, object_name, limit } OR { sql, parameters, limit } */
-  preview: (id, body) => apiClient.post(`/connections/${id}/preview`, body).then((r) => r.data),
+  preview: (id, body) => apiClient.post(`/connections/${id}/preview`, body, { timeout: connectionApi.BROWSE_TIMEOUT }).then((r) => r.data),
 
   /** Real REST API preview — body: { endpoint, method, query_params, headers, json_path, pagination, limit }.
    * See backend/app/connectors/api/rest.py — genuinely paginates. */
-  previewApi: (id, body) => apiClient.post(`/connections/${id}/preview-api`, body).then((r) => r.data),
+  previewApi: (id, body) => apiClient.post(`/connections/${id}/preview-api`, body, { timeout: connectionApi.BROWSE_TIMEOUT }).then((r) => r.data),
 };

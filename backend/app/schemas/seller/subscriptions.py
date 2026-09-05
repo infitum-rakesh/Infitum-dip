@@ -68,6 +68,9 @@ class SubscriptionListItem(BaseModel):
     currency: str
     auto_renew: bool
     created_at: datetime
+    # SB28 — status of this subscription's most recent Invoice (its
+    # real payment state), None when it has never had one billed yet.
+    payment_status: str | None = None
 
 
 class SubscriptionListOut(BaseModel):
@@ -81,9 +84,16 @@ class SubscriptionOut(BaseModel):
     id: int
     organization_id: int
     plan_id: int | None
+    pending_plan_id: int | None = None
     status: str
     start_date: datetime
     end_date: datetime | None
+    trial_start_date: datetime | None = None
+    trial_end_date: datetime | None = None
+    current_period_start: datetime | None = None
+    current_period_end: datetime | None = None
+    next_billing_date: datetime | None = None
+    cancelled_at: datetime | None = None
     billing_cycle: str
     amount: float
     currency: str
@@ -94,16 +104,32 @@ class SubscriptionOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SubscriptionModuleOut(BaseModel):
+    module: str
+    status: str
+    enabled: bool
+    expiry_date: datetime | None = None
+
+
+class SubscriptionModulesOut(BaseModel):
+    subscription_id: int
+    items: list[SubscriptionModuleOut]
+
+
 class CreateSubscriptionRequest(BaseModel):
     organization_id: int
     plan_id: int | None = None
-    status: str = "TRIAL"  # one of SubscriptionStatus values: TRIAL|ACTIVE|EXPIRING|EXPIRED|SUSPENDED|CANCELLED
+    status: str = "TRIAL"  # one of SubscriptionStatus values: TRIAL|PENDING|ACTIVE|EXPIRING|PAST_DUE|PAYMENT_PENDING|EXPIRED|SUSPENDED|CANCELLED|TERMINATED
     start_date: datetime | None = None
     end_date: datetime | None = None
     billing_cycle: str = "MONTHLY"
     amount: float | None = None
     currency: str | None = None
     auto_renew: bool = False
+    # Extra modules beyond the plan's own list (or the full module set for
+    # a plan-less/custom subscription) — unioned with plan.modules, never
+    # replaces it. See services/seller/subscription_service.create_subscription().
+    modules: list[str] | None = None
 
 
 class UpdateSubscriptionRequest(BaseModel):
@@ -116,3 +142,23 @@ class UpdateSubscriptionRequest(BaseModel):
 
 class ChangePlanRequest(BaseModel):
     plan_id: int
+    # "immediate" (default) or "period_end" (spec section 37 — downgrades
+    # only; an upgrade always applies immediately regardless of this flag).
+    effective: str = "immediate"
+
+
+class ExtendSubscriptionRequest(BaseModel):
+    days: int = 30
+
+
+class AddModuleRequest(BaseModel):
+    organization_id: int
+    module: str
+    # None = price from the module price catalog (Settings -> Module
+    # Prices) — see subscription_service.add_module(). Pass an explicit
+    # value only to override that catalog price for this one grant.
+    amount: float | None = None
+    currency: str = "USD"
+    billing_cycle: str = "MONTHLY"
+    auto_renew: bool = False
+    end_date: datetime | None = None

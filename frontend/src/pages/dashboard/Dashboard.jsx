@@ -7,8 +7,11 @@
  */
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { BarChart3, FileSearch, ShieldCheck, Activity, GitBranch, AlertTriangle } from 'lucide-react';
+import { BarChart3, FileSearch, ShieldCheck, Activity, GitBranch, AlertTriangle, CheckCircle2, Clock, XCircle, Receipt, Wallet, CalendarClock, Eye, AlertOctagon } from 'lucide-react';
 import { dashboardApi } from '@/services/api/dashboardApi.js';
+import { billingApi } from '@/services/api/billingApi.js';
+import { useAccessSummary } from '@/context/AccessSummaryContext.jsx';
+import { useAuth } from '@/hooks/useAuth.js';
 import './dashboard.css';
 
 const STATUS_VARIANTS = { SUCCEEDED: 'success', FAILED: 'danger', RUNNING: 'info', PENDING: 'info', CANCELLED: 'warning' };
@@ -19,9 +22,25 @@ function fmtTrend(v) { return v == null ? null : `${v > 0 ? '+' : ''}${v}%`; }
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const { organization } = useAuth();
+  const { summary: accessSummary } = useAccessSummary();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  // SB30 — Subscription Status widgets: real counts from GET /access/
+  // modules-summary + real outstanding-invoice totals from GET /billing/
+  // invoices, org-scoped only (Seller/Super Admin see no organization).
+  const [billingSummary, setBillingSummary] = useState(null);
+  useEffect(() => {
+    if (!organization) return;
+    billingApi.listInvoices({ status: 'PAYMENT_PENDING', page_size: 100 })
+      .then((d) => {
+        const total = d.items.reduce((sum, inv) => sum + (inv.total || 0), 0);
+        setBillingSummary({ count: d.total, total, currency: d.items[0]?.currency || 'USD' });
+      })
+      .catch(() => setBillingSummary(null));
+  }, [organization]);
 
   useEffect(() => {
     dashboardApi.get()
@@ -79,6 +98,86 @@ export default function Dashboard() {
                 </div>
               );
             })}
+          </div>
+
+          {/* SB30 — Subscription Status widgets: real Active/Expiring/
+              Expired module counts + real outstanding-invoice total, org-
+              scoped only. Hidden for Seller/Super Admin (no organization). */}
+          {organization && (
+            <div className="card" style={{ marginBottom: 20 }}>
+              <div className="card-header">
+                <div>
+                  <div className="card-title">Subscription Status</div>
+                  <div className="card-subtitle">Your organization's real module entitlements and outstanding invoices</div>
+                </div>
+                <button className="db-action-btn secondary" style={{ fontSize: 12 }} onClick={() => navigate('/app/billing')}>View Billing</button>
+              </div>
+              <div className="db-sub-widgets">
+                <div className="db-sub-widget">
+                  <div className="db-sub-widget-icon db-sub-widget-icon-success"><CheckCircle2 size={16} /></div>
+                  <div className="db-sub-widget-val">{accessSummary.active_modules.length}</div>
+                  <div className="db-sub-widget-label">Active Modules</div>
+                </div>
+                <div className="db-sub-widget">
+                  <div className="db-sub-widget-icon db-sub-widget-icon-warning"><Clock size={16} /></div>
+                  <div className="db-sub-widget-val">{accessSummary.expiring_modules.length}</div>
+                  <div className="db-sub-widget-label">Expiring Soon</div>
+                </div>
+                <div className="db-sub-widget">
+                  <div className="db-sub-widget-icon db-sub-widget-icon-danger"><XCircle size={16} /></div>
+                  <div className="db-sub-widget-val">{Object.keys(accessSummary.expired_modules).length}</div>
+                  <div className="db-sub-widget-label">Expired Modules</div>
+                </div>
+                <div className="db-sub-widget">
+                  <div className="db-sub-widget-icon db-sub-widget-icon-info"><Receipt size={16} /></div>
+                  <div className="db-sub-widget-val">{billingSummary?.count ?? '—'}</div>
+                  <div className="db-sub-widget-label">Pending Payments</div>
+                </div>
+                <div className="db-sub-widget">
+                  <div className="db-sub-widget-icon db-sub-widget-icon-info"><Wallet size={16} /></div>
+                  <div className="db-sub-widget-val">
+                    {billingSummary ? new Intl.NumberFormat('en-US', { style: 'currency', currency: billingSummary.currency, maximumFractionDigits: 0 }).format(billingSummary.total) : '—'}
+                  </div>
+                  <div className="db-sub-widget-label">Outstanding Invoices</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Scheduled Document Intelligence Workflow — real counts off
+              DocumentScheduleConfig/DocumentSourceRegistry (see
+              dashboard_service.py). Same tables the Schedules module's
+              Document Source runs write to; no separate rollup. */}
+          <div className="card" style={{ marginBottom: 20 }}>
+            <div className="card-header">
+              <div>
+                <div className="card-title">Scheduled Document Processing</div>
+                <div className="card-subtitle">Documents discovered and processed by Document Source schedules</div>
+              </div>
+              <button className="db-action-btn secondary" style={{ fontSize: 12 }} onClick={() => navigate('/app/schedules')}>View Schedules</button>
+            </div>
+            <div className="db-sub-widgets">
+              <div className="db-sub-widget">
+                <div className="db-sub-widget-icon db-sub-widget-icon-info"><CalendarClock size={16} /></div>
+                <div className="db-sub-widget-val">{m.active_document_schedules}</div>
+                <div className="db-sub-widget-label">Active Document Schedules</div>
+              </div>
+              <div className="db-sub-widget">
+                <div className="db-sub-widget-icon db-sub-widget-icon-success"><CheckCircle2 size={16} /></div>
+                <div className="db-sub-widget-val">{m.scheduled_docs_today}</div>
+                <div className="db-sub-widget-label">Processed Today</div>
+              </div>
+              <div className="db-sub-widget">
+                <div className="db-sub-widget-icon db-sub-widget-icon-warning"><Eye size={16} /></div>
+                <div className="db-sub-widget-val">{m.scheduled_docs_review_required}</div>
+                <div className="db-sub-widget-label">Awaiting Review</div>
+              </div>
+              <div className="db-sub-widget">
+                <div className="db-sub-widget-icon db-sub-widget-icon-danger"><AlertOctagon size={16} /></div>
+                <div className="db-sub-widget-val">{m.scheduled_docs_failed_today}</div>
+                <div className="db-sub-widget-label">Failed Today</div>
+              </div>
+            </div>
           </div>
 
           {/* Recent runs */}

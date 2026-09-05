@@ -13,9 +13,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronRight, ChevronDown, Table2, Eye, Loader2, Search, X,
-  MoreVertical, KeyRound, Link2, Copy, FilePlus2, Code2,
+  MoreVertical, KeyRound, Link2, Copy, FilePlus2, Code2, AlertTriangle,
 } from 'lucide-react';
 import { connectionApi } from '@/services/api/connectionApi.js';
+
+// apiClient's response interceptor normalises Axios/FastAPI errors into
+// { status, message, data } (see services/api/apiClient.js) — this is the
+// same fallback convention SourceDatasetConfig.jsx's apiErrorMessage() uses.
+function apiErrorMessage(err, fallback) {
+  return err?.message || fallback;
+}
 
 function debounce(fn, ms) {
   let t;
@@ -249,14 +256,16 @@ function ObjectRow({
 
 function SchemaGroup({ connectionId, schemaName, expanded, onToggleSchema, cache, onLoaded, ...objectProps }) {
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
   const objects = cache[schemaName];
 
   useEffect(() => {
     if (!expanded || objects) return;
     setLoading(true);
+    setError('');
     connectionApi.getObjects(connectionId, { schema: schemaName })
       .then((r) => onLoaded(schemaName, r.items))
-      .catch(() => onLoaded(schemaName, []))
+      .catch((err) => setError(apiErrorMessage(err, 'Could not load tables/views.')))
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expanded]);
@@ -274,7 +283,8 @@ function SchemaGroup({ connectionId, schemaName, expanded, onToggleSchema, cache
       {expanded && (
         <div className="sqlw-exp-schema-body">
           {loading && <div className="sqlw-tree-empty small"><Loader2 size={12} className="sqlw-spin" /> Loading objects…</div>}
-          {!loading && objects && objects.length === 0 && <div className="sqlw-tree-empty small">No tables/views.</div>}
+          {!loading && error && <div className="sqlw-banner error small"><AlertTriangle size={12} /> {error}</div>}
+          {!loading && !error && objects && objects.length === 0 && <div className="sqlw-tree-empty small">No tables/views.</div>}
           {!loading && tables.length > 0 && (
             <div className="sqlw-exp-group">
               <div className="sqlw-exp-group-label">Tables ({tables.length})</div>
@@ -342,6 +352,7 @@ function SearchResults({ connectionId, schemas, query, ...objectProps }) {
 export default function DatabaseExplorer({ connectionId, onInsertSql, onPreviewObject, connectionType }) {
   const [schemas, setSchemas] = useState([]);
   const [loadingSchemas, setLoadingSchemas] = useState(false);
+  const [schemasError, setSchemasError] = useState('');
   const [expandedSchema, setExpandedSchema] = useState(null);
   const [objectsCache, setObjectsCache] = useState({});
   const [searchInput, setSearchInput] = useState('');
@@ -366,14 +377,15 @@ export default function DatabaseExplorer({ connectionId, onInsertSql, onPreviewO
   // session, matching what most SQL IDEs do (explicit refresh, not an
   // implicit one on every statement).
   useEffect(() => {
-    setSchemas([]); setExpandedSchema(null); setObjectsCache({}); setSearchInput(''); setSearch('');
+    setSchemas([]); setSchemasError(''); setExpandedSchema(null); setObjectsCache({}); setSearchInput(''); setSearch('');
     if (!connectionId) return;
     setLoadingSchemas(true);
     connectionApi.getSchemas(connectionId).then((r) => {
       setSchemas(r.schemas);
       if (r.schemas.length === 1) setExpandedSchema(r.schemas[0]);
       if (r.schemas.length === 0) setExpandedSchema(null); // flat-namespace connector (e.g. Salesforce) — objects load directly
-    }).catch(() => setSchemas([])).finally(() => setLoadingSchemas(false));
+    }).catch((err) => setSchemasError(apiErrorMessage(err, 'Could not load schemas for this connection.')))
+      .finally(() => setLoadingSchemas(false));
   }, [connectionId]);
 
   const objectProps = {
@@ -386,6 +398,7 @@ export default function DatabaseExplorer({ connectionId, onInsertSql, onPreviewO
     return <div className="sqlw-tree-empty">Select a connection to browse its schema.</div>;
   }
   if (loadingSchemas) return <div className="sqlw-tree-empty"><Loader2 size={14} className="sqlw-spin" /> Loading schemas…</div>;
+  if (schemasError) return <div className="sqlw-banner error small" style={{ margin: 10 }}><AlertTriangle size={12} /> {schemasError}</div>;
 
   return (
     <div className="sqlw-explorer">

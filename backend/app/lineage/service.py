@@ -70,6 +70,11 @@ async def get_column_mapping_lineage(db: AsyncSession, mapping_id: int, organiza
     return await graph_mod.get_column_mapping_lineage(db, mapping_id, organization_id)
 
 
+async def get_invoice_lineage(db: AsyncSession, invoice_id: int, organization_id: int | None) -> dict | None:
+    """INV22 — see graph_mod.build_invoice_lineage()'s own docstring."""
+    return await graph_mod.build_invoice_lineage(db, invoice_id, organization_id)
+
+
 async def list_column_mappings(db: AsyncSession, organization_id: int | None) -> list[dict]:
     rows = await graph_mod.list_column_mappings_for_search(db, organization_id)
     return [{"id": m.id, "name": m.name, "source_object": m.source_object, "target_object": m.target_object, "status": m.status} for m in rows]

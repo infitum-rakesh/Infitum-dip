@@ -12,7 +12,7 @@ white-label resellers), it's just that no seller-switching UI exists yet.
 """
 from datetime import datetime
 
-from sqlalchemy import String, DateTime, JSON, Integer, func
+from sqlalchemy import String, DateTime, JSON, Integer, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.connection import PlatformBase
@@ -27,8 +27,21 @@ class Seller(PlatformBase):
     support_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     billing_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     website: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Multi-Subscription Billing & Payments Platform (2026) spec section 46 —
+    # configurable Sales contact used by expired-subscription messaging
+    # ("Please contact Sales at ...") instead of any hardcoded seller info.
+    sales_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sales_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    sales_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    sales_contact_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # {logo_url, primary_color} — Seller Settings -> Branding (Phase 9)
     branding: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Uploaded signature image (base64 data: URI), same convention as
+    # models/company.py's Company.digital_signature — stamped on every
+    # invoice PDF alongside the invoice's assigned Company's own signature
+    # (see services/billing/invoice_pdf.py). This is the platform Seller's
+    # signature, shown regardless of which Company issued the invoice.
+    digital_signature: Mapped[str | None] = mapped_column(Text, nullable=True)
     default_trial_days: Mapped[int] = mapped_column(Integer, default=14)
     # {host, port, username, password_encrypted, from_address, use_tls} —
     # Seller Settings -> Email. password_encrypted is Fernet-encrypted via

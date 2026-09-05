@@ -30,7 +30,11 @@ def to_out(seller: Seller) -> dict:
     return {
         "id": seller.id, "name": seller.name, "legal_name": seller.legal_name,
         "support_email": seller.support_email, "billing_email": seller.billing_email,
-        "website": seller.website, "branding": seller.branding,
+        "website": seller.website,
+        "sales_contact_name": seller.sales_contact_name, "sales_email": seller.sales_email,
+        "sales_phone": seller.sales_phone, "sales_url": seller.sales_url,
+        "branding": seller.branding,
+        "digital_signature": seller.digital_signature,
         "default_trial_days": seller.default_trial_days,
         "smtp": {
             "host": smtp.get("host"), "port": smtp.get("port"), "username": smtp.get("username"),
@@ -56,13 +60,14 @@ async def get_settings(db: AsyncSession) -> Seller:
 
 async def update_settings(db: AsyncSession, seller: Seller, body, actor: User, ip_address: str | None = None) -> Seller:
     provided = body.model_fields_set
-    before = {
-        "name": seller.name, "legal_name": seller.legal_name, "support_email": seller.support_email,
-        "billing_email": seller.billing_email, "website": seller.website, "branding": seller.branding,
-        "default_trial_days": seller.default_trial_days,
-    }
+    tracked_fields = (
+        "name", "legal_name", "support_email", "billing_email", "website",
+        "sales_contact_name", "sales_email", "sales_phone", "sales_url",
+        "branding", "digital_signature", "default_trial_days",
+    )
+    before = {field: getattr(seller, field) for field in tracked_fields}
     changed = []
-    for field in ("name", "legal_name", "support_email", "billing_email", "website", "branding", "default_trial_days"):
+    for field in tracked_fields:
         if field in provided:
             new_value = getattr(body, field)
             if new_value != getattr(seller, field):
@@ -75,11 +80,7 @@ async def update_settings(db: AsyncSession, seller: Seller, body, actor: User, i
     await db.commit()
     await db.refresh(seller)
 
-    after = {
-        "name": seller.name, "legal_name": seller.legal_name, "support_email": seller.support_email,
-        "billing_email": seller.billing_email, "website": seller.website, "branding": seller.branding,
-        "default_trial_days": seller.default_trial_days,
-    }
+    after = {field: getattr(seller, field) for field in tracked_fields}
     await record_seller_event(
         db, seller_user_id=actor.id, customer_id=None, action="Seller Settings Updated",
         resource=seller.name, resource_id=str(seller.id), ip_address=ip_address,

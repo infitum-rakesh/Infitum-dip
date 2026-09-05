@@ -60,10 +60,23 @@ class FtpConnector(FileConnectorBase):
     connection_type = "FTP"
 
     def _base_path(self) -> str:
-        return self.config.get("base_path") or "/"
+        # Deliberately NOT "/" by default. A real FTP login doesn't
+        # necessarily land in a chrooted virtual root — vsftpd (and many
+        # real-world deployments) leave the user in their actual home
+        # directory (e.g. /ftp/testuser) and resolve an absolute "/" as
+        # the true filesystem root instead, which the account can't read
+        # from — confirmed live against delfer/alpine-ftp-server: RETR
+        # on an absolute path 550s while the same file resolves fine
+        # relative to the post-login cwd. Blank means "wherever login
+        # dropped us" — mlsd("")/LIST ""/CWD are all valid no-op-path
+        # forms for "current directory" per RFC 959/3659, so this stays
+        # correct for chrooted servers too. An explicit base_path is
+        # still honored for servers that need one.
+        return self.config.get("base_path") or ""
 
     def _resolve_path(self, object_name: str) -> str:
-        return f"{self._base_path().rstrip('/')}/{object_name}"
+        base = self._base_path().rstrip("/")
+        return f"{base}/{object_name}" if base else object_name
 
     def _connect(self) -> FTP:
         ftp = FTP(timeout=DEFAULT_TIMEOUT)
@@ -77,7 +90,9 @@ class FtpConnector(FileConnectorBase):
         try:
             ftp = self._connect()
             welcome = ftp.getwelcome()
-            ftp.cwd(self._base_path())
+            base = self._base_path()
+            if base:
+                ftp.cwd(base)
             latency_ms = round((time.monotonic() - start) * 1000, 1)
             return ConnectionTestResult(True, "Connection successful.", latency_ms, server_version=welcome)
         except Exception as exc:
@@ -89,7 +104,22 @@ class FtpConnector(FileConnectorBase):
                 except Exception:
                     ftp.close()
 
-    def list_files(self, pattern: str | None = None) -> list[FileInfo]:
+    def _mlsd_recursive(self, ftp: FTP, base: str, relative_prefix: str) -> list[tuple[str, dict]]:
+        """Real recursive walk via MLSD (Scheduled Document Intelligence
+        Workflow — spec "recursive scan" option), one MLSD round trip per
+        directory. Returns (name_relative_to_base, facts) pairs."""
+        out = []
+        for name, facts in ftp.mlsd(base):
+            if name in (".", ".."):
+                continue
+            child_relative = f"{relative_prefix}{name}"
+            if facts.get("type") == "dir":
+                out.extend(self._mlsd_recursive(ftp, f"{base.rstrip('/')}/{name}", f"{child_relative}/"))
+            elif facts.get("type") == "file":
+                out.append((child_relative, facts))
+        return out
+
+    def list_files(self, pattern: str | None = None, recursive: bool = False) -> list[FileInfo]:
         ftp = self._connect()
         try:
             base = self._base_path()
@@ -98,17 +128,15 @@ class FtpConnector(FileConnectorBase):
             regex = re.compile(effective_pattern[3:]) if is_regex else None
 
             try:
-                entries = list(ftp.mlsd(base))
+                entries = self._mlsd_recursive(ftp, base, "") if recursive else [
+                    (name, facts) for name, facts in ftp.mlsd(base) if name not in (".", "..") and facts.get("type") == "file"
+                ]
             except error_perm:
-                return self._list_files_via_list(ftp, base, effective_pattern, is_regex, regex)
+                return self._list_files_via_list(ftp, base, effective_pattern, is_regex, regex, recursive)
 
             results = []
-            for name, facts in entries:
-                if name in (".", ".."):
-                    continue
-                if facts.get("type") != "file":
-                    continue
-                matched = regex.search(name) if is_regex else fnmatch.fnmatch(name, effective_pattern)
+            for display_name, facts in entries:
+                matched = regex.search(display_name) if is_regex else fnmatch.fnmatch(display_name, effective_pattern)
                 if not matched:
                     continue
                 modified = None
@@ -119,7 +147,7 @@ class FtpConnector(FileConnectorBase):
                     except ValueError:
                         pass
                 results.append(FileInfo(
-                    name=name, path=f"{base.rstrip('/')}/{name}",
+                    name=display_name, path=f"{base.rstrip('/')}/{display_name}",
                     size=int(facts.get("size") or 0), modified_at=modified,
                 ))
             results.sort(key=lambda f: f.name)
@@ -130,29 +158,49 @@ class FtpConnector(FileConnectorBase):
             except Exception:
                 ftp.close()
 
-    def _list_files_via_list(self, ftp: FTP, base: str, effective_pattern: str, is_regex: bool, regex) -> list[FileInfo]:
-        """Real fallback for a server without MLSD (see module docstring
-        — verified live against vsftpd, which needs this path). Parses
-        genuine LIST-command output line by line; a line that doesn't
-        match the standard Unix format is skipped, not guessed at."""
+    def _list_via_list_one_dir(self, ftp: FTP, base: str) -> list[tuple[str, str, int]]:
         raw_lines: list[str] = []
         try:
             ftp.retrlines(f"LIST {base}", raw_lines.append)
         except error_perm as exc:
             raise ConnectorError(self._scrub(f"Could not list {base}: {exc}")) from exc
-
-        results = []
+        out = []
         for line in raw_lines:
             parsed = _parse_unix_list_line(line)
             if parsed is None:
                 continue
             name, entry_type, size = parsed
-            if name in (".", "..") or entry_type != "file":
+            if name in (".", ".."):
                 continue
-            matched = regex.search(name) if is_regex else fnmatch.fnmatch(name, effective_pattern)
+            out.append((name, entry_type, size))
+        return out
+
+    def _list_via_list_recursive(self, ftp: FTP, base: str, relative_prefix: str) -> list[tuple[str, int]]:
+        out = []
+        for name, entry_type, size in self._list_via_list_one_dir(ftp, base):
+            child_relative = f"{relative_prefix}{name}"
+            if entry_type == "dir":
+                out.extend(self._list_via_list_recursive(ftp, f"{base.rstrip('/')}/{name}", f"{child_relative}/"))
+            else:
+                out.append((child_relative, size))
+        return out
+
+    def _list_files_via_list(self, ftp: FTP, base: str, effective_pattern: str, is_regex: bool, regex, recursive: bool = False) -> list[FileInfo]:
+        """Real fallback for a server without MLSD (see module docstring
+        — verified live against vsftpd, which needs this path). Parses
+        genuine LIST-command output line by line; a line that doesn't
+        match the standard Unix format is skipped, not guessed at."""
+        if recursive:
+            entries = self._list_via_list_recursive(ftp, base, "")
+        else:
+            entries = [(name, size) for name, entry_type, size in self._list_via_list_one_dir(ftp, base) if entry_type == "file"]
+
+        results = []
+        for display_name, size in entries:
+            matched = regex.search(display_name) if is_regex else fnmatch.fnmatch(display_name, effective_pattern)
             if not matched:
                 continue
-            results.append(FileInfo(name=name, path=f"{base.rstrip('/')}/{name}", size=size, modified_at=None))
+            results.append(FileInfo(name=display_name, path=f"{base.rstrip('/')}/{display_name}", size=size, modified_at=None))
         results.sort(key=lambda f: f.name)
         return results
 

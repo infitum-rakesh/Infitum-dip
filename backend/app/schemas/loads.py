@@ -30,6 +30,7 @@ class StartLoadRequest(BaseModel):
 class LoadRunOut(BaseModel):
     id: int
     mapping_id: int
+    mapping_version: int | None = None  # CM4 — the exact ColumnMappingVersion this run pinned to at start time; None only for runs that predate versioning
     write_mode: str
     key_columns: list[str] | None
     chunk_size: int

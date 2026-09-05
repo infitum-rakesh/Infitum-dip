@@ -27,6 +27,12 @@ class CustomerListItem(BaseModel):
     subscription_end: datetime | None
     created_at: datetime
     is_active: bool
+    # Most recent Invoice's status/id for this customer — drives the
+    # Payment Status column + "Pay" row action. pending_invoice_id is set
+    # only when there's actually something to pay (PAYMENT_PENDING/
+    # OVERDUE/PARTIALLY_PAID); null otherwise (paid up, no invoices yet, etc).
+    payment_status: str | None = None
+    pending_invoice_id: int | None = None
 
 
 class CustomerListOut(BaseModel):
@@ -42,11 +48,27 @@ class CreateCustomerRequest(BaseModel):
     industry: str | None = None
     country: str | None = None
     primary_contact_name: str | None = None
-    primary_contact_email: EmailStr | None = None
+    # Required — without a real email there's nowhere to send login
+    # credentials, so customer_service.create_customer() rejects the
+    # request outright rather than onboarding a customer nobody can sign
+    # into (found live: an email-less customer was silently created with
+    # no way for anyone to actually log in as it).
+    primary_contact_email: EmailStr
     primary_contact_phone: str | None = None
     timezone: str | None = None
+    # Billing address (invoice "Bill To" detail) + which Company (models/
+    # company.py) this org's invoices are issued under — see
+    # models/organization.py's address_line/city/branch/postal_code/company_id.
+    address_line: str | None = None
+    city: str | None = None
+    branch: str | None = None
+    postal_code: str | None = None
+    company_id: int | None = None
     status: str | None = "trial"  # trial|active|expiring|expired|suspended
-    plan_code: str | None = "trial"  # trial|basic|professional|enterprise|<custom>
+    plan_code: str | None = "trial"  # trial|basic|professional|enterprise|custom
+    # Only used when plan_code == "custom" — the ad-hoc module list to
+    # price from the module price catalog instead of a fixed Plan bundle.
+    modules: list[str] | None = None
     start_date: datetime | None = None
     expiry_date: datetime | None = None
 
@@ -60,6 +82,11 @@ class UpdateCustomerRequest(BaseModel):
     primary_contact_name: str | None = None
     primary_contact_email: EmailStr | None = None
     primary_contact_phone: str | None = None
+    address_line: str | None = None
+    city: str | None = None
+    branch: str | None = None
+    postal_code: str | None = None
+    company_id: int | None = None
     max_users: int | None = None
 
 
@@ -135,6 +162,12 @@ class CustomerDetailOut(BaseModel):
     primary_contact_name: str | None
     primary_contact_email: str | None
     primary_contact_phone: str | None
+    address_line: str | None = None
+    city: str | None = None
+    branch: str | None = None
+    postal_code: str | None = None
+    company_id: int | None = None
+    company_name: str | None = None
     plan: str
     license_status: str
     is_active: bool

@@ -72,6 +72,7 @@ async def create_job(body: JobCreateRequest, user: User = Depends(_create), db: 
             target_uploaded_file_id=body.target_uploaded_file_id,
             key_columns=body.key_columns, compare_columns=body.compare_columns, comparison_types=body.comparison_types,
             column_mapping=body.column_mapping, created_by=user.id,
+            source_mapping_id=body.source_mapping_id, source_mapping_version=body.source_mapping_version,
         )
     except svc.ReconciliationServiceError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))

@@ -43,6 +43,14 @@ class RunStatus(str, enum.Enum):
     SUCCESS = "SUCCESS"
     WARNING = "WARNING"
     FAILED = "FAILED"
+    # Document-schedule runs only (spec section 28/81/95) — a batch where
+    # some files succeeded and others didn't is neither a clean SUCCESS nor
+    # a total FAILED; CANCELLED is a user-requested stop via
+    # ScheduleRun.cancel_requested (cooperative — checked between files,
+    # never mid-file, so a document already being processed always
+    # finishes cleanly one way or another rather than being torn mid-write).
+    COMPLETED_WITH_ERRORS = "COMPLETED_WITH_ERRORS"
+    CANCELLED = "CANCELLED"
 
 
 class Schedule(TenantBase):
@@ -63,6 +71,20 @@ class Schedule(TenantBase):
     # what a pipeline does, only when it runs.
     pipeline_id: Mapped[str] = mapped_column(String(100), nullable=False)
     pipeline_name: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    # AD12 — additive, nullable: when set, this schedule runs a real
+    # AnomalyJob (via anomaly_service.run_job()) instead of the simulated
+    # pipeline path — see schedule_service.execute_schedule()'s dispatch
+    # branch. A real FK is safe here (unlike pipeline_id/pipeline_name
+    # above): AnomalyJob is a real model in this same tenant DB, so there's
+    # no "model doesn't exist yet" reason to avoid it the way pipeline_id
+    # does. When anomaly_job_id is set, pipeline_id/pipeline_name are still
+    # populated (service layer sets pipeline_id="0" — the same file-backed/
+    # non-pipeline sentinel convention already used by Reconciliation/
+    # Anomaly connection_id — and pipeline_name to the job's own name) so
+    # every existing pipeline_id-keyed list/search/display path keeps
+    # working unmodified for anomaly-linked schedules too.
+    anomaly_job_id: Mapped[int | None] = mapped_column(ForeignKey("anomaly_jobs.id"), nullable=True, index=True)
 
     environment: Mapped[ScheduleEnvironment] = mapped_column(Enum(ScheduleEnvironment), default=ScheduleEnvironment.DEVELOPMENT)
     timezone: Mapped[str] = mapped_column(String(64), default="UTC")
@@ -123,6 +145,24 @@ class ScheduleRun(TenantBase):
 
     # [{timestamp, level, message}]
     logs: Mapped[list] = mapped_column(JSON, default=list)
+
+    # Document-schedule runs only — cooperative cancellation flag (spec
+    # section 81). Checked between files inside _execute_document_schedule()
+    # (never mid-file — a file already being OCR'd/AI-extracted always
+    # finishes one way or another), so remaining QUEUED files stop cleanly
+    # instead of a hard kill that could leave a Document row stuck
+    # mid-pipeline. POST /schedules/{id}/runs/{run_id}/cancel sets this.
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Scheduled Document Intelligence Workflow (additive, nullable — every
+    # other schedule type leaves this null). Updated incrementally in short
+    # commits while the run is in progress (never one long-held write
+    # transaction — see document_schedule_service.py):
+    # {discovered, queued, processed, success, review, failed, skipped,
+    #  unsupported, current_file, current_stage}. This is what
+    # GET /schedules/{id}/runs/{run_id} polls for live progress (spec
+    # section 15/16) without a second run-detail table.
+    document_stats: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     def __repr__(self) -> str:
         return f"<ScheduleRun schedule={self.schedule_id} {self.status}>"

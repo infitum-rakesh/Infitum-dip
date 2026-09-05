@@ -9,12 +9,14 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, ArrowRight, Search } from 'lucide-react';
 import { Button } from '@/components/common/index.js';
 import { MAPPING_TYPE_LABELS, lineageApi } from '@/services/api/lineageApi.js';
+import { invoiceApi } from '@/services/api/invoiceApi.js';
 import { LineageGraph } from './LineageGraph.jsx';
 import './lineage.css';
 
 const TABS = [
   { id: 'overview', label: 'Lineage Overview' },
   { id: 'pipeline', label: 'Pipeline Lineage' },
+  { id: 'invoice', label: 'Invoice Lineage' },
   { id: 'column', label: 'Column Lineage' },
   { id: 'execution', label: 'Execution Lineage' },
   { id: 'impact', label: 'Impact Analysis' },
@@ -28,6 +30,7 @@ export default function Lineage() {
   const [activeTab, setActiveTab] = useState(searchParams.get('tab') || 'overview');
   const [pipelineId, setPipelineId] = useState(searchParams.get('pipelineId') ? Number(searchParams.get('pipelineId')) : null);
   const [jobId, setJobId] = useState(searchParams.get('jobId') ? Number(searchParams.get('jobId')) : null);
+  const [invoiceId, setInvoiceId] = useState(searchParams.get('invoiceId') ? Number(searchParams.get('invoiceId')) : null);
 
   const selectTab = (id, extra = {}) => {
     setActiveTab(id);
@@ -53,6 +56,7 @@ export default function Lineage() {
 
       {activeTab === 'overview' && <OverviewTab onOpenPipeline={(id) => { setPipelineId(id); selectTab('pipeline', { pipelineId: id }); }} />}
       {activeTab === 'pipeline' && <PipelineLineageTab pipelineId={pipelineId} setPipelineId={(id) => selectTab('pipeline', { pipelineId: id })} />}
+      {activeTab === 'invoice' && <InvoiceLineageTab invoiceId={invoiceId} setInvoiceId={(id) => selectTab('invoice', { invoiceId: id })} />}
       {activeTab === 'column' && <ColumnLineageTab />}
       {activeTab === 'execution' && <ExecutionLineageTab jobId={jobId} setJobId={(id) => selectTab('execution', { jobId: id, pipelineId })} />}
       {activeTab === 'impact' && <ImpactTab />}
@@ -135,6 +139,48 @@ function PipelineLineageTab({ pipelineId, setPipelineId }) {
       {error && <div className="lin-error-text">{error}</div>}
       {!pipelineId ? (
         <div className="lin-card"><div className="lin-muted">Select a pipeline above to see its lineage graph.</div></div>
+      ) : graph ? (
+        <LineageGraph nodes={graph.nodes} edges={graph.edges} />
+      ) : (
+        <div className="lin-muted">Loading…</div>
+      )}
+    </div>
+  );
+}
+
+// ── Invoice Lineage (INV22) ──
+
+function InvoiceLineageTab({ invoiceId, setInvoiceId }) {
+  const navigate = useNavigate();
+  const [invoices, setInvoices] = useState([]);
+  const [graph, setGraph] = useState(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    invoiceApi.list({ page_size: 100, sort_by: 'created_at', sort_dir: 'desc' })
+      .then((r) => setInvoices(r.items || []))
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (!invoiceId) { setGraph(null); return; }
+    setError('');
+    lineageApi.getInvoiceLineage(invoiceId).then(setGraph).catch((e) => setError(apiErrorMessage(e, 'Could not load invoice lineage.')));
+  }, [invoiceId]);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div className="lin-filters">
+        <select className="lin-select" value={invoiceId ?? ''} onChange={(e) => setInvoiceId(e.target.value ? Number(e.target.value) : null)}>
+          <option value="">Select an invoice…</option>
+          {invoices.map((inv) => <option key={inv.id} value={inv.id}>{inv.invoice_number || `Invoice #${inv.id}`} — {inv.vendor_name || 'Unknown vendor'}</option>)}
+        </select>
+        {graph && (
+          <Button size="sm" variant="ghost" onClick={() => navigate(`/app/invoice-intel/${invoiceId}`)}>Open in Invoice Detail</Button>
+        )}
+      </div>
+      {error && <div className="lin-error-text">{error}</div>}
+      {!invoiceId ? (
+        <div className="lin-card"><div className="lin-muted">Select an invoice above to trace its real Document → OCR → AI/Custom-Engine extraction → normalized fields → validation → ERP mapping → posting → reconciliation chain — only stages that actually happened for that invoice are shown.</div></div>
       ) : graph ? (
         <LineageGraph nodes={graph.nodes} edges={graph.edges} />
       ) : (

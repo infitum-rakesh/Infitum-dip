@@ -20,6 +20,18 @@ class JobCreateRequest(BaseModel):
     compare_columns: list[str] = []
     comparison_types: list[str] = ["COUNT"]  # subset of COUNT/CHECKSUM/KEY_MATCH/FIELD_LEVEL
     column_mapping: dict[str, str] = {}  # {source_column: target_column}, only for columns that differ by name
+    # CM10 — pure convenience: when set, and column_mapping/key_columns
+    # above were left empty, the service resolves this EXACT published
+    # Column Mapping version and pre-populates column_mapping (source-
+    # >target renames) and key_columns (is_key-flagged rows) from its
+    # real rows. Explicit column_mapping/key_columns above always win —
+    # this never overrides a value the caller actually provided. Purely
+    # a same-request convenience; does not persist a link back to the
+    # mapping (the standalone Column Mapping module's own versioning
+    # already owns that lifecycle — see services/reconciliation_service.py
+    # module docstring for why the real diff engine stays untouched).
+    source_mapping_id: int | None = None
+    source_mapping_version: int | None = None
 
 
 class JobUpdateRequest(BaseModel):

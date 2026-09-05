@@ -34,6 +34,25 @@ class Organization(PlatformBase):
     primary_contact_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
     timezone: Mapped[str | None] = mapped_column(String(60), nullable=True)
 
+    # Billing address (spec: invoice "Bill To" detail) — separate from the
+    # primary_contact_* trio above, which is a person, not a mailing
+    # address. "branch" names the specific office/location this org's
+    # relationship is billed through (e.g. "Mumbai Branch", "HQ") when the
+    # customer has more than one — free text, not a foreign key.
+    address_line: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    branch: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    postal_code: Mapped[str | None] = mapped_column(String(30), nullable=True)
+
+    # Which Company (models/company.py) this org's invoices are issued
+    # under — a Seller can register more than one Company; this is what
+    # picks whose logo/address/signature appears on THIS org's invoice
+    # PDFs. Plain unconstrained int, same "no literal FK across this
+    # boundary" convention already established by seller_id below (this
+    # column was added long after that precedent, kept consistent with it
+    # rather than introducing a real ForeignKey wrapper here alone).
+    company_id: Mapped[int | None] = mapped_column(nullable=True)
+
     # License — set by the Seller (see IMPORTANT HIERARCHY in Administration ->
     # Licenses: Seller -> Organization -> Org Admin -> Users). An org admin can
     # never grant a user a module that isn't in licensed_modules; see

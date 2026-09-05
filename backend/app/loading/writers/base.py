@@ -21,11 +21,39 @@ to APPEND (which would duplicate rows) or silently ignoring conflicts.
 from __future__ import annotations
 
 import abc
+import datetime
+import decimal
 
 import pandas as pd
 from sqlalchemy import BigInteger, Boolean, Column, Date, DateTime, Float, MetaData, String, Table, Text, inspect, text
 
 from app.connectors.base import ColumnInfo, scrub_secrets
+
+
+def normalize_identifier(name: str) -> str:
+    """Lowercases a table/column/key-column name this platform is about to
+    CREATE or WRITE TO (never applied to identifiers reflected FROM an
+    existing external table — those keep whatever real case the source
+    system already gave them).
+
+    Why: SQLAlchemy's DDL compiler (and connectors/database/base.py's own
+    quote_identifier()) auto-double-quotes any identifier that isn't
+    already all-lowercase — e.g. a NetSuite field 'CustomerID' becomes the
+    literal Postgres identifier "CustomerID", which Postgres then treats
+    as case-SENSITIVE forever after (unquoted `customerid`/`CUSTOMERID`
+    references no longer match it — "relation does not exist"). Real bug,
+    found live: 'table and column name should not be case sensitive'.
+
+    Normalizing to lowercase here — the single choke point every table/
+    column name this platform creates passes through (ensure_table*,
+    ensure_unique_key, write_batch_with_fallback all call this
+    independently on the same original name strings, so they agree
+    without needing to pass a resolved name back and forth) — means the
+    physical identifier is always a plain lowercase name no dialect ever
+    needs to quote, so it's reachable with ANY casing a user later types
+    (Postgres/MySQL/SQL Server all fold/compare unquoted identifiers
+    case-insensitively when nothing was ever quoted to begin with)."""
+    return (name or "").strip().lower()
 
 
 def write_batch_with_fallback(
@@ -55,6 +83,18 @@ def write_batch_with_fallback(
     [{"row": dict, "error": str}, ...] for rows that failed individually."""
     if not rows:
         return 0, []
+    # Normalize table/column identifiers exactly as ensure_table*()/
+    # ensure_unique_key() below independently do on the same original
+    # name strings (see normalize_identifier()'s docstring) — so a batch
+    # write always targets the same lowercase physical table/columns the
+    # create step just made, regardless of what case the source data's
+    # own field names happen to be in.
+    norm_table = normalize_identifier(table)
+    col_map = {c: normalize_identifier(c) for c in columns}
+    norm_columns = [col_map[c] for c in columns]
+    norm_key_columns = [col_map.get(k, normalize_identifier(k)) for k in key_columns] if key_columns else key_columns
+    rows = [{col_map.get(k, normalize_identifier(k)): v for k, v in row.items()} for row in rows]
+    table, columns, key_columns = norm_table, norm_columns, norm_key_columns
     try:
         written = writer.write_batch(schema, table, columns, rows, key_columns)
         return written, []
@@ -110,15 +150,32 @@ def _sa_type_for_column_info(col: ColumnInfo):
     return Text()
 
 
-def _sa_type_for_dtype(dtype):
-    """Maps a pandas dtype to a generic SQLAlchemy column type — used by
-    ensure_table() below to build a CREATE TABLE from the real DataFrame
-    being written, not a fabricated/fixed schema. Text (not a length-
-    bound VARCHAR) is the default for anything not obviously numeric/
-    boolean/datetime: it's the one string type that's valid DDL on every
-    dialect this codebase supports (MySQL requires a length on VARCHAR;
-    Postgres/SQL Server don't need one for TEXT), so it never truncates
-    real data or fails to compile depending on target vendor."""
+def _sa_type_for_dtype(series: "pd.Series"):
+    """Maps a real DataFrame column to a generic SQLAlchemy column type —
+    used by ensure_table() below to build a CREATE TABLE from the actual
+    data being written, not a fabricated/fixed schema.
+
+    Takes the Series (not just its .dtype) because a numeric source
+    column frequently arrives as pandas' catch-all 'object' dtype rather
+    than a native int64/float64 one: DB-API drivers commonly return
+    NUMERIC/DECIMAL columns as Python decimal.Decimal (psycopg2 for
+    Postgres NUMERIC, pyodbc for NetSuite's SuiteQL 'NUMBER' columns,
+    cx_Oracle for NUMBER, ...) precisely to avoid float rounding error,
+    and a Decimal-valued column's dtype is 'object', not a numeric dtype
+    — so the old dtype-only check sent every such column straight to the
+    Text()/CLOB fallback below regardless of it being genuinely numeric.
+    This is the real root cause behind "NetSuite-derived integer columns
+    become CLOB": NetSuite's NUMBER columns arrive as Decimal objects,
+    exactly like a Postgres NUMERIC source column would. Sampling the
+    actual non-null values (not the dtype) tells int/decimal/date apart
+    correctly for that whole class of source, not just NetSuite.
+
+    Text (not a length-bound VARCHAR) is the default for anything not
+    confidently numeric/boolean/datetime: it's the one string type valid
+    as DDL on every dialect this codebase supports (MySQL requires a
+    length on VARCHAR; Postgres/SQL Server don't need one for TEXT), so
+    it never truncates real data or fails to compile on any target."""
+    dtype = series.dtype
     if pd.api.types.is_bool_dtype(dtype):
         return Boolean()
     if pd.api.types.is_integer_dtype(dtype):
@@ -127,6 +184,28 @@ def _sa_type_for_dtype(dtype):
         return Float()
     if pd.api.types.is_datetime64_any_dtype(dtype):
         return DateTime()
+    if dtype == object:
+        sample = series.dropna()
+        if len(sample):
+            values = sample.head(200)
+            if all(isinstance(v, bool) for v in values):
+                return Boolean()
+            if all(isinstance(v, (int, decimal.Decimal)) and not isinstance(v, bool) for v in values):
+                # Decimal(p, 0) / plain int -> a real integer column;
+                # Decimal(p, s>0) -> a real decimal column. Mixed sign of
+                # scale across the sampled rows still safely widens to
+                # Float rather than truncating any row's fractional part.
+                all_whole = all(
+                    (v == int(v)) if isinstance(v, decimal.Decimal) else True
+                    for v in values
+                )
+                return BigInteger() if all_whole else Float()
+            if all(isinstance(v, float) for v in values):
+                return Float()
+            if all(isinstance(v, datetime.datetime) for v in values):
+                return DateTime()
+            if all(isinstance(v, datetime.date) and not isinstance(v, datetime.datetime) for v in values):
+                return Date()
     return Text()
 
 
@@ -146,14 +225,14 @@ class BaseBulkWriter(abc.ABC):
         (connectors/database/base.py) — every registered database
         connector supports it identically. Override only if a future
         writer's target can't (none currently)."""
-        self.connector.truncate_object(table, schema)
+        self.connector.truncate_object(normalize_identifier(table), schema)
 
     def table_exists(self, schema: str | None, table: str) -> bool:
         """Real reflection via SQLAlchemy's inspect() — same mechanism the
         connector's own schema/object browsing already uses (connectors/
         database/base.py), not a guess."""
         engine = self.connector.engine(pool_size=1)
-        return inspect(engine).has_table(table, schema=schema)
+        return inspect(engine).has_table(normalize_identifier(table), schema=schema)
 
     def ensure_table(
         self, schema: str | None, table: str, df: "pd.DataFrame", *, recreate: bool = False,
@@ -179,6 +258,13 @@ class BaseBulkWriter(abc.ABC):
         its own real/duplicate-data error handling)."""
         if len(df.columns) == 0:
             raise ValueError(f"Cannot create table '{table}' — the incoming data has no columns.")
+        # Normalize to lowercase — see normalize_identifier()'s docstring;
+        # a mixed-case source column (e.g. NetSuite's 'CustomerID') would
+        # otherwise get auto-quoted into a permanently case-sensitive
+        # Postgres identifier. write_batch_with_fallback() normalizes the
+        # same way independently, so the two always agree.
+        table = normalize_identifier(table)
+        key_set = {normalize_identifier(k) for k in (key_columns or [])}
         engine = self.connector.engine(pool_size=2)
         insp = inspect(engine)
         exists = insp.has_table(table, schema=schema)
@@ -189,9 +275,8 @@ class BaseBulkWriter(abc.ABC):
             with engine.begin() as cxn:
                 cxn.execute(text(f"DROP TABLE {quoted}"))
         metadata = MetaData(schema=schema)
-        key_set = set(key_columns or [])
         columns = [
-            Column(str(c), _sa_type_for_dtype(df[c].dtype), primary_key=(str(c) in key_set))
+            Column(normalize_identifier(str(c)), _sa_type_for_dtype(df[c]), primary_key=(normalize_identifier(str(c)) in key_set))
             for c in df.columns
         ]
         Table(table, metadata, *columns)
@@ -216,6 +301,14 @@ class BaseBulkWriter(abc.ABC):
         column absent from the map keeps its own name."""
         if not columns:
             raise ValueError(f"Cannot create table '{table}' — no source columns given.")
+        # Normalize to lowercase — see normalize_identifier()'s docstring
+        # and ensure_table() above (same fix, same reasoning). Applied to
+        # both the source-side lookup key (c.name) and the resolved
+        # target name, so target_column_names entries keyed by the
+        # source's original casing still resolve correctly.
+        table = normalize_identifier(table)
+        key_set = {normalize_identifier(k) for k in (key_columns or [])}
+        names = {k: normalize_identifier(v) for k, v in (target_column_names or {}).items()}
         engine = self.connector.engine(pool_size=2)
         insp = inspect(engine)
         exists = insp.has_table(table, schema=schema)
@@ -226,10 +319,11 @@ class BaseBulkWriter(abc.ABC):
             with engine.begin() as cxn:
                 cxn.execute(text(f"DROP TABLE {quoted}"))
         metadata = MetaData(schema=schema)
-        key_set = set(key_columns or [])
-        names = target_column_names or {}
         sa_columns = [
-            Column(names.get(c.name, c.name), _sa_type_for_column_info(c), primary_key=(names.get(c.name, c.name) in key_set))
+            Column(
+                names.get(c.name, normalize_identifier(c.name)), _sa_type_for_column_info(c),
+                primary_key=(names.get(c.name, normalize_identifier(c.name)) in key_set),
+            )
             for c in columns
         ]
         Table(table, metadata, *sa_columns)
@@ -245,6 +339,8 @@ class BaseBulkWriter(abc.ABC):
         present) rather than swallowing it — an upsert silently running
         without real conflict detection would be worse than failing
         loudly here."""
+        table = normalize_identifier(table)
+        key_columns = [normalize_identifier(k) for k in key_columns]
         engine = self.connector.engine(pool_size=2)
         insp = inspect(engine)
         key_set = set(key_columns)

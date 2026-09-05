@@ -17,6 +17,7 @@ from app.database.connection import get_db
 from app.models.organization import Organization
 from app.models.user import User, UserRole
 from app.services.auth_service import get_org_by_id, get_user_by_id
+from app.services.billing.access_service import access_service
 
 # tokenUrl is documentation-only (drives the OpenAPI "Authorize" button) —
 # the app itself authenticates via POST /api/auth/login.
@@ -77,28 +78,41 @@ DOCUMENT_INTELLIGENCE_MODULE = "DOCUMENT_INTELLIGENCE"
 def require_action(action: str, module: str | None = DOCUMENT_INTELLIGENCE_MODULE):
     """
     Dependency factory — 403s unless the caller's role tier permits `action`
-    AND (when `module` is given and the user belongs to an org) the org is
-    licensed for that module. Defaults to the Document Intelligence module
-    for backward compatibility with existing Documents/Review Queue routes;
-    pass module=None to skip the module-license check entirely (for
-    foundational, always-available modules like Connections), or a different
-    module string to gate on something else.
+    AND (when `module` is given and the user belongs to an org) at least one
+    of the org's currently-ACTIVE subscriptions grants that module. Defaults
+    to the Document Intelligence module for backward compatibility with
+    existing Documents/Review Queue routes; pass module=None to skip the
+    module-license check entirely (for foundational, always-available
+    modules like Connections), or a different module string to gate on
+    something else.
     Use per-route: Depends(require_action("EXECUTE")).
+
+    Multi-Subscription Billing & Payments Platform (2026): the license
+    check below used to be `module not in (org.licensed_modules or [])` —
+    a single cached JSON list overwritten wholesale on every subscription
+    change, which could never represent "two different subscriptions each
+    granting this module, one of them still active." It now calls
+    services/billing/access_service.SubscriptionAccessService, which
+    evaluates real Subscription/CustomerModule rows live, per request —
+    this is the entire integration point; no other module router changes.
     """
     async def _checker(
         user: User = Depends(get_current_user),
         org: Organization | None = Depends(get_current_organization),
+        db: AsyncSession = Depends(get_db),
     ) -> User:
         if user.role != UserRole.SUPER_ADMIN and action not in ROLE_ACTIONS.get(user.role, set()):
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
                 f"Your role does not have permission to perform '{action}'.",
             )
-        if module is not None and org is not None and module not in (org.licensed_modules or []):
-            raise HTTPException(
-                status.HTTP_403_FORBIDDEN,
-                f"{module.replace('_', ' ').title()} is not licensed for your organization.",
-            )
+        if module is not None and org is not None:
+            result = await access_service.has_module_access(db, org.id, module)
+            if not result.granted:
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN,
+                    f"{module.replace('_', ' ').title()} is not licensed for your organization.",
+                )
         return user
     return _checker
 
@@ -118,6 +132,8 @@ def require_action(action: str, module: str | None = DOCUMENT_INTELLIGENCE_MODUL
 SELLER_CATEGORIES = [
     "Dashboard", "Customers", "Subscriptions", "Modules", "Usage",
     "Licenses", "SellerUsers", "Audit", "Settings",
+    # Multi-Subscription Billing & Payments Platform (2026)
+    "Billing", "PaymentGateways",
 ]
 
 _SELLER_FULL = {"VIEW", "CREATE", "EDIT", "DELETE", "EXECUTE", "ADMIN"}
@@ -137,7 +153,7 @@ SELLER_ROLE_ACTIONS: dict[str, dict[str, set[str]]] = {
     },
     "SELLER_LICENSE_MANAGER": {
         "Dashboard": _SELLER_VIEW, "Subscriptions": _SELLER_RW, "Modules": _SELLER_RW,
-        "Licenses": _SELLER_RW, "Audit": _SELLER_VIEW,
+        "Licenses": _SELLER_RW, "Audit": _SELLER_VIEW, "Billing": _SELLER_RW,
     },
     "SELLER_SUPPORT": {
         "Dashboard": _SELLER_VIEW, "Customers": _SELLER_VIEW, "Usage": _SELLER_VIEW, "Audit": _SELLER_VIEW,

@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.connection import AsyncSessionLocal
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.connectors.base import BaseConnector, ConnectorUnsupportedError, ConnectorValidationError, PreviewResult
+from app.connectors.base import BaseConnector, ConnectorError, ConnectorUnsupportedError, ConnectorValidationError, PreviewResult
 from app.connectors.database.pool_manager import evict as evict_pool
 from app.connectors.registry import get_connector, is_registered_connector
 from app.core import crypto
@@ -133,7 +133,15 @@ FIELD_SCHEMAS: dict[str, dict] = {
     "FABRIC": {
         "label": "Microsoft Fabric", "category": "DATABASE",
         "fields": [
-            {"key": "workspace", "label": "Workspace", "type": "text", "required": True},
+            # Not required: connectors/database/fabric.py never reads this
+            # field at all — the connector only needs the SQL Endpoint +
+            # Database (a Fabric Warehouse/Lakehouse's SQL analytics
+            # endpoint is fully addressable without naming its workspace).
+            # Left as an optional label purely for the user's own
+            # organization/reference. Marking it required blocked saving a
+            # connection whenever that detail wasn't handy — found live
+            # ("workspace name should not be a required field").
+            {"key": "workspace", "label": "Workspace (optional, for reference only)", "type": "text"},
             {"key": "sql_endpoint", "label": "SQL Endpoint", "type": "text", "required": True,
              "placeholder": "xxxxxxxx.datawarehouse.fabric.microsoft.com"},
             {"key": "database", "label": "Database", "type": "text", "required": True},
@@ -185,7 +193,10 @@ FIELD_SCHEMAS: dict[str, dict] = {
             {"key": "password", "label": "Password", "type": "password", "required": True, "secret": True},
             {"key": "role_id", "label": "Role ID (internal ID)", "type": "text",
              "help": "Optional — only needed if the login user has more than one assignable role."},
-            {"key": "account", "label": "Account ID", "type": "text", "required": True, "placeholder": "1234567 or 1234567_SB1"},
+            {"key": "account", "label": "Account ID", "type": "text", "placeholder": "1234567 or 1234567_SB1",
+             "help": "Optional — only needed if your DSN doesn't already set AccountID itself (e.g. via "
+                     "ODBC Data Source Administrator on Windows, where Account/Role are typically baked "
+                     "into the DSN alongside the host/port). Leave blank to use whatever the DSN already has."},
         ],
     },
     "NETSUITE_SOAP": {
@@ -197,6 +208,26 @@ FIELD_SCHEMAS: dict[str, dict] = {
             {"key": "consumer_secret", "label": "Consumer Secret", "type": "password", "required": True, "secret": True},
             {"key": "token_id", "label": "Token ID", "type": "text", "required": True},
             {"key": "token_secret", "label": "Token Secret", "type": "password", "required": True, "secret": True},
+        ],
+    },
+    "ORACLE_ERP_CLOUD": {
+        # Oracle Fusion ERP Cloud — Payables Invoices REST resource. See
+        # connectors/application/oracle_erp.py's docstring for the exact
+        # documented resource/auth contract this implements. Distinct
+        # from ORACLE above (a plain Oracle Database connection).
+        "label": "Oracle ERP Cloud", "category": "APPLICATION",
+        "fields": [
+            {"key": "host", "label": "Instance URL", "type": "text", "required": True,
+             "placeholder": "https://your-instance.fa.us2.oraclecloud.com",
+             "help": "Base URL of your Oracle Fusion ERP Cloud instance (no trailing path)."},
+            {"key": "api_version", "label": "API Version", "type": "text", "default": "11.13.18.05",
+             "help": "REST API version segment used in the resource path — leave the default unless your instance documents a different one."},
+            {"key": "auth_type", "label": "Auth Type", "type": "select", "options": ["Basic Auth", "OAuth2"], "default": "Basic Auth"},
+            {"key": "username", "label": "Username", "type": "text", "show_if": {"field": "auth_type", "equals": "Basic Auth"}},
+            {"key": "password", "label": "Password", "type": "password", "secret": True, "show_if": {"field": "auth_type", "equals": "Basic Auth"}},
+            {"key": "client_id", "label": "Client ID", "type": "text", "show_if": {"field": "auth_type", "equals": "OAuth2"}},
+            {"key": "client_secret", "label": "Client Secret", "type": "password", "secret": True, "show_if": {"field": "auth_type", "equals": "OAuth2"}},
+            {"key": "token_url", "label": "Token URL (IDCS / OCI IAM)", "type": "text", "show_if": {"field": "auth_type", "equals": "OAuth2"}},
         ],
     },
     "SFTP": {
@@ -348,7 +379,7 @@ FIELD_SCHEMAS: dict[str, dict] = {
 
 CATEGORIES = [
     {"key": "DATABASE", "label": "Database", "types": ["SQL_SERVER", "POSTGRESQL", "MYSQL", "ORACLE", "SNOWFLAKE", "SAP", "VERTICA", "FABRIC"]},
-    {"key": "APPLICATION", "label": "Application", "types": ["SALESFORCE", "NETSUITE_SUITEQL", "NETSUITE_SOAP"]},
+    {"key": "APPLICATION", "label": "Application", "types": ["SALESFORCE", "NETSUITE_SUITEQL", "NETSUITE_SOAP", "ORACLE_ERP_CLOUD"]},
     {"key": "STORAGE", "label": "Storage", "types": ["SFTP", "FTP", "NETWORK_FILE"]},
     {"key": "API", "label": "API", "types": ["REST", "SOAP"]},
     {"key": "CLOUD", "label": "Cloud", "types": ["AZURE", "AWS", "OTHER"]},
@@ -362,6 +393,7 @@ _HOST_FIELD = {
     "SQL_SERVER": "host", "POSTGRESQL": "host", "MYSQL": "host", "ORACLE": "host", "SAP": "host", "VERTICA": "host",
     "SNOWFLAKE": "account", "FABRIC": "sql_endpoint",
     "SALESFORCE": "username", "NETSUITE_SUITEQL": "dsn", "NETSUITE_SOAP": "account",
+    "ORACLE_ERP_CLOUD": "host",
     "SFTP": "host", "FTP": "host", "NETWORK_FILE": "unc_path",
     "REST": "base_url", "SOAP": "wsdl_url",
     "AZURE": "storage_account", "AWS": "region", "OTHER": "host",
@@ -592,21 +624,51 @@ async def test_connection(db: AsyncSession, conn: Connection) -> dict:
 
 PREVIEW_LIMIT_MAX = 1000  # spec: preview 10/50/100/1000 rows, never the full dataset
 
+# Schema/object/column browsing hits the live source. This bound is a
+# background SAFETY NET only — not a user-facing constraint — and must
+# stay well above services/api/connectionApi.js's own BROWSE_TIMEOUT
+# (120s, deliberately generous and already live-verified against a real
+# NetSuite account — see that file's own comment for the history). That
+# frontend timeout is what a user actually experiences; this one exists
+# purely so a truly wedged native driver call (pyodbc/ODBC connections in
+# particular can hang the underlying OS thread with no way to interrupt
+# it) doesn't leak a thread-pool slot forever after the browser has long
+# since given up and moved on. It must never be the thing that cuts off a
+# real, in-progress, slow-but-working catalog enumeration — NetSuite's
+# SuiteAnalytics Connect ODBC driver scanning every standard + custom
+# record type on a large account is exactly that case, and a first
+# attempt at this safety net (45s) was tuned far too aggressively,
+# cutting off real NetSuite schema fetches that other tools complete
+# successfully given enough time — found live. 10 minutes is long enough
+# to never be reached by any legitimate interactive browse (the frontend
+# itself gives up 8x sooner), while still bounding a genuinely stuck call.
+BROWSE_TIMEOUT_SECONDS = 600
+
+
+async def _browse_call(fn, *args):
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=BROWSE_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError as exc:
+        raise ConnectorError(
+            f"Timed out after {BROWSE_TIMEOUT_SECONDS}s waiting on the source — it may be slow to enumerate "
+            "objects, or unreachable. You can enter the object name manually instead of browsing."
+        ) from exc
+
 
 async def list_schemas(conn: Connection) -> list[str]:
     connector = build_connector(conn)
-    return await asyncio.to_thread(connector.list_schemas)
+    return await _browse_call(connector.list_schemas)
 
 
 async def list_objects(conn: Connection, schema: str | None, search: str | None):
     connector = build_connector(conn)
-    return await asyncio.to_thread(connector.list_objects, schema, search)
+    return await _browse_call(connector.list_objects, schema, search)
 
 
 async def get_columns(conn: Connection, object_name: str, schema: str | None, include_row_count: bool):
     connector = build_connector(conn)
-    columns = await asyncio.to_thread(connector.get_columns, object_name, schema)
-    row_count = await asyncio.to_thread(connector.row_count, object_name, schema) if include_row_count else None
+    columns = await _browse_call(connector.get_columns, object_name, schema)
+    row_count = await _browse_call(connector.row_count, object_name, schema) if include_row_count else None
     return columns, row_count
 
 

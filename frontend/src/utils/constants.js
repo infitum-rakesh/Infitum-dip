@@ -41,6 +41,8 @@ export const MODULES = {
   PIPELINE_SCHEDULER:    'PIPELINE_SCHEDULER',
   OBSERVABILITY:         'OBSERVABILITY',
   INCIDENTS:             'INCIDENTS',
+  ANOMALY_DETECTION:     'ANOMALY_DETECTION',
+  INVOICE_INTELLIGENCE:  'INVOICE_INTELLIGENCE',
 };
 
 /** License status */
@@ -273,6 +275,40 @@ export const SQL_WORKSPACE_PERMISSIONS = {
   SQL_EDIT:   { module: MODULES.SQL_WORKSPACE, action: ACTIONS.EDIT },    // update a saved query
   SQL_DELETE: { module: MODULES.SQL_WORKSPACE, action: ACTIONS.DELETE },
   SQL_RUN:    { module: MODULES.SQL_WORKSPACE, action: ACTIONS.EXECUTE }, // run SQL against a connection
+};
+
+/**
+ * Anomaly Detection — centralized permission map, same shape as
+ * SQL_WORKSPACE_PERMISSIONS/MAPPING_PERMISSIONS above. Mirrored
+ * server-side by require_action(action, module="ANOMALY_DETECTION") in
+ * api/anomaly.py. ANOMALY_APPROVE covers baseline approval and feedback
+ * submission — both use the backend's EDIT/VIEW tiers respectively (see
+ * api/anomaly.py's route-level Depends()), not a dedicated APPROVE
+ * action, so this map only needs the same five actions every other
+ * Data Quality module uses.
+ */
+export const ANOMALY_PERMISSIONS = {
+  ANOMALY_VIEW:   { module: MODULES.ANOMALY_DETECTION, action: ACTIONS.VIEW },
+  ANOMALY_CREATE: { module: MODULES.ANOMALY_DETECTION, action: ACTIONS.CREATE },
+  ANOMALY_EDIT:   { module: MODULES.ANOMALY_DETECTION, action: ACTIONS.EDIT },   // also gates baseline approval
+  ANOMALY_DELETE: { module: MODULES.ANOMALY_DETECTION, action: ACTIONS.DELETE },
+  ANOMALY_RUN:    { module: MODULES.ANOMALY_DETECTION, action: ACTIONS.EXECUTE }, // Run Anomaly Detection
+};
+
+/**
+ * Invoice Intelligence — centralized permission map, same shape as
+ * ANOMALY_PERMISSIONS above. Mirrored server-side by require_action(action,
+ * module="INVOICE_INTELLIGENCE") in api/invoices.py. INVOICE_EDIT also
+ * gates learning-record approval (POST /learning/records/{id}/approve —
+ * see api/invoices.py's route-level Depends()); INVOICE_RUN covers every
+ * EXECUTE-tier action (reprocess/revalidate/ERP post/ERP cancel/run
+ * reconciliation), not a dedicated action per one.
+ */
+export const INVOICE_PERMISSIONS = {
+  INVOICE_VIEW:   { module: MODULES.INVOICE_INTELLIGENCE, action: ACTIONS.VIEW },
+  INVOICE_CREATE: { module: MODULES.INVOICE_INTELLIGENCE, action: ACTIONS.CREATE }, // Upload invoice
+  INVOICE_EDIT:   { module: MODULES.INVOICE_INTELLIGENCE, action: ACTIONS.EDIT },   // Corrections + learning-record approval
+  INVOICE_RUN:    { module: MODULES.INVOICE_INTELLIGENCE, action: ACTIONS.EXECUTE }, // Reprocess/revalidate/ERP post/cancel/reconcile
 };
 
 /**

@@ -47,6 +47,8 @@ export const MODULE_META = {
   [MODULES.PIPELINE_SCHEDULER]:    { label: 'Pipeline Scheduler',    icon: '⏰', group: 'Operations' },
   [MODULES.OBSERVABILITY]:         { label: 'Observability',         icon: '📊', group: 'Operations' },
   [MODULES.INCIDENTS]:             { label: 'Incident Management',   icon: '🚨', group: 'Operations' },
+  [MODULES.ANOMALY_DETECTION]:     { label: 'Anomaly Detection',     icon: '🔎', group: 'Pipeline' },
+  [MODULES.INVOICE_INTELLIGENCE]:  { label: 'Invoice Intelligence',  icon: '🧾', group: 'Intelligence' },
 };
 
 export const SUBSCRIPTION_PLANS = {
@@ -62,7 +64,7 @@ export const SUBSCRIPTION_PLANS = {
   },
   professional: {
     id: 'professional', name: 'Professional',
-    modules: [MODULES.DOCUMENT_INTELLIGENCE, MODULES.OCR, MODULES.AI_EXTRACTION, MODULES.TRANSFORMATION, MODULES.VALIDATION, MODULES.RECONCILIATION, MODULES.DATA_CATALOG, MODULES.LINEAGE, MODULES.PIPELINE_SCHEDULER],
+    modules: [MODULES.DOCUMENT_INTELLIGENCE, MODULES.OCR, MODULES.AI_EXTRACTION, MODULES.TRANSFORMATION, MODULES.VALIDATION, MODULES.RECONCILIATION, MODULES.ANOMALY_DETECTION, MODULES.DATA_CATALOG, MODULES.LINEAGE, MODULES.PIPELINE_SCHEDULER],
     limits: { users: 50, documents: 50000, ai_calls: 100000, storage_gb: 500 },
   },
   enterprise: {

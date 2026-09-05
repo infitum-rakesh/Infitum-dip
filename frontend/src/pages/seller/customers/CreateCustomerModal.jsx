@@ -5,27 +5,31 @@
  * given) an initial ORG_ADMIN user, same "no real mailer, show the temp
  * password once" pattern as Administration -> Users' Invite User modal.
  */
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Copy, Check, Mail, CheckCircle2, XCircle } from 'lucide-react';
 import { Modal, Button } from '@/components/common/index.js';
 import { customerApi } from '@/services/api/seller/customerApi.js';
+import { companyApi } from '@/services/api/seller/companyApi.js';
+import { moduleApi } from '@/services/api/seller/moduleApi.js';
 import './customers.css';
 
-// Matches the Plan rows seeded by services/seller/plan_seed.py — not a
-// free-form "Custom" option yet, since there's no plan-authoring UI until
-// Phase 3/4. Picking a plan here sets the licensing ceiling for real.
+// Matches the Plan rows seeded by services/seller/plan_seed.py, plus
+// "Custom" — pick individual modules instead of a fixed bundle, priced
+// from the Module Prices catalog (Seller Settings) instead of Plan.price.
 const PLAN_OPTIONS = [
   { value: 'trial', label: 'Trial' },
   { value: 'basic', label: 'Basic' },
   { value: 'professional', label: 'Professional' },
   { value: 'enterprise', label: 'Enterprise' },
+  { value: 'custom', label: 'Custom' },
 ];
 const STATUS_OPTIONS = ['trial', 'active', 'expiring', 'expired', 'suspended'];
 
 const EMPTY = {
   organization_name: '', legal_name: '', industry: '', country: '',
   primary_contact_name: '', primary_contact_email: '', primary_contact_phone: '', timezone: '',
-  status: 'trial', plan_code: 'trial', start_date: '', expiry_date: '',
+  address_line: '', city: '', branch: '', postal_code: '', company_id: '',
+  status: 'trial', plan_code: 'trial', start_date: '', expiry_date: '', modules: [],
 };
 
 export function CreateCustomerModal({ open, onClose, onCreated }) {
@@ -34,21 +38,47 @@ export function CreateCustomerModal({ open, onClose, onCreated }) {
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [companies, setCompanies] = useState([]);
+  const [modulePrices, setModulePrices] = useState([]);
+
+  useEffect(() => {
+    if (!open) return;
+    companyApi.list().then(setCompanies).catch(() => setCompanies([]));
+    moduleApi.getModulePrices().then(setModulePrices).catch(() => setModulePrices([]));
+  }, [open]);
 
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+
+  const toggleModule = (module) => {
+    setForm((f) => ({
+      ...f,
+      modules: f.modules.includes(module) ? f.modules.filter((m) => m !== module) : [...f.modules, module],
+    }));
+  };
+
+  const isCustomPlan = form.plan_code === 'custom';
+  const customTotal = useMemo(() => {
+    if (!isCustomPlan) return 0;
+    const priceByModule = Object.fromEntries(modulePrices.map((m) => [m.module, m.price]));
+    return form.modules.reduce((sum, m) => sum + (priceByModule[m] ?? 0), 0);
+  }, [isCustomPlan, form.modules, modulePrices]);
 
   const handleClose = () => { setForm(EMPTY); setError(''); setResult(null); setCopied(false); onClose(); };
 
   const handleSubmit = async () => {
     if (!form.organization_name.trim()) { setError('Organization name is required.'); return; }
+    if (!form.primary_contact_email.trim()) { setError('A primary contact email is required — without one, login credentials can\'t be generated.'); return; }
+    if (isCustomPlan && form.modules.length === 0) { setError('Pick at least one module for the Custom plan.'); return; }
     setSaving(true);
     setError('');
     try {
       const body = {
         ...form,
-        primary_contact_email: form.primary_contact_email.trim() || null,
+        primary_contact_email: form.primary_contact_email.trim(),
+        company_id: form.company_id ? Number(form.company_id) : null,
         start_date: form.start_date ? new Date(form.start_date).toISOString() : null,
         expiry_date: form.expiry_date ? new Date(form.expiry_date).toISOString() : null,
+        modules: isCustomPlan ? form.modules : null,
       };
       const created = await customerApi.create(body);
       setResult(created);
@@ -140,8 +170,9 @@ export function CreateCustomerModal({ open, onClose, onCreated }) {
           <input className="sc-input" value={form.primary_contact_name} onChange={set('primary_contact_name')} placeholder="Jane Doe" />
         </div>
         <div className="sc-field">
-          <label className="sc-field-label">Email</label>
+          <label className="sc-field-label">Email <span className="sc-required">*</span></label>
           <input type="email" className="sc-input" value={form.primary_contact_email} onChange={set('primary_contact_email')} placeholder="jane@acme.com" />
+          <p className="sc-field-hint">Required — this is where login credentials are sent.</p>
         </div>
         <div className="sc-field">
           <label className="sc-field-label">Phone</label>
@@ -150,6 +181,31 @@ export function CreateCustomerModal({ open, onClose, onCreated }) {
         <div className="sc-field">
           <label className="sc-field-label">Timezone</label>
           <input className="sc-input" value={form.timezone} onChange={set('timezone')} placeholder="America/New_York" />
+        </div>
+
+        <div className="sc-section-divider">Billing Address &amp; Company</div>
+        <div className="sc-field">
+          <label className="sc-field-label">Address</label>
+          <input className="sc-input" value={form.address_line} onChange={set('address_line')} placeholder="500 Market St" />
+        </div>
+        <div className="sc-field">
+          <label className="sc-field-label">City</label>
+          <input className="sc-input" value={form.city} onChange={set('city')} placeholder="San Francisco" />
+        </div>
+        <div className="sc-field">
+          <label className="sc-field-label">Branch / Office</label>
+          <input className="sc-input" value={form.branch} onChange={set('branch')} placeholder="e.g. HQ" />
+        </div>
+        <div className="sc-field">
+          <label className="sc-field-label">Postal Code</label>
+          <input className="sc-input" value={form.postal_code} onChange={set('postal_code')} placeholder="94105" />
+        </div>
+        <div className="sc-field">
+          <label className="sc-field-label">Invoiced Through Company</label>
+          <select className="sc-input" value={form.company_id} onChange={set('company_id')}>
+            <option value="">Default company</option>
+            {companies.map((c) => <option key={c.id} value={c.id}>{c.name}{c.is_default ? ' (default)' : ''}</option>)}
+          </select>
         </div>
 
         <div className="sc-section-divider">Plan &amp; Status</div>
@@ -173,6 +229,32 @@ export function CreateCustomerModal({ open, onClose, onCreated }) {
           <label className="sc-field-label">Expiry Date</label>
           <input type="date" className="sc-input" value={form.expiry_date} onChange={set('expiry_date')} />
         </div>
+
+        {isCustomPlan && (
+          <>
+            <div className="sc-field sc-field-full">
+              <label className="sc-field-label">Modules <span className="sc-required">*</span></label>
+              <div className="sc-module-picker">
+                {modulePrices.map((m) => (
+                  <label key={m.module} className="sc-module-check">
+                    <input type="checkbox" checked={form.modules.includes(m.module)} onChange={() => toggleModule(m.module)} />
+                    {m.label} · {m.currency} {m.price.toFixed(0)}/mo
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="sc-custom-total">
+              <span>{form.status === 'trial' ? 'Free during trial' : 'Monthly total'}</span>
+              <strong>{form.status === 'trial' ? '—' : `$${customTotal.toFixed(2)}/mo`}</strong>
+            </div>
+            {form.status !== 'trial' && (
+              <p className="sc-field-hint sc-field-full">
+                A real invoice will be created for this amount. The customer has no module access until it's paid —
+                generate a payment link from the customer's row after creating them, or from Billing -&gt; Invoices.
+              </p>
+            )}
+          </>
+        )}
       </div>
     </Modal>
   );

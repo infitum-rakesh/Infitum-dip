@@ -39,6 +39,7 @@ CATEGORY_MODULE_MAP: dict[str, str | None] = {
     "Transformation": "TRANSFORMATION",
     "Validation": "VALIDATION",
     "Reconciliation": "RECONCILIATION",
+    "Anomaly Detection": "ANOMALY_DETECTION",
     "Pipeline": None,
     "SQL Workspace": "SQL_WORKSPACE",
     "Schedules": None,
@@ -50,6 +51,7 @@ CATEGORY_MODULE_MAP: dict[str, str | None] = {
     "Licenses": None,
     "Audit Logs": None,
     "Settings": None,
+    "Invoice Intelligence": "INVOICE_INTELLIGENCE",
 }
 
 # Every category offers the same generic 6-action set EXCEPT "SQL

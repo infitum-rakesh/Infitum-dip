@@ -5,7 +5,8 @@ uvicorn app.main:app --reload --port 8000
 # First login: admin@dip.local / Admin@1234!
 
 
-
+SellerAdmin@2026!
+OrgAdmin@2026!
 cd frontend
 # In PowerShell first run: Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 # Or use:
@@ -23,3 +24,5 @@ pkill -f "cloudflared tunnel"
 cloudflared tunnel --url http://localhost:5173
 
 WU5wHVrHobZh >>>. TestPass@123
+
+seller@platform-admin.com / Seller@1234!

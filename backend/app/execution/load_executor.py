@@ -56,6 +56,7 @@ from app.ingestion.partition_reader import plan_partitions
 from app.loading.writers.registry import get_bulk_writer
 from app.mapping import mapper
 from app.models.column_mapping import ColumnMapping
+from app.models.column_mapping_version import ColumnMappingVersion
 from app.models.pipeline_run import PartitionStatus
 from app.models.target_load_run import LoadStatus, TargetLoadRun, TargetLoadRunPartition, WriteMode
 from app.services.connection_service import build_connector, get_connection
@@ -102,7 +103,7 @@ async def _pick_key_column(source_connector, source_object: str, source_schema: 
     return next((c.name for c in cols if c.primary_key), None)
 
 
-async def _build_create_table_columns(source_connector, mapping: ColumnMapping):
+async def _build_create_table_columns(source_connector, mapping):
     """Real per-target-column metadata for ensure_table_from_columns()
     (JJ1) — pulled from the source's own get_columns() wherever a mapping
     row is a plain source-column copy; a synthesized bare string column
@@ -133,7 +134,30 @@ async def _execute(run_id: int, organization_id: int | None) -> None:
     sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
     async with sessionmaker() as db:
         run = await db.get(TargetLoadRun, run_id)
-        mapping = await db.get(ColumnMapping, run.mapping_id)
+        # CM4 — read the exact PINNED version (resolved once at run-start
+        # time in load_service.create_load()), never whatever the mapping
+        # "currently" is. Falls back to the header row's own legacy
+        # mappings/source*/target* for pre-CM1 runs whose mapping_version
+        # is NULL (predates this column existing) — same behavior those
+        # runs always had. ColumnMappingVersion carries the identical
+        # field names (mappings/source_*/target_*) the rest of this
+        # function already reads, so nothing below this needs to change.
+        if run.mapping_version is not None:
+            result = await db.execute(
+                select(ColumnMappingVersion).where(
+                    ColumnMappingVersion.mapping_id == run.mapping_id,
+                    ColumnMappingVersion.version_number == run.mapping_version,
+                )
+            )
+            mapping = result.scalar_one_or_none()
+        else:
+            mapping = await db.get(ColumnMapping, run.mapping_id)
+        if mapping is None:
+            run.status = LoadStatus.FAILED
+            run.error_message = "The mapping (or the pinned version this run started with) no longer exists."
+            run.completed_at = datetime.now(timezone.utc)
+            await db.commit()
+            return
         # Defense in depth: re-verify both connections genuinely belong to
         # this run's OWN organization_id at execute time too, not just at
         # mapping-creation time (mapping_service.create_mapping) —

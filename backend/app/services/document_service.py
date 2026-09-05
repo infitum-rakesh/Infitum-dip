@@ -58,6 +58,7 @@ from app.models.user import User
 from app.ocr.engine import OcrEngineError, OcrNotApplicableError, render_pages_as_png, run_ocr
 from app.services import extraction_service
 from app.services import document_taxonomies
+from app.services import evidence_service
 from app.services import settings_service
 from app.services.connection_service import build_connector, get_connection
 
@@ -157,6 +158,54 @@ async def save_upload(
     await db.commit()
     await db.refresh(doc)
     return doc, duplicate_of_id
+
+
+async def save_from_source(
+    db: AsyncSession, *, content: bytes, filename: str, organization_id: int | None,
+    source_connection_id: int, source_path: str, source_schedule_id: int | None,
+) -> Document:
+    """Scheduled Document Intelligence Workflow's counterpart to
+    save_upload() above — same validation/storage/content-hash logic,
+    bytes-based (already downloaded by a connector — see
+    document_schedule_service.py) instead of a FastAPI UploadFile, and
+    stamps the new source_* columns so Document Processing History (spec
+    section 44) can show where this document actually came from. Deliberately
+    NOT deduped against an existing same-hash Document row the way
+    save_upload() is informational-only about — schedule-side dedup happens
+    one layer up, against DocumentSourceRegistry (see needs_processing()),
+    which is the durable per-SOURCE-identity ledger the spec actually asks
+    for; by the time this function is called the caller has already decided
+    this file needs a real Document row."""
+    _validate_upload(filename, len(content))
+    content_hash = hashlib.sha256(content).hexdigest()
+
+    org_dir = Path(settings.upload_dir) / (str(organization_id) if organization_id else "unassigned")
+    org_dir.mkdir(parents=True, exist_ok=True)
+
+    stored_name = f"{uuid.uuid4().hex}_{filename}"
+    dest = org_dir / stored_name
+    dest.write_bytes(content)
+
+    doc = Document(
+        organization_id=organization_id,
+        uploaded_by_id=None,
+        filename=filename,
+        doc_type=guess_doc_type(filename),
+        mime_type=None,
+        size_bytes=len(content),
+        page_count=1,
+        storage_path=str(dest),
+        content_hash=content_hash,
+        source_connection_id=source_connection_id,
+        source_path=source_path,
+        source_schedule_id=source_schedule_id,
+        status=DocumentStatus.UPLOADED,
+        timeline=[_stage_record("Discovered", "completed", datetime.now(timezone.utc), datetime.now(timezone.utc))],
+    )
+    db.add(doc)
+    await db.commit()
+    await db.refresh(doc)
+    return doc
 
 
 def read_file(document: Document) -> bytes:
@@ -652,13 +701,24 @@ def _schema_covered_names(schema: list[dict]) -> list[str]:
     return names
 
 
-def _reshape_extraction_fields(raw_fields: list[dict]) -> list[dict]:
+def _reshape_extraction_fields(raw_fields: list[dict], doc: Document | None = None) -> list[dict]:
     """Reshapes extraction_service.extract_fields()'s raw per-field output
     into the persisted field shape (adds validation_status/missing/bbox/
     suggested_correction). Shared by the automatic pipeline
     (_run_ai_extraction below) and the manual "Run AI Extraction" action
     (run_manual_ai_extraction below) so both produce identical field shapes
-    regardless of which path triggered extraction."""
+    regardless of which path triggered extraction.
+
+    bbox (INV4 — evidence linking, see services/evidence_service.py):
+    a field from the Custom Extraction Engine already carries a real,
+    matched-OCR-row bbox in f["bbox"] (custom_engine.py's label-match —
+    wired straight through here, unchanged). A field from real AI
+    extraction has no bbox of its own (no vision-grounded call was
+    made), so when `doc` is passed and has OCR regions, this heuristically
+    searches them for a region containing the field's own value and uses
+    THAT region's real bbox — never a guessed/invented box, and left
+    None (never fabricated) when nothing genuinely matches."""
+    ocr_regions = (doc.ocr_result or {}).get("regions") if doc and doc.ocr_result else None
     fields = []
     for f in raw_fields:
         conf = float(f.get("confidence") or 0.0)
@@ -679,6 +739,11 @@ def _reshape_extraction_fields(raw_fields: list[dict]) -> list[dict]:
                 "value": f"{len(rows)} row{'s' if len(rows) != 1 else ''}" if rows else "",  # human-readable summary — anything that only ever read f["value"] as text (e.g. Review Queue's plain listing) still gets something sane instead of a missing key
                 "confidence": round(conf, 1),
                 "source_page": 1,
+                # Table evidence is inherently row-level (one bbox per line
+                # item, not one for the whole field) — genuinely out of
+                # scope for this single-bbox slot; left None rather than
+                # attaching just the header row's box, which would mislead
+                # a viewer into highlighting the wrong region for a cell.
                 "bbox": None,
                 "validation_status": validation_status,
                 "suggested_correction": None,
@@ -687,13 +752,16 @@ def _reshape_extraction_fields(raw_fields: list[dict]) -> list[dict]:
             continue
         missing = f.get("value") in (None, "")
         validation_status = "invalid" if missing else ("valid" if conf >= 90 else ("warning" if conf >= 80 else "invalid"))
+        bbox = f.get("bbox")  # real, already-matched bbox — Custom Extraction Engine only
+        if bbox is None and not missing and ocr_regions:
+            bbox = evidence_service.find_region_bbox(f.get("value"), ocr_regions)
         fields.append({
             "name": f["name"],
             "type": "scalar",
             "value": "" if missing else f.get("value"),
             "confidence": round(conf, 1),
             "source_page": f.get("page") or 1,
-            "bbox": None,  # no real bounding box from the LLM — not fabricated, see OCR's regions for real boxes
+            "bbox": bbox,
             "validation_status": validation_status,
             "suggested_correction": None,  # no real "corrected" value to offer — not fabricated
             "missing": missing,
@@ -719,20 +787,41 @@ async def _run_custom_engine_extraction(db: AsyncSession, doc: Document, *, docu
         )
     except extraction_service.ExtractionError as exc:
         return [], None, f"Custom Extraction Engine: {exc}"
-    fields = _reshape_extraction_fields(result["fields"])
+    fields = _reshape_extraction_fields(result["fields"], doc)
     return fields, result.get("overallConfidence"), None
 
 
-async def _run_ai_extraction(db: AsyncSession, doc: Document) -> tuple[list[dict], float | None, str | None]:
+async def _run_ai_extraction(
+    db: AsyncSession, doc: Document, *, document_type: str | None = None,
+) -> tuple[list[dict], float | None, str | None, dict | None, str | None]:
     """Real AI Extraction for the Documents module's automatic pipeline —
     the same LLM engine as the Document Intelligence wizard
     (extraction_service.py): auto-detects a schema from the document's
     real OCR text, then extracts real field values, via whichever AI
     Provider connection is configured for this organization. Returns
-    (fields, confidence, skip_reason) — skip_reason is set (fields=[])
-    when there's no OCR text yet or no AI Provider connection configured,
-    so the stage is genuinely skipped (like OCR skips non-applicable file
-    types above) instead of falling back to fabricated values.
+    (fields, confidence, skip_reason, raw_ai_response, model_name) —
+    skip_reason is set
+    (fields=[]) when there's no OCR text yet or no AI Provider connection
+    configured, so the stage is genuinely skipped (like OCR skips non-
+    applicable file types above) instead of falling back to fabricated
+    values. raw_ai_response is the AI model's own verbatim JSON response
+    (persisted onto Document.ai_raw_response by the caller — see INV3) —
+    None whenever no real AI call happened (skipped, or Custom Extraction
+    Engine fallback, which isn't AI-based at all). model_name (INV22) is
+    the real connection's model identifier (e.g. "gpt-4o-mini") when a
+    genuine AI call ran, "CUSTOM_ENGINE" for the rule-based fallback (a
+    real, honest label — something deterministic genuinely did the
+    extraction), or None when nothing ran — persisted onto Document.
+    extraction_model by the caller so Lineage's AI_MODEL node can show a
+    real value.
+
+    document_type (e.g. "INVOICE" — see document_taxonomies.py), when the
+    caller already knows it (currently only the scheduler's invoice-typed
+    document schedules — see schedule_service.py), skips ad-hoc schema
+    detection in favor of the canonical taxonomy directly, same as the
+    manual "Run AI Extraction" picker (run_manual_ai_extraction) already
+    does. document_type=None (the default) is the original ad-hoc
+    auto-detect behavior, unchanged for every other caller.
 
     If the ad-hoc schema-detection call itself fails, OR it succeeds but
     genuinely finds nothing (every proposed field comes back empty — the
@@ -767,19 +856,22 @@ async def _run_ai_extraction(db: AsyncSession, doc: Document) -> tuple[list[dict
     Extraction Engine (see _run_custom_engine_extraction below) instead
     of skipping the stage outright."""
     if not doc.ocr_result or not (doc.ocr_result.get("full_text") or "").strip():
-        return [], None, "No OCR text available for AI Extraction."
+        return [], None, "No OCR text available for AI Extraction.", None, None
 
     with db.no_autoflush:
         candidates = await _pick_ai_connections(db, doc.organization_id)
         if not candidates:
-            return await _run_custom_engine_extraction(db, doc)
+            fields, conf, skip_reason = await _run_custom_engine_extraction(db, doc, document_type=document_type)
+            return fields, conf, skip_reason, None, "CUSTOM_ENGINE"
 
         last_error: str | None = None
         for conn in candidates:
             ad_hoc_error: str | None = None
             result: dict | None = None
             try:
-                schema = await extraction_service.detect_schema(db, doc, conn.id, doc.organization_id)
+                schema = await extraction_service.detect_schema(
+                    db, doc, conn.id, doc.organization_id, document_type=document_type,
+                )
                 result = await extraction_service.extract_fields(db, doc, schema, conn.id, doc.organization_id)
             except extraction_service.ExtractionError as exc:
                 ad_hoc_error = str(exc)
@@ -819,11 +911,11 @@ async def _run_ai_extraction(db: AsyncSession, doc: Document) -> tuple[list[dict
                     # failure; the document still ends up correctly flagged
                     # NEEDS_REVIEW upstream since extraction_percent will be low/None.
 
-            fields = _reshape_extraction_fields(result["fields"])
-            return fields, result.get("overallConfidence"), None
+            fields = _reshape_extraction_fields(result["fields"], doc)
+            return fields, result.get("overallConfidence"), None, result.get("raw_model_response"), result.get("model")
 
         # Every configured AI Provider connection genuinely failed.
-        return [], None, last_error or "AI Extraction failed on every configured AI Provider connection."
+        return [], None, last_error or "AI Extraction failed on every configured AI Provider connection.", None, None
 
 
 MAX_MINED_FIELD_NAMES = 20  # hard cap — see discover_known_field_names() docstring
@@ -982,11 +1074,16 @@ async def run_manual_ai_extraction(
             raise ManualExtractionError("AI Extraction failed on every configured AI Provider connection — " + "; ".join(errors))
         raise ManualExtractionError(errors[0] if errors else "AI Extraction failed.")
 
-    fields = _reshape_extraction_fields(result["fields"])
+    fields = _reshape_extraction_fields(result["fields"], doc)
     if not fields:
         raise ManualExtractionError("The Custom Extraction Engine didn't find any usable fields in this document." if use_custom_engine else "The AI model didn't find any usable fields in this document.")
 
     doc.extraction_result = {"fields": fields, "business_rule_flag": False, "document_type": document_type}
+    doc.ai_raw_response = result.get("raw_model_response")
+    # INV22 — same convention as the automatic pipeline's _run_ai_extraction():
+    # "CUSTOM_ENGINE" is a real, honest label (deterministic rule-based
+    # extraction genuinely ran), not a fabricated model name.
+    doc.extraction_model = "CUSTOM_ENGINE" if use_custom_engine else result.get("model")
     doc.dataset = build_dataset(fields)
     doc.extraction_percent = result.get("overallConfidence")
     overall_conf = result.get("overallConfidence") or 0.0
@@ -1005,6 +1102,20 @@ async def run_manual_ai_extraction(
     else:
         await review_svc.auto_resolve_for_document(db, doc.id)
     await db.refresh(doc)
+
+    # Invoice Intelligence materialization (INV5) — same explicit-pin
+    # gate as process_document() above; never fails the manual extraction
+    # action itself.
+    if document_type == "INVOICE" and doc.extraction_result and doc.extraction_result.get("fields"):
+        try:
+            from app.services.invoice import invoice_processing_service, invoice_validation_service, invoice_decision_service
+            invoice = await invoice_processing_service.materialize_invoice(db, doc)
+            await invoice_validation_service.seed_default_rules(db, doc.organization_id)
+            validation_results = await invoice_validation_service.evaluate_invoice(db, invoice)
+            await invoice_decision_service.decide(db, invoice, validation_results)
+        except Exception:  # noqa: BLE001 - see process_document()'s matching comment
+            pass
+
     return doc
 
 
@@ -1100,11 +1211,40 @@ def _friendly_db_error(exc: Exception) -> str:
     return text
 
 
-async def process_document(db: AsyncSession, doc: Document, *, reprocess: bool = False) -> Document:
+async def process_document(
+    db: AsyncSession, doc: Document, *, reprocess: bool = False,
+    confidence_threshold: float = 90.0, accuracy_threshold: float = 90.0,
+    document_type: str | None = None,
+    invoice_auto_post: bool = False, invoice_erp_connection_id: int | None = None,
+    skip_invoice_pipeline: bool = False,
+) -> Document:
     """Runs the Document Intelligence pipeline synchronously and persists
     timeline/OCR/extraction/dataset results onto the document. OCR (stage 2)
     and AI Extraction (stage 3) are real; Image Scanner/Validation timing
-    remain simulated — see module docstring."""
+    remain simulated — see module docstring.
+
+    confidence_threshold/accuracy_threshold (spec: Scheduled Document
+    Intelligence Workflow) control the PASS/REVIEW_REQUIRED boundary below —
+    defaults exactly match manual scan's previous hardcoded 90/90 so every
+    existing caller is unaffected; only schedule_service.py's document-
+    schedule dispatch passes non-default values, per-schedule.
+
+    document_type (e.g. "INVOICE", see document_taxonomies.py) pins AI
+    Extraction to a known canonical taxonomy instead of ad-hoc auto-detect
+    — see _run_ai_extraction()'s own docstring. None (the default) is the
+    original auto-detect behavior; only an invoice-typed
+    DocumentScheduleConfig.document_type passes a real value here (INV11).
+
+    skip_invoice_pipeline (INV24) — when True, keeps document_type="INVOICE"
+    pinning the AI Extraction taxonomy for accuracy but skips the automatic
+    materialize/validate/decide chain below that would otherwise run
+    unconditionally for an INVOICE-typed document. Every existing caller
+    (manual upload, Scheduler, Review Queue) leaves this False and is
+    completely unaffected; only Pipeline Builder's own "Invoice Processing"
+    node (execution/pipeline_job_executor.py) passes True, so that its
+    separate "Invoice Validation" node can run that same real chain exactly
+    once as its own distinct pipeline stage instead of it happening twice
+    or being silently absorbed into this one."""
     doc_id = doc.id  # saved before anything can fail — used to re-fetch a clean instance if the except block below needs to recover from a broken session
     rnd = random.Random()
     now = datetime.now(timezone.utc)
@@ -1224,7 +1364,11 @@ async def process_document(db: AsyncSession, doc: Document, *, reprocess: bool =
         doc.status = DocumentStatus.AI_EXTRACTION
         ai_start = cursor
         real_ai_start = time.monotonic()
-        fields, extraction_conf, ai_skip_reason = await _run_ai_extraction(db, doc)
+        fields, extraction_conf, ai_skip_reason, ai_raw_response, ai_model_name = await _run_ai_extraction(
+            db, doc, document_type=document_type,
+        )
+        doc.ai_raw_response = ai_raw_response
+        doc.extraction_model = ai_model_name
         real_ai_elapsed = time.monotonic() - real_ai_start
         if ai_skip_reason:
             cursor = ai_start + timedelta(seconds=real_ai_elapsed)
@@ -1262,11 +1406,35 @@ async def process_document(db: AsyncSession, doc: Document, *, reprocess: bool =
                 business_rule_flag = numeric_total > settings.review_business_rule_total_threshold
             except ValueError:
                 pass
-        doc.extraction_result = {"fields": fields, "business_rule_flag": business_rule_flag} if fields else None
+        # Accuracy score — spec section 22's "required fields present /
+        # schema validation" concept made numeric: the share of extracted
+        # fields whose own validation_status isn't "invalid". Real, derived
+        # from the same per-field validation_status the AI/OCR extraction
+        # stage already computed — not a fabricated second score. Stored
+        # inside extraction_result (additive dict key) rather than a new
+        # Document column, same convention as business_rule_flag above.
+        scoreable_fields = [f for f in fields if f.get("type") != "table"]
+        accuracy_score = round(100 * sum(1 for f in scoreable_fields if f.get("validation_status") != "invalid") / len(scoreable_fields), 1) \
+            if scoreable_fields else 100.0
+        doc.extraction_result = (
+            {"fields": fields, "business_rule_flag": business_rule_flag, "accuracy_score": accuracy_score, "document_type": document_type}
+            if fields else None
+        )
 
         conf_components = [c for c in (scan_conf, ocr_conf, extraction_conf) if c is not None]
         overall_conf = round(sum(conf_components) / len(conf_components), 1)
-        needs_review = overall_conf < 90 or any(f["validation_status"] == "invalid" for f in fields) or business_rule_flag
+        # confidence_threshold/accuracy_threshold default to 90 — the exact
+        # value manual scan hardcoded before this parameter existed, so
+        # every existing caller (manual scan, bulk upload, Review Queue
+        # reprocess — none of which pass this yet) sees byte-identical
+        # behavior. Only the Scheduled Document Intelligence Workflow
+        # (schedule_service.py) passes a schedule-configured value.
+        needs_review = (
+            overall_conf < confidence_threshold
+            or (fields and accuracy_score < accuracy_threshold)
+            or any(f["validation_status"] == "invalid" for f in fields)
+            or business_rule_flag
+        )
         val_status = "completed" if not needs_review else "failed"
         rec, cursor = _stage("Validation", val_status, cursor, rnd.uniform(0.2, 0.8), overall_conf,
                               error="Low confidence on one or more fields — flagged for manual review." if needs_review else None)
@@ -1308,6 +1476,41 @@ async def process_document(db: AsyncSession, doc: Document, *, reprocess: bool =
     doc.timeline = timeline
     await db.commit()
     await db.refresh(doc)
+
+    # Invoice Intelligence materialization (INV5) — only for a document
+    # this run explicitly pinned to the INVOICE taxonomy (document_type
+    # param above), never inferred/guessed from content. A failure here
+    # must never fail the document's own processing result — Document
+    # Intelligence stays fully usable even if invoice normalization has
+    # a real bug on some edge-case document.
+    if document_type == "INVOICE" and not skip_invoice_pipeline and doc.extraction_result and doc.extraction_result.get("fields"):
+        try:
+            from app.services.invoice import invoice_processing_service, invoice_validation_service, invoice_decision_service
+            from app.models.invoice_intelligence.core import ApInvoiceDecision, ApInvoiceSource
+            invoice = await invoice_processing_service.materialize_invoice(
+                db, doc, source=ApInvoiceSource.SCHEDULE if doc.source_schedule_id else ApInvoiceSource.MANUAL_UPLOAD,
+                source_schedule_id=doc.source_schedule_id,
+            )
+            await invoice_validation_service.seed_default_rules(db, doc.organization_id)
+            validation_results = await invoice_validation_service.evaluate_invoice(db, invoice)
+            decision = await invoice_decision_service.decide(db, invoice, validation_results)
+
+            # Scheduler auto-post (INV11) — only ever fires on the
+            # decision engine's own highest-confidence outcome. A
+            # REVIEW_REQUIRED/REJECT/RETRY invoice is completely
+            # unaffected by invoice_auto_post regardless of the schedule's
+            # setting; this is never a way to skip review, only to skip
+            # the manual "click Post to ERP" step on invoices the decision
+            # engine already trusts. Reuses invoice_erp_service.
+            # post_invoice() unmodified — same idempotent posting,
+            # retry/circuit-breaker, and auto-reconciliation as a manual
+            # post.
+            if decision == ApInvoiceDecision.STRAIGHT_THROUGH and invoice_auto_post and invoice_erp_connection_id:
+                from app.services.invoice import invoice_erp_service
+                await invoice_erp_service.post_invoice(db, invoice, erp_connection_id=invoice_erp_connection_id)
+        except Exception:  # noqa: BLE001 - see comment above; never fail document processing over this
+            pass
+
     return doc
 
 
@@ -1338,12 +1541,22 @@ def is_processing(document_id: int) -> bool:
     return document_id in _running_tasks
 
 
-async def start_processing(db: AsyncSession, doc: Document, *, reprocess: bool) -> Document:
+async def start_processing(db: AsyncSession, doc: Document, *, reprocess: bool, document_type: str | None = None) -> Document:
     """Kicks off process_document() as a background task and returns
     immediately — the route handler awaits THIS, not the pipeline itself.
     If this document is already being processed, does not start a second
     overlapping run; just returns its current (still in-progress) state,
-    same idempotency principle load_executor.start_load() uses."""
+    same idempotency principle load_executor.start_load() uses.
+
+    document_type (INV8) lets a caller that already knows what kind of
+    document this is — e.g. api/invoices.py's upload route — pin AI
+    Extraction to a known canonical taxonomy from the very first
+    automatic run, same as process_document()'s own document_type param
+    (INV11's invoice-typed schedules already pass this at the
+    process_document() layer directly; this is the same seam exposed one
+    level up, for a caller that only has start_processing()'s
+    non-blocking entry point). None (the default) keeps every existing
+    caller's original auto-detect behavior unchanged."""
     if is_processing(doc.id):
         return doc
     doc.status = DocumentStatus.SCANNING
@@ -1352,13 +1565,13 @@ async def start_processing(db: AsyncSession, doc: Document, *, reprocess: bool) 
     await db.refresh(doc)
 
     document_id = doc.id
-    task = asyncio.create_task(_process_in_background(document_id, reprocess, doc.organization_id))
+    task = asyncio.create_task(_process_in_background(document_id, reprocess, doc.organization_id, document_type))
     _running_tasks[document_id] = task
     task.add_done_callback(lambda _t, did=document_id: _running_tasks.pop(did, None))
     return doc
 
 
-async def _process_in_background(document_id: int, reprocess: bool, organization_id: int | None) -> None:
+async def _process_in_background(document_id: int, reprocess: bool, organization_id: int | None, document_type: str | None = None) -> None:
     """Runs detached from the request that triggered it, so it needs its
     own DB session — the request's session is gone by the time this
     actually executes. process_document() already catches everything it
@@ -1374,7 +1587,7 @@ async def _process_in_background(document_id: int, reprocess: bool, organization
         if doc is None:
             return
         try:
-            doc = await process_document(db, doc, reprocess=reprocess)
+            doc = await process_document(db, doc, reprocess=reprocess, document_type=document_type)
         except Exception as exc:  # noqa: BLE001 - see docstring
             # process_document() already recovers from a broken session
             # internally (see its own except block) — this only runs if

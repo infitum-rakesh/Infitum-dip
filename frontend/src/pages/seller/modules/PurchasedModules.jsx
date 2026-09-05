@@ -7,11 +7,12 @@
  * just surfaces whatever the API says, never overrides it client-side.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { CheckCircle2, XCircle, AlertTriangle, Puzzle } from 'lucide-react';
-import { StatusBadge, EmptyState, PermissionGate } from '@/components/common/index.js';
+import { CheckCircle2, XCircle, AlertTriangle, Puzzle, Link2 } from 'lucide-react';
+import { StatusBadge, EmptyState, PermissionGate, Button } from '@/components/common/index.js';
 import { SELLER_PERMISSIONS } from '@/utils/constants.js';
 import { customerApi } from '@/services/api/seller/customerApi.js';
 import { moduleApi } from '@/services/api/seller/moduleApi.js';
+import { billingInvoicesApi } from '@/services/api/seller/billingInvoicesApi.js';
 import { ConfigureModuleModal } from './ConfigureModuleModal.jsx';
 import './purchased-modules.css';
 
@@ -23,6 +24,9 @@ export default function PurchasedModules() {
   const [loadingCustomerModules, setLoadingCustomerModules] = useState(false);
   const [configureTarget, setConfigureTarget] = useState(null);
   const [rowError, setRowError] = useState('');
+  const [rowMessage, setRowMessage] = useState('');
+  const [busyModule, setBusyModule] = useState(null);
+  const [payBusyModule, setPayBusyModule] = useState(null);
 
   useEffect(() => {
     moduleApi.getCatalog().then(setCatalog).catch(() => {});
@@ -37,14 +41,61 @@ export default function PurchasedModules() {
 
   useEffect(() => { loadCustomerModules(); }, [loadCustomerModules]);
 
+  /** `busyModule` blocks the toggle button for the SAME module while its
+   * request is in flight — without this, a seller clicking twice before
+   * the first response lands (because nothing visibly changed yet — see
+   * below) fired two "enable" requests, and each one created its own
+   * Subscription + invoice for the same module (found live: duplicate
+   * rows showing up on the Subscriptions screen). The backend now also
+   * rejects a second purchase outright (subscription_service.add_module()),
+   * but disabling here avoids ever sending the redundant request at all. */
   const toggleModule = async (item) => {
-    setRowError('');
+    if (busyModule) return;
+    setRowError(''); setRowMessage('');
+    setBusyModule(item.module);
     try {
-      await moduleApi.setModule(customerId, item.module, { enabled: !item.enabled });
+      const result = await moduleApi.setModule(customerId, item.module, { enabled: !item.enabled });
       loadCustomerModules();
       moduleApi.getCatalog().then(setCatalog).catch(() => {});
+      // Before this fix, enabling a module gave NO feedback at all — the
+      // toggle can stay showing "Disabled" even on success (a paid org's
+      // grant starts SUSPENDED until its invoice is paid), which read as
+      // "nothing happened" and was exactly what prompted repeated clicks.
+      if (!item.enabled) {
+        if (result.status === 'ACTIVE') {
+          setRowMessage(`${item.label} enabled.`);
+        } else if (result.pending_invoice_id) {
+          setRowMessage(`${item.label} added — pending payment. An invoice was created; it will activate once paid.`);
+        } else {
+          setRowMessage(`${item.label} enabled.`);
+        }
+      } else {
+        setRowMessage(`${item.label} disabled.`);
+      }
     } catch (err) {
       setRowError(err?.message ?? 'Could not update this module.');
+    } finally {
+      setBusyModule(null);
+    }
+  };
+
+  /** Pay for a module's outstanding invoice straight from this row — same
+   * popup-blocker-safe pattern as Customers.jsx/SellerInvoices.jsx: open
+   * the tab synchronously on click, redirect it once the real URL comes
+   * back, and fall back to navigating this tab if the popup was blocked. */
+  const payForModule = async (item) => {
+    if (!item.pending_invoice_id) return;
+    const tab = window.open('', '_blank');
+    setPayBusyModule(item.module);
+    try {
+      const result = await billingInvoicesApi.createPaymentLink(item.pending_invoice_id);
+      if (tab) tab.location.href = result.payment_url;
+      else window.location.href = result.payment_url;
+    } catch (err) {
+      if (tab) tab.close();
+      setRowError(err?.message ?? 'Could not generate a payment link.');
+    } finally {
+      setPayBusyModule(null);
     }
   };
 
@@ -90,6 +141,7 @@ export default function PurchasedModules() {
         </div>
 
         {rowError && <div className="pm-form-error">{rowError}</div>}
+        {rowMessage && <div className="pm-form-message">{rowMessage}</div>}
 
         {!customerId ? (
           <EmptyState icon={<Puzzle size={28} />} title="Select a customer" description="Choose a customer above to view and manage their module licenses." />
@@ -99,7 +151,7 @@ export default function PurchasedModules() {
           <div className="pm-table-wrap">
             <table className="pm-table">
               <thead>
-                <tr><th>Module</th><th>Category</th><th>Purchased</th><th>Enabled</th><th>License Type</th><th>Max Users</th><th>Monthly Credits</th><th>Max Docs</th><th>Expiry</th><th>Actions</th></tr>
+                <tr><th>Module</th><th>Category</th><th>Purchased</th><th>Enabled</th><th>Payment</th><th>License Type</th><th>Max Users</th><th>Monthly Credits</th><th>Max Docs</th><th>Expiry</th><th>Actions</th></tr>
               </thead>
               <tbody>
                 {customerModules.items.map((item) => (
@@ -115,12 +167,22 @@ export default function PurchasedModules() {
                     <td>
                       <button
                         className={`pm-toggle-btn ${item.enabled ? 'on' : 'off'}`}
-                        disabled={!item.enabled && item.dependencies.length > 0 && !item.dependencies_met}
+                        disabled={busyModule === item.module || (!item.enabled && item.dependencies.length > 0 && !item.dependencies_met)}
                         onClick={() => toggleModule(item)}
                         title={selectedCustomerName}
                       >
-                        {item.enabled ? 'Enabled' : 'Disabled'}
+                        {busyModule === item.module ? 'Saving…' : item.enabled ? 'Enabled' : 'Disabled'}
                       </button>
+                    </td>
+                    <td>
+                      {item.pending_invoice_id ? (
+                        <div className="pm-pending-payment">
+                          <StatusBadge variant="warning" dot>Pending Payment</StatusBadge>
+                          <Button variant="ghost" size="sm" icon={<Link2 size={12} />} loading={payBusyModule === item.module} onClick={() => payForModule(item)}>
+                            Pay
+                          </Button>
+                        </div>
+                      ) : '—'}
                     </td>
                     <td>{item.license_type.replace(/_/g, ' ')}</td>
                     <td>{item.max_users ?? '∞'}</td>

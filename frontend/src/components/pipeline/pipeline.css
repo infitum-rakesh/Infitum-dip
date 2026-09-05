@@ -566,6 +566,12 @@
 }
 .sdc-error-text { color: var(--color-danger-dark); }
 
+.sdc-link-btn {
+  display: inline-block; margin-top: 4px; padding: 0; border: none; background: none;
+  font-size: 11px; color: var(--color-primary); cursor: pointer; text-decoration: underline;
+}
+.sdc-link-btn:hover { color: var(--color-primary-dark, var(--color-primary)); }
+
 .sdc-unsupported-note {
   display: flex; align-items: flex-start; gap: 7px;
   background: var(--color-warning-bg); color: var(--color-warning-dark);

@@ -47,6 +47,11 @@ class ConnectionType(str, enum.Enum):
     # netsuite_suiteql.py and connectors/application/netsuite_soap.py.
     NETSUITE_SUITEQL = "NETSUITE_SUITEQL"
     NETSUITE_SOAP = "NETSUITE_SOAP"
+    # Oracle Fusion ERP Cloud (Financials — Payables Invoices REST resource)
+    # — see connectors/application/oracle_erp.py. Deliberately distinct
+    # from ORACLE above, which is a plain Oracle Database driver
+    # connection (SQL*Net/cx_Oracle), unrelated to ERP Cloud's REST APIs.
+    ORACLE_ERP_CLOUD = "ORACLE_ERP_CLOUD"
     # Storage
     SFTP = "SFTP"
     FTP = "FTP"

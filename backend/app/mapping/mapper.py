@@ -34,11 +34,25 @@ _FORBIDDEN_PATTERN = re.compile(
 )
 
 
-def validate_mapping(mappings: list[dict], source_columns: list[dict], target_columns: list[dict]) -> dict:
+def validate_mapping(
+    mappings: list[dict], source_columns: list[dict], target_columns: list[dict],
+    *, allow_target_defaults: bool = False,
+) -> dict:
+    """allow_target_defaults — CM2/spec section 27: a required (NOT NULL)
+    target column left unmapped is always a blocking ERROR, UNLESS the
+    column has a real database default *and* the caller has explicitly
+    opted into trusting it (allow_target_defaults=True) — never inferred
+    silently. Column dicts should carry "nullable"/"default" when
+    available (see mapping_service.py::columns_to_dicts()); columns
+    missing that key are treated as nullable (no ERROR raised) rather
+    than guessed as required, since guessing wrong the other way would
+    block a mapping over metadata this function was never given."""
     source_names = {c["name"] for c in source_columns}
     target_names = {c["name"] for c in target_columns}
     target_types = {c["name"]: c.get("data_type", "") for c in target_columns}
     source_types = {c["name"]: c.get("data_type", "") for c in source_columns}
+    target_nullable = {c["name"]: c.get("nullable", True) for c in target_columns}
+    target_default = {c["name"]: c.get("default") for c in target_columns}
 
     issues = []
     row_status: dict[str, str] = {}
@@ -78,6 +92,17 @@ def validate_mapping(mappings: list[dict], source_columns: list[dict], target_co
             issues.append({"row_id": row_id, "severity": "ERROR", "message": "Transformation contains a disallowed SQL keyword or statement separator."})
             severity_here = "CONFLICT"
 
+        # CM2/spec section 30 — a business/natural key must actually come
+        # from source data (renamed, transformed, or looked-up); a literal
+        # constant can never distinguish one record from another, so
+        # flagging one is_key is very likely a config mistake, not a real
+        # SCD1/SCD2 key. WARNING, not ERROR — a constant *component* of a
+        # composite key alongside real key columns is a legitimate (if
+        # unusual) pattern this shouldn't hard-block.
+        if m.get("is_key") and m.get("constant_value") is not None:
+            issues.append({"row_id": row_id, "severity": "WARNING", "message": f"'{tgt}' is marked as a business key but is mapped from a constant value — constants can't distinguish records for change detection."})
+            severity_here = "WARNING" if severity_here == "OK" else severity_here
+
         if severity_here != "CONFLICT" and len(m.get("source_columns") or []) == 1 and not m.get("lookup") and tgt in target_types:
             src = m["source_columns"][0]
             compat = compatibility(source_types.get(src, ""), target_types[tgt])
@@ -91,11 +116,27 @@ def validate_mapping(mappings: list[dict], source_columns: list[dict], target_co
         row_status[row_id] = severity_here
 
     mapped_targets = {m["target_column"] for m in mappings}
+    unmapped_required = []
     for t in target_columns:
-        if t["name"] not in mapped_targets:
+        if t["name"] in mapped_targets:
+            continue
+        is_required = not target_nullable.get(t["name"], True)
+        has_default = target_default.get(t["name"]) is not None
+        if is_required and not (has_default and allow_target_defaults):
+            # spec section 27 — blocking, not informational: a NOT NULL
+            # target column silently left unmapped would insert NULL into
+            # a column the database itself refuses to accept, failing the
+            # load anyway but only after real rows have started moving.
+            # Catch it at validate/publish time instead.
+            issues.append({"row_id": None, "severity": "ERROR", "message": f"Target column '{t['name']}' is NOT NULL but has no source mapping and no usable default."})
+            unmapped_required.append(t["name"])
+        else:
             issues.append({"row_id": None, "severity": "INFO", "message": f"Target column '{t['name']}' has no mapping."})
 
-    if any(v == "CONFLICT" for v in row_status.values()):
+    # unmapped_required issues carry row_id=None (they're not about any one
+    # mapping row), so they can't flow through row_status — folded into the
+    # overall rollup directly instead.
+    if any(v == "CONFLICT" for v in row_status.values()) or unmapped_required:
         overall = "CONFLICT"
     elif any(v == "WARNING" for v in row_status.values()):
         overall = "WARNING"

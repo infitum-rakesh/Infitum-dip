@@ -37,6 +37,16 @@ SELLER_AUDIT_ACTIONS = [
     "Tenant Database Configured", "Tenant Database Updated", "Tenant Database Tested",
     "Platform Database Migration Completed",
     "Module Purchase Inquiry",
+    # Multi-Subscription Billing & Payments Platform (2026)
+    "Payment Gateway Created", "Payment Gateway Configured", "Payment Gateway Tested",
+    "Payment Gateway Activated", "Payment Gateway Deactivated",
+    "Invoice Created", "Invoice Issued", "Invoice Voided",
+    "Payment Link Created", "Payment Successful", "Payment Failed", "Payment Refunded",
+    "Payment Webhook Received", "Subscription Expired", "Subscription Auto-Renewed",
+    # Multi-Company Invoicing
+    "Company Created", "Company Updated", "Company Deactivated", "Company Activated", "Company Set Default",
+    # Subscription & Payment Workflow hardening (2026)
+    "Module Price Updated",
 ]
 
 

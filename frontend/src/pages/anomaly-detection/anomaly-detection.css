@@ -1,0 +1,302 @@
+/* ============================================================
+   Anomaly Detection module styles — scoped to .anm-*
+   ============================================================ */
+
+.anm-page { max-width: 1280px; }
+
+/* ── Page header ───────────────────────────────────────────── */
+.anm-header {
+  display: flex; align-items: flex-start;
+  justify-content: space-between; margin-bottom: 20px; gap: 16px; flex-wrap: wrap;
+}
+.anm-title    { font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary); }
+.anm-subtitle { font-size: var(--fs-md);  color: var(--text-muted);    margin-top: 3px; }
+
+.anm-error-banner {
+  background: var(--color-danger-bg, #FEF2F2); color: var(--color-danger-dark, #991B1B);
+  border: 1px solid var(--color-danger, #EF4444); border-radius: var(--radius-md);
+  padding: 10px 14px; margin-bottom: 16px; font-size: var(--fs-sm);
+}
+
+.anm-loading { padding: 48px; text-align: center; color: var(--text-muted); font-size: var(--fs-md); }
+
+/* ── Filters ───────────────────────────────────────────────── */
+.anm-filters { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+.anm-filters label {
+  display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-xs);
+  font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px;
+}
+.anm-filters select {
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); background: var(--bg-card); color: var(--text-primary); min-width: 180px;
+}
+
+/* ── KPI cards ─────────────────────────────────────────────── */
+.anm-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+.anm-kpi-card {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl);
+  padding: 14px 16px; position: relative;
+}
+.anm-kpi-icon { color: var(--text-muted); margin-bottom: 6px; }
+.anm-kpi-value { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; color: var(--text-primary); line-height: 1.2; }
+.anm-kpi-label { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600; }
+.anm-kpi-warning .anm-kpi-value { color: var(--color-warning-dark, #B45309); }
+.anm-kpi-danger  .anm-kpi-value { color: var(--color-danger-dark, #991B1B); }
+@media (max-width: 900px) { .anm-kpis { grid-template-columns: repeat(2, 1fr); } }
+
+/* ── Panels (donut + table) ───────────────────────────────────── */
+.anm-panels { display: grid; grid-template-columns: 280px 1fr; gap: 16px; align-items: start; }
+@media (max-width: 900px) { .anm-panels { grid-template-columns: 1fr; } }
+
+.anm-panel {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 16px;
+}
+.anm-panel-title { font-size: var(--fs-sm); font-weight: 700; color: var(--text-primary); margin-bottom: 12px; }
+.anm-empty-inline { color: var(--text-muted); font-size: var(--fs-sm); padding: 24px 0; text-align: center; }
+
+/* ── Donut chart ───────────────────────────────────────────── */
+.anm-donut-wrap { display: flex; align-items: center; gap: 16px; }
+.anm-donut-legend { display: flex; flex-direction: column; gap: 6px; }
+.anm-donut-legend-item { display: flex; align-items: center; gap: 6px; font-size: var(--fs-xs); }
+.anm-donut-legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.anm-donut-legend-val { font-weight: 700; color: var(--text-primary); }
+.anm-donut-legend-lbl { color: var(--text-muted); }
+
+/* ── Recent executions table ──────────────────────────────────── */
+.anm-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.anm-table th {
+  text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border);
+  color: var(--text-muted); font-weight: 600; font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: 0.3px;
+}
+.anm-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); color: var(--text-primary); }
+.anm-table tbody tr:hover { background: var(--bg-hover, rgba(0,0,0,0.02)); }
+
+/* ============================================================
+   AD7 — Jobs list + Create/Run wizard. Mirrors reconciliation.css's
+   .rcn-* patterns exactly (list page, editor header, setup form,
+   dataset picker card, column checklist) under the .anm-* namespace.
+   ============================================================ */
+
+/* ── List page (/app/anomaly/jobs) ────────────────────────────── */
+.anm-list-title {
+  font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary);
+  display: flex; align-items: center; gap: 8px;
+}
+.anm-list-table-panel { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); overflow: hidden; }
+.anm-list-name-link {
+  background: none; border: none; padding: 0; font: inherit; cursor: pointer;
+  font-weight: 600; color: var(--color-primary); text-align: left;
+}
+.anm-list-name-link:hover { text-decoration: underline; }
+.anm-list-row-actions { display: flex; gap: 6px; align-items: center; }
+.anm-list-icon-btn {
+  width: 26px; height: 26px; border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); border: 1px solid transparent; transition: var(--transition);
+  background: none; flex-shrink: 0; cursor: pointer;
+}
+.anm-list-icon-btn:hover { background: var(--color-danger-bg); color: var(--color-danger); border-color: var(--color-danger); }
+.anm-list-icon-btn-edit:hover { background: var(--bg-body); color: var(--text-primary); border-color: var(--border-dark); }
+.anm-list-icon-btn-run {
+  background: var(--color-primary); color: var(--text-on-primary); border-color: var(--color-primary);
+}
+.anm-list-icon-btn-run:hover:not(:disabled) { background: var(--color-primary-dark); border-color: var(--color-primary-dark); }
+.anm-list-icon-btn-run:disabled { opacity: 0.6; cursor: not-allowed; }
+.anm-list-icon-spinner {
+  width: 13px; height: 13px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff;
+  border-radius: 50%; animation: anm-spin 0.65s linear infinite; display: inline-block;
+}
+@keyframes anm-spin { to { transform: rotate(360deg); } }
+
+/* ── Editor header (AnomalyJobEditor.jsx) ─────────────────────── */
+.anm-back-link {
+  display: flex; width: fit-content; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600;
+  color: var(--text-muted); text-decoration: none; margin-bottom: 8px;
+}
+.anm-back-link:hover { color: var(--color-primary); }
+.anm-name-input {
+  font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary);
+  border: none; outline: none; background: none; padding: 0; width: 100%; max-width: 480px;
+}
+.anm-name-input:focus { border-bottom: 1.5px solid var(--color-primary); }
+.anm-job-select {
+  padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 12px; background: var(--bg-card); color: var(--text-secondary); outline: none;
+}
+
+.anm-tab-nav  { display: flex; border-bottom: 1px solid var(--border); }
+.anm-tab-btn  {
+  padding: 10px 16px; font-size: var(--fs-sm); font-weight: var(--fw-medium);
+  color: var(--text-muted); cursor: pointer;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: var(--transition); background: none;
+}
+.anm-tab-btn:hover  { color: var(--text-primary); }
+.anm-tab-btn.active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
+
+/* ── Setup form (AnomalyJobSetup.jsx) ─────────────────────────── */
+.anm-setup { padding: 24px; display: flex; flex-direction: column; gap: 22px; }
+.anm-setup-section-title { font-weight: 700; font-size: var(--fs-sm); color: var(--text-primary); margin-bottom: 8px; }
+.anm-setup-section-hint  { font-size: 11px; color: var(--text-faint); display: block; margin-top: 4px; }
+
+.anm-ds-card {
+  background: var(--bg-body); border: 1px solid var(--border);
+  border-radius: var(--radius-xl); padding: 18px;
+}
+.anm-mode-toggle {
+  display: flex; gap: 4px; padding: 3px; margin-bottom: 14px;
+  background: var(--bg-body); border: 1px solid var(--border); border-radius: var(--radius-md);
+}
+.anm-mode-btn {
+  flex: 1; padding: 6px 10px; border: none; border-radius: var(--radius-sm);
+  background: none; color: var(--text-muted); font-size: var(--fs-xs); font-weight: 600;
+  cursor: pointer; transition: var(--transition);
+}
+.anm-mode-btn:disabled { cursor: not-allowed; opacity: 0.6; }
+.anm-mode-btn.active { background: var(--bg-card); color: var(--color-primary); box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+.anm-upload-btn {
+  display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-card); color: var(--text-primary); font-size: var(--fs-sm); font-weight: 600;
+  transition: var(--transition);
+}
+.anm-upload-btn:hover { background: var(--color-primary); color: white; border-color: var(--color-primary); }
+.anm-uploaded-file-card {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-md); padding: 9px 12px;
+  background: var(--bg-card);
+}
+.anm-uploaded-file-name { font-size: var(--fs-sm); font-weight: 600; color: var(--text-primary); word-break: break-all; }
+.anm-icon-btn {
+  width: 22px; height: 22px; border-radius: var(--radius-sm); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; background: none; color: var(--text-muted); cursor: pointer; transition: var(--transition);
+}
+.anm-icon-btn:hover { background: var(--color-danger-bg); color: var(--color-danger-dark); border-color: var(--color-danger); }
+.anm-upload-error { display: block; margin-top: 6px; font-size: var(--fs-xs); color: var(--color-danger-dark); }
+.anm-spin { animation: anm-spin 0.8s linear infinite; }
+
+.anm-field { margin-bottom: 12px; }
+.anm-label { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-secondary); display: block; margin-bottom: 5px; }
+.anm-input, .anm-select {
+  padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); background: white; outline: none; transition: var(--transition);
+}
+.anm-input:focus, .anm-select:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+.anm-input-full, .anm-select-full { width: 100%; }
+.anm-field-row { display: flex; gap: 16px; flex-wrap: wrap; }
+.anm-field-row .anm-field { flex: 1; min-width: 160px; }
+
+/* Column table (select-all/by-type) */
+.anm-col-table {
+  width: 100%; max-height: 280px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-card);
+}
+.anm-col-table-empty {
+  display: flex; align-items: center; justify-content: center; text-align: center;
+  min-height: 60px; padding: 10px; font-size: 12px; color: var(--text-faint);
+}
+.anm-col-table-head {
+  display: grid; grid-template-columns: 28px 1fr 120px 90px; gap: 8px; align-items: center;
+  padding: 7px 10px; border-bottom: 1px solid var(--border);
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; color: var(--text-muted);
+  position: sticky; top: 0; background: var(--bg-card);
+}
+.anm-col-row {
+  display: grid; grid-template-columns: 28px 1fr 120px 90px; gap: 8px; align-items: center;
+  padding: 6px 10px; border-bottom: 1px solid #F1F5F9; font-size: var(--fs-sm); color: var(--text-primary);
+}
+.anm-col-row:last-child { border-bottom: none; }
+.anm-col-row:hover { background: var(--color-primary-light); }
+.anm-col-name { font-family: var(--font-mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.anm-col-type-badge {
+  padding: 1px 7px; border-radius: 99px; font-size: 10.5px; font-weight: 700;
+  background: var(--bg-body); color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; width: fit-content;
+}
+.anm-col-id-radio { justify-self: center; }
+.anm-col-toolbar { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+.anm-col-toolbar-btn {
+  background: none; border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 3px 10px; font-size: 11.5px; font-weight: 600; color: var(--text-secondary); cursor: pointer; transition: var(--transition);
+}
+.anm-col-toolbar-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.anm-col-count-badge {
+  margin-left: 4px; padding: 1px 7px; border-radius: 99px; background: var(--color-primary-light);
+  color: var(--color-primary); font-size: 11px; font-weight: 700;
+}
+
+/* Profiling display */
+.anm-profile-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.anm-profile-table { width: 100%; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+.anm-profile-table th {
+  text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--bg-body);
+  color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; font-size: 10.5px;
+  position: sticky; left: 0;
+}
+.anm-profile-table td { padding: 6px 10px; border-bottom: 1px solid #F1F5F9; color: var(--text-primary); font-family: var(--font-mono); font-size: 11.5px; }
+.anm-profile-table td:first-child, .anm-profile-table th:first-child { font-family: inherit; font-weight: 700; position: sticky; left: 0; background: inherit; }
+.anm-profile-empty { font-size: 12px; color: var(--text-faint); padding: 10px 0; }
+
+/* Detection method + baseline option cards (reuses reconciliation's option-card look) */
+.anm-options { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.anm-option-card {
+  border: 1.5px solid var(--border); border-radius: var(--radius-lg);
+  padding: 12px 14px; cursor: pointer; transition: var(--transition);
+  display: flex; align-items: flex-start; gap: 10px;
+}
+.anm-option-card.selected { border-color: var(--color-primary); background: var(--color-primary-light); }
+.anm-option-card:hover:not(.selected) { border-color: var(--border-dark); background: var(--bg-body); }
+.anm-option-check {
+  width: 16px; height: 16px; border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border-dark); background: white;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0; margin-top: 1px; transition: var(--transition);
+}
+.anm-option-card.selected .anm-option-check { background: var(--color-primary); border-color: var(--color-primary); }
+.anm-option-title { font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: var(--text-primary); }
+.anm-option-desc  { font-size: var(--fs-xs); color: var(--text-muted); line-height: 1.5; margin-top: 2px; }
+.anm-option-cat   { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-faint); margin-top: 3px; }
+
+.anm-checkbox-row { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--text-primary); }
+
+/* Run summary panel */
+.anm-run-summary {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px;
+}
+.anm-run-summary-card { text-align: center; background: var(--bg-body); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 14px; }
+.anm-run-summary-val { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; line-height: 1.2; }
+.anm-run-summary-val.critical { color: var(--color-danger-dark); }
+.anm-run-summary-val.warning  { color: var(--color-warning-dark); }
+.anm-run-summary-val.pass     { color: var(--color-success-dark); }
+.anm-run-summary-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-muted); margin-top: 4px; }
+
+@media (max-width: 900px) {
+  .anm-options { grid-template-columns: 1fr; }
+  .anm-run-summary { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ============================================================
+   AD8 — Results list + Execution detail drill-in.
+   ============================================================ */
+/* Distinct from .anm-panels (Overview's fixed-280px donut+table grid) —
+   this one is a plain two-equal-column layout for the stats/distribution
+   drill-in panels. */
+.anm-exec-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+@media (max-width: 900px) { .anm-exec-panels { grid-template-columns: 1fr; } }
+
+/* Category-count horizontal bars (DistributionBar, categorical columns) */
+.anm-dist-bars { display: flex; flex-direction: column; gap: 6px; }
+.anm-dist-bar-row { display: grid; grid-template-columns: 90px 1fr 50px; align-items: center; gap: 8px; font-size: 12px; }
+.anm-dist-bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-family: var(--font-mono); font-size: 11px; }
+.anm-dist-bar-track { height: 10px; background: var(--bg-body); border-radius: 4px; overflow: hidden; }
+.anm-dist-bar-fill { height: 100%; background: var(--color-primary); border-radius: 4px; }
+.anm-dist-bar-val { text-align: right; color: var(--text-muted); font-weight: 600; }
+
+/* Percentile range strip (DistributionBar, numeric columns) */
+.anm-dist-range-track { position: relative; height: 6px; background: var(--bg-body); border-radius: 99px; margin: 20px 4px 6px; }
+.anm-dist-range-tick {
+  position: absolute; top: 50%; width: 3px; height: 14px; background: var(--color-primary);
+  border-radius: 2px; transform: translate(-50%, -50%);
+}
+.anm-dist-range-labels { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--text-muted); flex-wrap: wrap; gap: 4px; }

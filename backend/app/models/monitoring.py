@@ -81,6 +81,24 @@ class AlertCondition(str, enum.Enum):
     VALIDATION_FAILED = "VALIDATION_FAILED"
     RECONCILIATION_MISMATCH = "RECONCILIATION_MISMATCH"
     CONSECUTIVE_FAILURES = "CONSECUTIVE_FAILURES"  # threshold = consecutive failure count
+    # AD11 — fires when an AnomalyExecution's overall_status is WARNING or
+    # CRITICAL (see anomaly_service.run_job()). Unlike JOB_FAILED/
+    # VALIDATION_FAILED, an anomaly rule is never pipeline-scoped (anomaly
+    # jobs aren't Pipelines) — evaluate_rules()'s existing rule.pipeline_id
+    # check naturally only matches org-wide rules here since ctx has no
+    # pipeline_id for this event.
+    ANOMALY_DETECTED = "ANOMALY_DETECTED"
+    # INV12 — fires when an invoice ERP posting attempt ends in DEAD_LETTER
+    # (retries exhausted, or blocked by an open circuit breaker) — see
+    # invoice_erp_service._post_in_background(). Never pipeline-scoped
+    # (same reasoning as ANOMALY_DETECTED above), so ctx carries no
+    # pipeline_id and only org-wide rules match. Invoice reconciliation
+    # mismatches deliberately reuse RECONCILIATION_MISMATCH above instead
+    # of a third new condition — same underlying concept (a reconciliation
+    # process found a mismatch), different data domain; this also lets an
+    # org's existing org-wide RECONCILIATION_MISMATCH rule catch invoice
+    # mismatches automatically, with no rule reconfiguration needed.
+    INVOICE_ERP_POSTING_FAILED = "INVOICE_ERP_POSTING_FAILED"
 
 
 class AlertSeverity(str, enum.Enum):

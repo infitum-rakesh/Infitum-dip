@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { RotateCw } from 'lucide-react';
 import { Button, DataTable, EmptyState, Modal, PermissionGate, StatusBadge } from '@/components/common/index.js';
 import { SCHEDULE_PERMISSIONS } from '@/utils/constants.js';
 import { formatDateTime, formatDuration, formatNumber } from '@/utils/formatters.js';
 import { scheduleApi } from '@/services/api/scheduleApi.js';
+import { DocumentRunProgress } from './DocumentRunProgress.jsx';
 
-const RUN_STATUS_VARIANT = { RUNNING: 'info', SUCCESS: 'success', WARNING: 'warning', FAILED: 'danger' };
+const RUN_STATUS_VARIANT = {
+  RUNNING: 'info', SUCCESS: 'success', WARNING: 'warning', FAILED: 'danger',
+  COMPLETED_WITH_ERRORS: 'warning', CANCELLED: 'gray',
+};
 
 /**
  * ScheduleHistoryModal — "click a schedule and show execution history".
@@ -19,6 +23,8 @@ export function ScheduleHistoryModal({ open, onClose, schedule }) {
   const [runDetail, setRunDetail] = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [rerunningId, setRerunningId] = useState(null);
+  const [cancelling, setCancelling] = useState(false);
+  const pollRef = useRef(null);
 
   const load = useCallback(() => {
     if (!schedule) return;
@@ -28,6 +34,26 @@ export function ScheduleHistoryModal({ open, onClose, schedule }) {
 
   useEffect(() => { if (open) load(); }, [open, load]);
   useEffect(() => { setExpandedId(null); setRunDetail(null); }, [schedule]);
+
+  // Live progress (spec section 16) — a document-schedule run's
+  // document_stats change server-side while RUNNING; polling here is the
+  // "efficient polling" fallback the spec explicitly allows in place of
+  // WebSocket/SSE. Stops itself the moment the run leaves RUNNING, and on
+  // unmount/collapse, so this never polls in the background forever.
+  useEffect(() => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    if (!expandedId || !schedule) return undefined;
+    if (!runDetail || runDetail.status !== 'RUNNING' || runDetail.document_stats == null) return undefined;
+    pollRef.current = setInterval(async () => {
+      try {
+        const detail = await scheduleApi.getRun(schedule.id, expandedId);
+        setRunDetail(detail);
+        if (detail.status !== 'RUNNING') load(); // refresh the list row (final status/duration) once it lands
+      } catch { /* transient poll failure — next tick retries */ }
+    }, 3000);
+    return () => clearInterval(pollRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expandedId, schedule, runDetail?.status]);
 
   const toggleExpand = async (run) => {
     if (expandedId === run.id) { setExpandedId(null); setRunDetail(null); return; }
@@ -48,6 +74,17 @@ export function ScheduleHistoryModal({ open, onClose, schedule }) {
       load();
     } finally {
       setRerunningId(null);
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!expandedId) return;
+    setCancelling(true);
+    try {
+      const detail = await scheduleApi.cancelRun(schedule.id, expandedId);
+      setRunDetail(detail);
+    } finally {
+      setCancelling(false);
     }
   };
 
@@ -91,10 +128,24 @@ export function ScheduleHistoryModal({ open, onClose, schedule }) {
           ) : (
             <>
               {runDetail?.error_message && <div className="sched-run-error">{runDetail.error_message}</div>}
-              <div className="card-title" style={{ marginBottom: 8 }}>Logs</div>
-              <pre className="sched-log-text">
-                {(runDetail?.logs ?? []).map((l) => `[${formatDateTime(l.timestamp)}] ${l.level.padEnd(5)} ${l.message}`).join('\n')}
-              </pre>
+
+              {runDetail?.document_stats != null && (
+                <DocumentRunProgress
+                  scheduleId={schedule.id}
+                  run={runDetail}
+                  onCancel={runDetail.status === 'RUNNING' && !runDetail.cancel_requested ? handleCancel : null}
+                  cancelling={cancelling}
+                />
+              )}
+
+              {(runDetail?.logs ?? []).length > 0 && (
+                <>
+                  <div className="card-title" style={{ marginTop: 16, marginBottom: 8 }}>Logs</div>
+                  <pre className="sched-log-text">
+                    {(runDetail?.logs ?? []).map((l) => `[${formatDateTime(l.timestamp)}] ${l.level.padEnd(5)} ${l.message}`).join('\n')}
+                  </pre>
+                </>
+              )}
             </>
           )}
         </div>

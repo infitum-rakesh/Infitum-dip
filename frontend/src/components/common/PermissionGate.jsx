@@ -15,22 +15,27 @@
  *   </PermissionGate>
  */
 import { usePermission } from '@/hooks/usePermission.js';
-import { MODULE_META } from '@/utils/permissions.js';
+import { SubscriptionExpiredNotice } from './SubscriptionExpiredNotice.jsx';
 
+// Fallback copy for non-module denials (role/action gates) — a
+// SubscriptionExpiredNotice needs a module key to call GET /access/check
+// against, so these stay static; module-gated denials render the real
+// backend-driven notice instead (see DeniedPlaceholder below, SB30).
 const REASON_MESSAGES = {
   not_authenticated:          'You must be logged in.',
-  not_licensed_by_seller:     'This module has not been purchased for your organisation.',
   license_expired:            'Your licence has expired. Please renew to continue.',
   license_suspended:          'Your account has been suspended.',
-  module_not_in_subscription: 'This module is not included in your current subscription.',
-  user_not_granted_module:    'Your administrator has not granted you access to this module.',
   action_not_permitted_for_role: 'Your role does not have permission for this action.',
   insufficient_role:          'You do not have the required role for this.',
 };
 
 function DeniedPlaceholder({ reason, module: moduleKey, showReason }) {
   if (!showReason) return null;
-  const meta = moduleKey ? MODULE_META[moduleKey] : null;
+  // SB30 — module-gated denials get the real, live SubscriptionExpiredNotice
+  // (GET /api/access/check) instead of a hardcoded generic message.
+  if (moduleKey) {
+    return <SubscriptionExpiredNotice module={moduleKey} fallbackMessage={REASON_MESSAGES[reason]} />;
+  }
   const message = REASON_MESSAGES[reason] ?? 'You do not have access to this feature.';
   return (
     <div style={{
@@ -40,7 +45,6 @@ function DeniedPlaceholder({ reason, module: moduleKey, showReason }) {
       textAlign: 'center',
     }}>
       <span style={{ fontSize: 24 }}>🔒</span>
-      {meta && <span style={{ fontWeight: 700, color: '#B91C1C', fontSize: 14 }}>{meta.icon} {meta.label}</span>}
       <p style={{ fontSize: 13, color: '#7F1D1D', maxWidth: 320, lineHeight: 1.6 }}>{message}</p>
     </div>
   );

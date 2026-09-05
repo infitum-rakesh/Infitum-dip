@@ -18,6 +18,7 @@ from app.schemas.lineage import (
     ColumnMappingListOut,
     ExecutionLineageOut,
     ImpactOut,
+    InvoiceLineageOut,
     LineageOverviewOut,
     PipelineLineageOut,
     PipelineVersionListOut,
@@ -57,6 +58,18 @@ async def execution_lineage(job_id: int, user: User = Depends(_view), db: AsyncS
     result = await svc.get_execution_lineage(db, job_id, _org_id(user))
     if result is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Execution not found")
+    return result
+
+
+@router.get("/invoices/{invoice_id}", response_model=InvoiceLineageOut)
+async def invoice_lineage(invoice_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
+    """INV22 — real field-level lineage for one invoice: Document -> OCR ->
+    AI/Custom-Engine extraction -> ApInvoice header/lines -> validation ->
+    ERP mapping -> ERP posting -> reconciliation, using only stages that
+    actually happened for this invoice."""
+    result = await svc.get_invoice_lineage(db, invoice_id, _org_id(user))
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Invoice not found")
     return result
 
 

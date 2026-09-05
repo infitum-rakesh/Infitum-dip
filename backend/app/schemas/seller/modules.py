@@ -26,6 +26,7 @@ class CustomerModuleItem(BaseModel):
     category: str
     purchased: bool
     enabled: bool
+    status: str | None = None
     license_type: str
     max_users: int | None
     monthly_credits: int | None
@@ -34,6 +35,7 @@ class CustomerModuleItem(BaseModel):
     expiry_date: datetime | None
     dependencies: list[str]
     dependencies_met: bool
+    pending_invoice_id: int | None = None
 
 
 class CustomerModulesOut(BaseModel):
@@ -53,9 +55,34 @@ class SetModuleRequest(BaseModel):
 class SetModuleOut(BaseModel):
     module: str
     enabled: bool
+    status: str
     license_type: str
     max_users: int | None
     monthly_credits: int | None
     max_documents: int | None
     start_date: datetime | None
     expiry_date: datetime | None
+    pending_invoice_id: int | None = None
+
+
+class ModulePriceItem(BaseModel):
+    module: str
+    label: str
+    category: str
+    price: float
+    currency: str
+
+
+class ModulePriceListOut(BaseModel):
+    items: list[ModulePriceItem]
+
+
+class SetModulePriceRequest(BaseModel):
+    price: float
+    currency: str = "USD"
+
+
+class SetModulePriceOut(BaseModel):
+    module: str
+    price: float
+    currency: str

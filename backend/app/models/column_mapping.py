@@ -1,38 +1,34 @@
 """
 ColumnMapping — Object & Column Mapping (Phase 4 of the data-integration
-build).
+build; re-scoped to a lightweight header row by the CM1 versioning build,
+see models/column_mapping_version.py).
 
-One row per saved mapping definition: a source object (one connection +
-schema + object, or a custom SQL query — same shape Source Dataset nodes
-already use) mapped to a target object, plus the column-level mapping
-rows themselves as a JSON blob (mirrors how PipelineVersion stores
-{nodes, edges} — a flexible, per-row-shaped structure like this doesn't
-benefit from being fully relational, and every row already gets validated
-at the Pydantic layer, not the DB layer).
+One row per saved mapping *definition family*: a source object + target
+object plus two pointers into ColumnMappingVersion (latest_version,
+current_published_version) — mirrors models/pipeline.py's
+Pipeline/PipelineVersion split exactly. The real column-level mapping
+rows (transformation/lookup/constant/default/is_key, see
+column_mapping_version.py's docstring for the row shape) now live on the
+immutable ColumnMappingVersion snapshot rows, never here — this header
+row is never itself a "current mapping definition."
+
+`mappings`/`status` below are kept as real columns for backward read
+compatibility only (old rows created before CM1's migration/backfill
+script populated ColumnMappingVersion for every existing mapping) — new
+code must never write to them; use services/mapping_service.py's
+create_new_version()/publish_version()/get_effective_mappings() instead.
+ColumnMappingOut's `mappings` field is served via get_effective_mappings()
+so existing frontend consumers (ObjectColumnMapping.jsx) keep working
+unmodified against the current published (or latest) version.
 
 Live schema is never cached here — source_columns/target_columns are
 always re-fetched from the real connection via connectors/database/base.py
 at read/validate/auto-map time (see mapping_service.py), so a mapping
 never goes stale relative to what the source/target actually look like.
-
-One mapping row (an element of `mappings`) has this shape:
-{
-  "id": "map_xxx",
-  "source_columns": ["FIRST_NAME", "LAST_NAME"],  # usually one; >1 only for a
-                                                    # multi-column expression (concat, etc.)
-  "target_column": "CUSTOMER_FULL_NAME",
-  "transformation": "TRIM(FIRST_NAME || ' ' || LAST_NAME)",  # SQL expression; empty = passthrough
-  "constant_value": None,     # literal value instead of any source column
-  "default_value": None,      # COALESCE(...) fallback when the source value is NULL
-  "lookup": None,              # {"table": "...", "key_column": "...", "return_column": "..."} — same-connection JOIN
-  "status": "MAPPED",          # MAPPED | SUGGESTED | UNMAPPED | CONFLICT
-  "confidence": 100,           # 0-100, meaningful for SUGGESTED rows from the auto-mapper
-  "match_method": "exact",     # exact | case_insensitive | normalized | alias | similarity | manual
-}
 """
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, JSON, String, func
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.connection import TenantBase
@@ -54,9 +50,19 @@ class ColumnMapping(TenantBase):
     target_schema: Mapped[str | None] = mapped_column(String(200), nullable=True)
     target_object: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
-    mappings: Mapped[list] = mapped_column(JSON, default=list)  # list[dict] — see module docstring for row shape
+    # CM1: real version pointers, mirroring Pipeline.current_version.
+    # latest_version always points at the newest version row (any status);
+    # current_published_version points at the newest PUBLISHED version
+    # specifically (None until something has been explicitly Published) —
+    # this is the version a production pipeline node is allowed to attach.
+    latest_version: Mapped[int] = mapped_column(Integer, default=1)
+    current_published_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    status: Mapped[str] = mapped_column(String(20), default="DRAFT")  # DRAFT | VALIDATED | WARNING | CONFLICT — last validate() outcome
+    # Legacy columns — read-only post-CM1, see module docstring. Column
+    # kept (rather than dropped) so pre-CM1 SQLite rows remain loadable
+    # without an in-place data rewrite beyond the one-time backfill script.
+    mappings: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT")
 
     created_by: Mapped[int | None] = mapped_column(nullable=True)
     updated_by: Mapped[int | None] = mapped_column(nullable=True)
@@ -66,4 +72,4 @@ class ColumnMapping(TenantBase):
     )
 
     def __repr__(self) -> str:
-        return f"<ColumnMapping {self.name} ({self.source_object} -> {self.target_object})>"
+        return f"<ColumnMapping {self.name} ({self.source_object} -> {self.target_object}) latest=v{self.latest_version}>"

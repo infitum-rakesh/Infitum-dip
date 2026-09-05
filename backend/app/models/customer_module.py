@@ -26,6 +26,20 @@ resumed via Activate) plus `max_records`/`storage_limit_gb` to round out
 the spec's "CREATE LICENSE" field list (Record Limit, Storage Limit —
 Maximum Documents/Monthly Credits already covered Document Limit/AI
 Credit Limit from Phase 4).
+
+Multi-Subscription Billing & Payments Platform (2026): this table IS the
+spec's "subscription_entitlement" concept — extended, not duplicated.
+`subscription_id` ties each row to the specific Subscription that grants
+it, and the uniqueness constraint moved from (organization_id, module) to
+(subscription_id, module): two different subscriptions on the same org
+can now each hold their own row for the same module, so one subscription
+expiring never revokes a module a different, still-active subscription
+also grants (see services/billing/access_service.py). `subscription_id`
+is nullable only for legacy pre-migration rows; see the SB1 migration
+script (backend/scripts/migrate_sb1_customer_modules.py) for the
+recreate-copy-drop-rename this required on SQLite, and SB3's backfill
+that assigned every pre-existing row to its org's then-current
+subscription.
 """
 from datetime import datetime
 
@@ -37,10 +51,13 @@ from app.database.connection import PlatformBase
 
 class CustomerModule(PlatformBase):
     __tablename__ = "customer_modules"
-    __table_args__ = (UniqueConstraint("organization_id", "module", name="uq_customer_module"),)
+    __table_args__ = (UniqueConstraint("subscription_id", "module", name="uq_customer_module_subscription"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False, index=True)
+    # Nullable only for pre-SB1-migration legacy rows; every row created
+    # from here on always has one. See module docstring above.
+    subscription_id: Mapped[int | None] = mapped_column(ForeignKey("subscriptions.id"), nullable=True, index=True)
     module: Mapped[str] = mapped_column(String(60), nullable=False, index=True)  # one of module_service.MODULE_CATALOG keys
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)

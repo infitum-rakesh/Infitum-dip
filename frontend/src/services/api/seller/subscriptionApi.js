@@ -29,6 +29,8 @@ export const subscriptionApi = {
 
   renew: (id) => apiClient.post(`/seller/subscriptions/${id}/renew`).then((r) => r.data),
 
+  extend: (id, days) => apiClient.post(`/seller/subscriptions/${id}/extend`, { days }).then((r) => r.data),
+
   changePlan: (id, planId) => apiClient.post(`/seller/subscriptions/${id}/change-plan`, { plan_id: planId }).then((r) => r.data),
 
   suspend: (id) => apiClient.post(`/seller/subscriptions/${id}/suspend`).then((r) => r.data),

@@ -10,17 +10,24 @@ import { createPortal } from 'react-dom';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Plus, RefreshCcw, MoreVertical, Pencil, RotateCw, ArrowUpCircle,
-  ArrowDownCircle, PauseCircle, PlayCircle, XCircle, CreditCard,
+  ArrowDownCircle, PauseCircle, PlayCircle, XCircle, CreditCard, CalendarPlus,
 } from 'lucide-react';
 import { Button, StatusBadge, DataTable, SearchBox, EmptyState, PermissionGate } from '@/components/common/index.js';
 import { PAGINATION, SELLER_PERMISSIONS } from '@/utils/constants.js';
 import { formatDate } from '@/utils/formatters.js';
 import { planApi, subscriptionApi } from '@/services/api/seller/subscriptionApi.js';
-import { CreateSubscriptionModal, EditSubscriptionModal, ChangePlanModal } from './SubscriptionModals.jsx';
+import { CreateSubscriptionModal, EditSubscriptionModal, ChangePlanModal, ExtendSubscriptionModal } from './SubscriptionModals.jsx';
 import './subscriptions.css';
 
 const STATUS_VARIANT = { TRIAL: 'info', ACTIVE: 'success', EXPIRING: 'warning', EXPIRED: 'gray', SUSPENDED: 'danger', CANCELLED: 'gray' };
 const STATUSES = ['TRIAL', 'ACTIVE', 'EXPIRING', 'EXPIRED', 'SUSPENDED', 'CANCELLED'];
+// PaymentStatus values (models/billing/payment.py doesn't apply here —
+// this reflects Invoice.status, see subscription_service.list_subscriptions).
+const PAYMENT_STATUS_VARIANT = {
+  PAID: 'success', NO_PAYMENT_REQUIRED: 'success',
+  PAYMENT_PENDING: 'warning', PARTIALLY_PAID: 'warning',
+  OVERDUE: 'danger', VOID: 'gray', CANCELLED: 'gray', DRAFT: 'gray', ISSUED: 'info',
+};
 
 export default function Subscriptions() {
   const { subscriptionId } = useParams();
@@ -42,6 +49,7 @@ export default function Subscriptions() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
   const [planModal, setPlanModal] = useState(null); // { subscription, mode }
+  const [extendTarget, setExtendTarget] = useState(null);
 
   useEffect(() => { planApi.list().then(setPlans).catch(() => {}); }, []);
 
@@ -101,6 +109,12 @@ export default function Subscriptions() {
     { key: 'billing_cycle', header: 'Billing Cycle', render: (v) => v },
     { key: 'amount', header: 'Amount', render: (v, row) => v > 0 ? <span className="ss-amount">${v.toLocaleString()} {row.currency}</span> : <span className="ss-amount-zero">Free</span> },
     { key: 'status', header: 'Status', render: (v) => <StatusBadge variant={STATUS_VARIANT[v] ?? 'gray'} dot>{v}</StatusBadge> },
+    {
+      key: 'payment_status', header: 'Payment',
+      render: (v) => v
+        ? <StatusBadge variant={PAYMENT_STATUS_VARIANT[v] ?? 'gray'} dot>{v.replace(/_/g, ' ')}</StatusBadge>
+        : <span style={{ color: 'var(--text-faint)' }}>No invoices yet</span>,
+    },
     { key: 'auto_renew', header: 'Auto Renew', render: (v) => v ? <StatusBadge variant="success">On</StatusBadge> : <StatusBadge variant="gray">Off</StatusBadge> },
     {
       key: 'actions', header: 'Actions',
@@ -110,6 +124,7 @@ export default function Subscriptions() {
             row={row}
             onEdit={() => setEditTarget(row)}
             onRenew={() => runRenew(row)}
+            onExtend={() => setExtendTarget(row)}
             onUpgrade={() => setPlanModal({ subscription: row, mode: 'upgrade' })}
             onDowngrade={() => setPlanModal({ subscription: row, mode: 'downgrade' })}
             onSuspend={() => runSuspend(row)}
@@ -177,13 +192,20 @@ export default function Subscriptions() {
           onSaved={() => { setPlanModal(null); refreshAll(); }}
         />
       )}
+      {extendTarget && (
+        <ExtendSubscriptionModal
+          subscription={extendTarget}
+          onClose={() => setExtendTarget(null)}
+          onSaved={() => { setExtendTarget(null); refreshAll(); }}
+        />
+      )}
     </PermissionGate>
   );
 }
 
 // ── Row kebab menu ───────────────────────────────────────────────
 
-function RowMenu({ row, onEdit, onRenew, onUpgrade, onDowngrade, onSuspend, onResume, onCancel }) {
+function RowMenu({ row, onEdit, onRenew, onExtend, onUpgrade, onDowngrade, onSuspend, onResume, onCancel }) {
   const [open, setOpen] = useState(false);
   const [coords, setCoords] = useState(null);
   const btnRef = useRef(null);
@@ -209,6 +231,7 @@ function RowMenu({ row, onEdit, onRenew, onUpgrade, onDowngrade, onSuspend, onRe
           <div className="ss-row-menu-list" style={{ position: 'fixed', top: coords.top, left: coords.left }}>
             <button onClick={act(onEdit)}><Pencil size={13} /> Edit</button>
             <button onClick={act(onRenew)}><RotateCw size={13} /> Renew</button>
+            <button onClick={act(onExtend)}><CalendarPlus size={13} /> Extend</button>
             <button onClick={act(onUpgrade)}><ArrowUpCircle size={13} /> Upgrade</button>
             <button onClick={act(onDowngrade)}><ArrowDownCircle size={13} /> Downgrade</button>
             {suspended

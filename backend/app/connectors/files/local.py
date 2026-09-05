@@ -51,22 +51,34 @@ class LocalFileConnector(FileConnectorBase):
         except Exception as exc:
             return ConnectionTestResult(success=False, message=self._scrub(str(exc)), latency_ms=round((time.monotonic() - start) * 1000, 1))
 
-    def list_files(self, pattern: str | None = None) -> list[FileInfo]:
+    def list_files(self, pattern: str | None = None, recursive: bool = False) -> list[FileInfo]:
         base = self._base()
         effective_pattern = pattern or self.config.get("file_pattern") or "*"
         is_regex = effective_pattern.startswith("re:")
         regex = re.compile(effective_pattern[3:]) if is_regex else None
 
+        # recursive=True (Scheduled Document Intelligence Workflow — spec
+        # "recursive scan" option) walks every subdirectory via rglob();
+        # the default (False) preserves the exact pre-existing single-level
+        # iterdir() behavior every other caller (Source Dataset node, SQL
+        # Workspace schema browsing) already depends on. `name` becomes the
+        # path relative to base_path once recursion is on (e.g.
+        # "invoices/2026/file.pdf") rather than just the bare filename —
+        # still a valid object_name for _resolve_path()/open_read_stream()
+        # since that just does `(base / object_name).resolve()`.
+        entries = sorted(base.rglob("*"), key=lambda p: p.name) if recursive else sorted(base.iterdir(), key=lambda p: p.name)
+
         results = []
-        for entry in sorted(base.iterdir(), key=lambda p: p.name):
+        for entry in entries:
             if entry.is_dir():
                 continue
-            matched = regex.search(entry.name) if is_regex else fnmatch.fnmatch(entry.name, effective_pattern)
+            display_name = str(entry.relative_to(base)) if recursive else entry.name
+            matched = regex.search(display_name) if is_regex else fnmatch.fnmatch(display_name, effective_pattern)
             if not matched:
                 continue
             stat_result = entry.stat()
             results.append(FileInfo(
-                name=entry.name, path=str(entry), size=stat_result.st_size,
+                name=display_name, path=str(entry), size=stat_result.st_size,
                 modified_at=datetime.fromtimestamp(stat_result.st_mtime, tz=timezone.utc),
             ))
         return results

@@ -17,11 +17,14 @@ frontend/node_modules/
 
 # Runtime data / generated artifacts (not source)
 backend/*.db
+backend/*.db.bak-*
+backend/anomaly_reports/
 backend/uploads/
 backend/sql_exports/
 backend/staging_data/
 backend/pipeline_outputs/
 flask_session/
+/dip.db
 
 # OS / editor cruft
 .DS_Store
@@ -29,3 +32,9 @@ flask_session/
 
 # Stray non-project asset sitting in the repo root
 ChatGPT Image*.png
+Archive.zip
+DIP_Demo*.mp4
+DIP_ETL.mp4
+DIP_Demo_v2_transcript.txt
+DEMO_VIDEO_CONTEXT.md
+stillora-*.mp4

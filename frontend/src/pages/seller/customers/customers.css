@@ -68,6 +68,9 @@ select.sc-input.sc-inline-filter { width: auto; min-width: 140px; }
 .sc-row-menu-danger:hover { background: var(--color-danger-bg) !important; color: var(--color-danger-dark) !important; }
 .sc-row-menu-warn { color: var(--color-warning-dark) !important; }
 .sc-row-menu-warn:hover { background: var(--color-warning-bg) !important; color: var(--color-warning-dark) !important; }
+.sc-row-menu-pay { color: var(--color-primary) !important; font-weight: 600; }
+.sc-row-menu-pay:hover:not(:disabled) { background: var(--color-primary-light) !important; color: var(--color-primary) !important; }
+.sc-row-menu-pay:disabled { opacity: 0.6; cursor: default; }
 
 /* ── Create Customer modal ───────────────────────────────────── */
 .sc-form-error { background: var(--color-danger-bg); color: var(--color-danger-dark); padding: 8px 12px; border-radius: var(--radius-md); font-size: 12.5px; margin-bottom: 12px; }
@@ -76,7 +79,14 @@ select.sc-input.sc-inline-filter { width: auto; min-width: 140px; }
 .sc-field-full { grid-column: 1 / -1; }
 .sc-field-label { font-size: 11.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; }
 .sc-required { color: var(--color-danger); }
+.sc-field-hint { font-size: 11px; color: var(--text-faint); margin: 0; }
 .sc-section-divider { grid-column: 1 / -1; font-size: 11px; font-weight: 700; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.4px; margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border); }
+
+.sc-module-picker { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; background: var(--bg-body); border: 1px solid var(--border); border-radius: var(--radius-md); }
+.sc-module-check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 5px 9px; cursor: pointer; }
+.sc-module-check input { margin: 0; }
+.sc-custom-total { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: var(--color-primary-light); border-radius: var(--radius-md); font-size: 13px; }
+.sc-custom-total strong { font-size: 15px; color: var(--color-primary); }
 
 .sc-credential-box {
   background: var(--color-primary-light); border: 1px solid var(--color-primary-mid);

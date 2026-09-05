@@ -16,6 +16,7 @@ import { MODULE_META } from '@/utils/permissions.js';
 import { formatDate, formatDateTime, formatNumber } from '@/utils/formatters.js';
 import { useAuth } from '@/hooks/useAuth.js';
 import { customerApi } from '@/services/api/seller/customerApi.js';
+import { EditCustomerModal } from './EditCustomerModal.jsx';
 import './customers.css';
 import './customer-details.css';
 
@@ -41,6 +42,7 @@ export default function CustomerDetails() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [tab, setTab] = useState('overview');
+  const [editOpen, setEditOpen] = useState(false);
   const [impersonateOpen, setImpersonateOpen] = useState(false);
   const [impersonating, setImpersonating] = useState(false);
   const [resendResult, setResendResult] = useState(null);
@@ -116,7 +118,7 @@ export default function CustomerDetails() {
             </div>
           </div>
           <div className="scd-actions">
-            <Button variant="secondary" size="sm" icon={<Pencil size={13} />} onClick={() => setTab('overview')}>Edit</Button>
+            <Button variant="secondary" size="sm" icon={<Pencil size={13} />} onClick={() => setEditOpen(true)}>Edit</Button>
             {suspended
               ? <Button variant="secondary" size="sm" icon={<Power size={13} />} onClick={runActivate}>Activate</Button>
               : <Button variant="secondary" size="sm" icon={<PowerOff size={13} />} onClick={runSuspend}>Suspend</Button>}
@@ -145,6 +147,13 @@ export default function CustomerDetails() {
         {tab === 'activity' && <ActivityTab detail={detail} />}
         {tab === 'audit' && <AuditTab customerId={customerId} />}
       </div>
+
+      <EditCustomerModal
+        open={editOpen}
+        customer={detail}
+        onClose={() => setEditOpen(false)}
+        onSaved={() => { setEditOpen(false); load(); }}
+      />
 
       <Modal
         open={impersonateOpen}
@@ -216,6 +225,16 @@ function OverviewTab({ detail }) {
           <dt>Name</dt><dd>{detail.primary_contact_name || '—'}</dd>
           <dt>Email</dt><dd>{detail.primary_contact_email || '—'}</dd>
           <dt>Phone</dt><dd>{detail.primary_contact_phone || '—'}</dd>
+        </dl>
+      </div>
+      <div className="scd-card">
+        <div className="scd-card-title">Billing Address &amp; Company</div>
+        <dl className="scd-dl">
+          <dt>Address</dt><dd>{detail.address_line || '—'}</dd>
+          <dt>City</dt><dd>{detail.city || '—'}</dd>
+          <dt>Branch</dt><dd>{detail.branch || '—'}</dd>
+          <dt>Postal Code</dt><dd>{detail.postal_code || '—'}</dd>
+          <dt>Invoiced Through</dt><dd>{detail.company_name || 'Default company'}</dd>
         </dl>
       </div>
       <div className="scd-card">

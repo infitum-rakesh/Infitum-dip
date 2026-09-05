@@ -92,7 +92,23 @@ class SftpConnector(FileConnectorBase):
             if client:
                 client.close()
 
-    def list_files(self, pattern: str | None = None) -> list[FileInfo]:
+    def _list_dir_recursive(self, sftp, base: str, relative_prefix: str) -> list:
+        """Real recursive walk (Scheduled Document Intelligence Workflow —
+        spec "recursive scan" option) — depth-first over sftp.listdir_attr(),
+        one round trip per directory. Returns (filename_relative_to_base,
+        entry) pairs; used only when recursive=True below, so the default
+        single-level behavior every other caller relies on is unaffected."""
+        out = []
+        for entry in sftp.listdir_attr(base):
+            child_path = f"{base.rstrip('/')}/{entry.filename}"
+            child_relative = f"{relative_prefix}{entry.filename}"
+            if stat_module.S_ISDIR(entry.st_mode or 0):
+                out.extend(self._list_dir_recursive(sftp, child_path, f"{child_relative}/"))
+            else:
+                out.append((child_relative, entry))
+        return out
+
+    def list_files(self, pattern: str | None = None, recursive: bool = False) -> list[FileInfo]:
         client = None
         try:
             client, sftp = self._open_sftp()
@@ -101,15 +117,18 @@ class SftpConnector(FileConnectorBase):
             is_regex = effective_pattern.startswith("re:")
             regex = re.compile(effective_pattern[3:]) if is_regex else None
 
+            if recursive:
+                entries = self._list_dir_recursive(sftp, base, "")
+            else:
+                entries = [(entry.filename, entry) for entry in sftp.listdir_attr(base) if not stat_module.S_ISDIR(entry.st_mode or 0)]
+
             results = []
-            for entry in sftp.listdir_attr(base):
-                if stat_module.S_ISDIR(entry.st_mode or 0):
-                    continue
-                matched = regex.search(entry.filename) if is_regex else fnmatch.fnmatch(entry.filename, effective_pattern)
+            for display_name, entry in entries:
+                matched = regex.search(display_name) if is_regex else fnmatch.fnmatch(display_name, effective_pattern)
                 if not matched:
                     continue
                 results.append(FileInfo(
-                    name=entry.filename, path=f"{base.rstrip('/')}/{entry.filename}", size=entry.st_size or 0,
+                    name=display_name, path=f"{base.rstrip('/')}/{display_name}", size=entry.st_size or 0,
                     modified_at=datetime.fromtimestamp(entry.st_mtime, tz=timezone.utc) if entry.st_mtime else None,
                 ))
             results.sort(key=lambda f: f.name)

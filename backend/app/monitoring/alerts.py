@@ -50,6 +50,10 @@ def _condition_matches(rule: AlertRule, ctx: dict) -> bool:
         return ctx.get("event") == "VALIDATION_FAILED"
     if cond == AlertCondition.RECONCILIATION_MISMATCH:
         return ctx.get("event") == "RECONCILIATION_MISMATCH"
+    if cond == AlertCondition.ANOMALY_DETECTED:
+        return ctx.get("event") == "ANOMALY_DETECTED"
+    if cond == AlertCondition.INVOICE_ERP_POSTING_FAILED:
+        return ctx.get("event") == "INVOICE_ERP_POSTING_FAILED"
     if cond == AlertCondition.CONSECUTIVE_FAILURES:
         n = ctx.get("consecutive_failures")
         return n is not None and rule.threshold is not None and n >= rule.threshold

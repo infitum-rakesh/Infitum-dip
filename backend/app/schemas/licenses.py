@@ -4,8 +4,16 @@ from pydantic import BaseModel, field_validator
 
 
 class UsageMetric(BaseModel):
-    used: int
-    limit: int | None  # None = unlimited (enterprise) or not tracked for this resource
+    # int | float, not just int: shared across users/documents/ai_calls
+    # (genuine whole-number counts) AND storage_gb, whose real value
+    # (services/license_service.py::_storage_used_gb — real bytes summed
+    # from Document rows, /1e9, round(..., 3)) is a real fraction of a GB
+    # for any org with actual documents — 0 is the only value that's ever
+    # coincidentally a whole number. Confirmed live: a real org (documents
+    # totalling ~4MB) 500'd on this endpoint with a Pydantic
+    # int_from_float error before this fix.
+    used: int | float
+    limit: int | float | None  # None = unlimited (enterprise) or not tracked for this resource
 
 
 class LicenseDashboardOut(BaseModel):

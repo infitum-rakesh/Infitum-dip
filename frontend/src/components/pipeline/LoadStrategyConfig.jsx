@@ -16,7 +16,10 @@
  * dropdown still rendered inline in TransformationDesigner.jsx for
  * targetType === 'file' (file writes have no concept of upsert/SCD).
  */
-import { Plus, X } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { AlertTriangle, Link2, Plus, X } from 'lucide-react';
+import { mappingApi } from '@/services/api/mappingApi.js';
+import { findNearestNodeOfType } from './nodeGraphUtils.js';
 import './pipeline.css';
 
 const FULL_STRATEGIES = [
@@ -68,13 +71,52 @@ function ChipList({ values, onChange, placeholder, columnOptions }) {
   );
 }
 
-export function LoadStrategyConfig({ cfg, set, sourceColumns = [] }) {
+export function LoadStrategyConfig({ cfg, set, sourceColumns = [], nodeId, nodes = [], edges = [] }) {
   const loadType = cfg.loadType ?? 'full';
   const deltaStrategy = cfg.deltaStrategy ?? 'scd1';
   const businessKeys = cfg.businessKeys ?? [];
   const changeDetection = cfg.changeDetection ?? 'auto';
   const changedColumns = cfg.changedColumns ?? [];
   const nonKeyColumns = sourceColumns.filter((c) => !businessKeys.includes(c));
+
+  // CM7 — "Use business keys from upstream Column Mapping": a ONE-TIME
+  // copy of whichever target columns that mapping's own editor flagged
+  // is_key into this node's businessKeys, at click time (mirrored again
+  // at canvas Save, since businessKeys is plain node config like any
+  // other field). Never a live reference — _run_target only ever reads
+  // cfg["businessKeys"] with no knowledge mappings exist at all (see
+  // execution/pipeline_job_executor.py), so editing the mapping's key
+  // flags later, or even Upgrading this node to a newer mapping version,
+  // does NOT retroactively change what SCD1/SCD2 key on here. Re-click
+  // the button after an Upgrade if the new version's keys differ.
+  const nodesById = useMemo(() => Object.fromEntries(nodes.map((n) => [n.id, n])), [nodes]);
+  const upstreamMapping = useMemo(
+    () => (nodeId ? findNearestNodeOfType(nodeId, 'column_mapping_step', edges, nodesById, 'upstream') : null),
+    [nodeId, edges, nodesById],
+  );
+  const [loadingKeys, setLoadingKeys] = useState(false);
+  const [keysError, setKeysError] = useState(null);
+
+  const useKeysFromMapping = async () => {
+    const mappingId = upstreamMapping?.config?.mappingId;
+    const mappingVersion = upstreamMapping?.config?.mappingVersion;
+    if (!mappingId || !mappingVersion) return;
+    setLoadingKeys(true);
+    setKeysError(null);
+    try {
+      const version = await mappingApi.getVersion(mappingId, mappingVersion);
+      const keyColumns = (version.mappings || []).filter((m) => m.is_key).map((m) => m.target_column);
+      if (keyColumns.length === 0) {
+        setKeysError('That mapping has no column flagged as a business key yet — flag at least one row\'s "is_key" in the Column Mapping editor first.');
+        return;
+      }
+      set('businessKeys', keyColumns);
+    } catch {
+      setKeysError('Could not load that mapping\'s key columns — try again, or enter them manually below.');
+    } finally {
+      setLoadingKeys(false);
+    }
+  };
 
   return (
     <div className="ls-panel">
@@ -135,6 +177,17 @@ export function LoadStrategyConfig({ cfg, set, sourceColumns = [] }) {
             <label className="pc-config-label">
               Business Key <span style={{ color: 'var(--color-danger)' }}>*</span>
             </label>
+            {upstreamMapping && (
+              <button
+                type="button" className="sdc-secondary-btn" disabled={loadingKeys}
+                style={{ marginBottom: 6 }} onClick={useKeysFromMapping}
+              >
+                <Link2 size={12} /> {loadingKeys ? 'Loading…' : 'Use business keys from Column Mapping'}
+              </button>
+            )}
+            {keysError && (
+              <span className="sdc-inline-warning" style={{ marginBottom: 6 }}><AlertTriangle size={11} /> {keysError}</span>
+            )}
             <ChipList
               values={businessKeys}
               onChange={(v) => set('businessKeys', v)}
@@ -144,6 +197,11 @@ export function LoadStrategyConfig({ cfg, set, sourceColumns = [] }) {
             {businessKeys.length === 0 && (
               <span style={{ fontSize: 11, color: 'var(--color-danger)', marginTop: 3 }}>
                 Required — the pipeline cannot run without at least one business key column.
+              </span>
+            )}
+            {upstreamMapping && (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                A one-time copy from the upstream Column Mapping node's is_key-flagged columns — editing that mapping later, or upgrading this node's mapping version, never changes these keys automatically.
               </span>
             )}
           </div>

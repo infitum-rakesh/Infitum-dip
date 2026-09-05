@@ -28,7 +28,9 @@ Fabric real-but-unverified), STORAGE (SFTP/FTP/Local File/Network File,
 all live-verified), API (REST/SOAP, both live-verified against a real
 local test server), APPLICATION (NetSuite SuiteQL+SOAP real-but-
 unverified against a live NetSuite account; Salesforce real-but-
-unverified against a live org), CLOUD (Azure live-verified via Azurite,
+unverified against a live org; Oracle ERP Cloud real-but-unverified
+against a live Fusion tenant — see connectors/application/oracle_erp.py),
+CLOUD (Azure live-verified via Azurite,
 AWS live-verified via LocalStack), AI_PROVIDER (Ollama live-verified;
 OpenAI/Anthropic real-but-unverified against a funded account),
 OCR_PROVIDER (AWS Textract/Google Vision/Azure Document Intelligence —
@@ -41,6 +43,7 @@ from app.connectors.ai.openai_connector import OpenAiConnector
 from app.connectors.api.rest import RestApiConnector
 from app.connectors.api.soap import SoapApiConnector
 from app.connectors.application.netsuite_soap import NetSuiteSoapConnector
+from app.connectors.application.oracle_erp import OracleErpConnector
 from app.connectors.ocr.aws_textract import AwsTextractConnector
 from app.connectors.ocr.azure_document_intelligence import AzureDocumentIntelligenceConnector
 from app.connectors.ocr.google_vision import GoogleVisionConnector
@@ -95,6 +98,17 @@ CONNECTOR_REGISTRY: dict[str, type[BaseConnector]] = {
     # verified against an actual NetSuite account (none available here).
     "NETSUITE_SUITEQL": NetSuiteSuiteQlConnector,
     "NETSUITE_SOAP": NetSuiteSoapConnector,
+    # ORACLE_ERP_CLOUD — real httpx-based client for Oracle Fusion ERP
+    # Cloud's documented Payables Invoices REST resource (Basic Auth or
+    # OAuth2 client_credentials, same real-request machinery as REST's
+    # RestApiConnector). NOT live-verified — no provisioned Oracle Fusion
+    # ERP Cloud tenant exists in this environment; real code built
+    # strictly against Oracle's own public REST API documentation for
+    # this resource (not proprietary internals), same disclosed-but-real
+    # precedent as SNOWFLAKE/SAP/FABRIC/SALESFORCE above — see
+    # connectors/application/oracle_erp.py's docstring for the full
+    # disclosure and the exact documented contract it implements.
+    "ORACLE_ERP_CLOUD": OracleErpConnector,
     # SALESFORCE — real simple-salesforce REST/SOQL client. Field schema
     # was corrected this session (see connection_service.py's SALESFORCE
     # entry) from a broken NetSuite-TBA-shaped set to Salesforce's actual

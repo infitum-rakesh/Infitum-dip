@@ -253,3 +253,68 @@ export function ChangePlanModal({ subscription, plans, mode, onClose, onSaved })
     </Modal>
   );
 }
+
+// ── Extend (SB28) — pushes end_date out by N days without touching
+// status/plan/entitlements; distinct from Renew, which advances the
+// full billing period and resets status to ACTIVE. Real call to
+// POST /api/seller/subscriptions/{id}/extend, which also generates a
+// real EXTENSION invoice (services/billing/invoice_service.py). ────────
+
+const EXTEND_PRESETS = [7, 14, 30, 90];
+
+export function ExtendSubscriptionModal({ subscription, onClose, onSaved }) {
+  const [days, setDays] = useState(30);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => { setDays(30); setError(''); }, [subscription]);
+
+  if (!subscription) return null;
+
+  const handleSubmit = async () => {
+    const n = Number(days);
+    if (!Number.isInteger(n) || n <= 0) { setError('Enter a whole number of days greater than 0.'); return; }
+    setSaving(true);
+    setError('');
+    try {
+      await subscriptionApi.extend(subscription.id, n);
+      onSaved?.();
+    } catch (err) {
+      setError(err?.response?.data?.detail || err?.message || 'Could not extend this subscription.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal open onClose={onClose} title="Extend Subscription" size="sm"
+      footer={<>
+        <Button variant="secondary" onClick={onClose} disabled={saving}>Cancel</Button>
+        <Button variant="primary" onClick={handleSubmit} loading={saving}>Extend</Button>
+      </>}>
+      {error && <div className="ss-form-error">{error}</div>}
+      <p style={{ fontSize: 12.5, color: 'var(--text-muted)', marginBottom: 10 }}>
+        {subscription.organization_name}'s current end date is{' '}
+        <strong>{subscription.end_date ? new Date(subscription.end_date).toLocaleDateString() : 'not set'}</strong>.
+        Extending pushes it out by the number of days below and generates a real invoice for the extension.
+      </p>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+        {EXTEND_PRESETS.map((p) => (
+          <button
+            key={p}
+            type="button"
+            className={`ss-status-chip ${Number(days) === p ? 'active' : ''}`}
+            onClick={() => setDays(p)}
+          >
+            {p}d
+          </button>
+        ))}
+      </div>
+      <label className="ss-field-label">Days to extend by</label>
+      <input
+        type="number" min={1} className="ss-input"
+        value={days} onChange={(e) => setDays(e.target.value)}
+      />
+    </Modal>
+  );
+}

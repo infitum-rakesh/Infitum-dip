@@ -1,6 +1,7 @@
-import { Bell, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
+import { PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth.js';
 import { Breadcrumb } from './Breadcrumb.jsx';
+import { NotificationDropdown } from './NotificationDropdown.jsx';
 import './Header.css';
 
 export function Header({ collapsed, onToggle }) {
@@ -21,10 +22,7 @@ export function Header({ collapsed, onToggle }) {
       </div>
 
       <div className="header-right">
-        <button className="header-icon-btn" aria-label="Notifications">
-          <Bell size={16} />
-          <span className="header-notif-dot" />
-        </button>
+        <NotificationDropdown />
 
         <div className="header-user">
           <div className="header-avatar">

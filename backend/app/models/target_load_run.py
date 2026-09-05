@@ -73,6 +73,14 @@ class TargetLoadRun(TenantBase):
     organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     mapping_id: Mapped[int] = mapped_column(ForeignKey("column_mappings.id"), nullable=False, index=True)
+    # CM4 — pinned at run-start time to the mapping's current_published_version
+    # (falling back to latest_version if nothing is published yet — Run Load
+    # pre-dates the publish concept and shouldn't be blocked by it, unlike
+    # the stricter Pipeline Builder path). NULL on runs created before this
+    # column existed; load_executor.py falls back to the mapping's
+    # then-current effective version for those, matching the exact
+    # behavior this run actually got when it started.
+    mapping_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     write_mode: Mapped[WriteMode] = mapped_column(Enum(WriteMode), default=WriteMode.APPEND)
     key_columns: Mapped[list | None] = mapped_column(JSON, nullable=True)  # auto-detected target PK, set at plan time for UPSERT

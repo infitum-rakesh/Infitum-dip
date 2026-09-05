@@ -58,6 +58,7 @@ lifetimes for normal (non-held-open) usage.
 from __future__ import annotations
 
 import struct
+from urllib.parse import quote_plus
 
 from sqlalchemy import event, text
 from sqlalchemy.engine import URL, Engine
@@ -152,17 +153,35 @@ class FabricConnector(SqlAlchemyDatabaseConnector):
         database = (cfg.get("database") or "").strip()
         if not sql_endpoint or not database:
             raise ConnectorValidationError("SQL Endpoint and Database are both required for a Fabric connection.")
-        return URL.create(
-            "mssql+pyodbc",
-            host=sql_endpoint,
-            port=self.default_port,
-            database=database,
-            query={
-                "driver": "ODBC Driver 18 for SQL Server",
-                "Encrypt": "yes",
-                "TrustServerCertificate": "no",
-            },
+        # Built as one raw ODBC connection string (via SQLAlchemy's
+        # `odbc_connect` escape hatch) instead of letting the mssql+pyodbc
+        # dialect assemble one from separate URL fields the normal way.
+        # That auto-assembly (sqlalchemy.dialects.mssql.pyodbc.
+        # MSDialect_pyodbc.create_connect_args) ALWAYS appends exactly one
+        # of: `UID=`/`PWD=` (when a username is given), `Authentication=`
+        # (when an `authentication` query key is given), or — when
+        # neither is given, which is this connector's own case since
+        # identity comes from the token injected via SQL_COPT_SS_ACCESS_
+        # TOKEN below, not from the URL — an unconditional
+        # `Trusted_Connection=Yes`. Every one of those three is a keyword
+        # Microsoft's ODBC Driver 18 rejects outright once an access token
+        # is also supplied: "[FA005] Cannot use Access Token with any of
+        # the following options: Authentication, Integrated Security,
+        # User, Password." `Trusted_Connection=Yes` IS "Integrated
+        # Security" in ODBC terms, so the dialect's own default fallback
+        # is exactly what triggered this — found live testing a real
+        # Fabric connection, the FA005 error the UI actually surfaced. A
+        # connection string built entirely by hand is the only way to
+        # supply DRIVER/SERVER/DATABASE/Encrypt while omitting all four
+        # forbidden keywords, so the token remains the sole credential.
+        conn_str = (
+            "DRIVER={ODBC Driver 18 for SQL Server};"
+            f"SERVER={sql_endpoint},{self.default_port};"
+            f"DATABASE={database};"
+            "Encrypt=yes;"
+            "TrustServerCertificate=no;"
         )
+        return URL.create("mssql+pyodbc", query={"odbc_connect": quote_plus(conn_str)})
 
     def excluded_schemas(self) -> set[str]:
         return {

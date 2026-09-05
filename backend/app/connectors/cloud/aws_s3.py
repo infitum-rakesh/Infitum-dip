@@ -75,7 +75,13 @@ class AwsS3Connector(FileConnectorBase):
         except (ClientError, BotoCoreError, ConnectorValidationError) as exc:
             return ConnectionTestResult(False, self._scrub(str(exc)), round((time.monotonic() - start) * 1000, 1))
 
-    def list_files(self, pattern: str | None = None) -> list[FileInfo]:
+    def list_files(self, pattern: str | None = None, recursive: bool = False) -> list[FileInfo]:
+        # recursive is accepted-and-ignored (interface compatibility with
+        # every other FileConnectorBase subclass — see
+        # LocalFileConnector/SftpConnector/etc.'s real recursive walks):
+        # S3 has no real directories, so list_objects_v2 over the whole
+        # bucket already returns every key at every nesting level, exactly
+        # what "recursive scan" asks for, with no flag needed.
         effective_pattern = pattern or "*"
         is_regex = effective_pattern.startswith("re:")
         regex = re.compile(effective_pattern[3:]) if is_regex else None

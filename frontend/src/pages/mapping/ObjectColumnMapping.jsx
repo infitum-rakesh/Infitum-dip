@@ -10,10 +10,10 @@
  * SQL (including any lookup joins) against the live source connection.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   Wand2, ShieldCheck, Save, Play, Columns3, RotateCcw, Search, Plus,
-  Pencil, X, Check, Loader2, AlertTriangle, ArrowLeftRight,
+  Pencil, X, Check, Loader2, AlertTriangle, ArrowLeftRight, UploadCloud,
 } from 'lucide-react';
 import { Button, PermissionGate, FullPageSpinner, EmptyState, StatusBadge } from '@/components/common/index.js';
 import { MAPPING_PERMISSIONS } from '@/utils/constants.js';
@@ -92,15 +92,41 @@ function ObjectPicker({ label, value, onChange, disabled }) {
 export default function ObjectColumnMapping() {
   const { mappingId } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+
+  // Pipeline Builder's "Create New Mapping" round-trip (CM5): a
+  // column_mapping_step node opens this page in a new tab pre-populated
+  // with its upstream Source Dataset / downstream Target node's object
+  // refs, and listens for a postMessage once this mapping is published —
+  // see ColumnMappingConfig.jsx and the `publishForPipelineNode` handler
+  // below. `returnMode=pipelineNode` is the only signal this page needs;
+  // it never talks to the pipeline/node ids directly.
+  const isPipelineNodeReturn = searchParams.get('returnMode') === 'pipelineNode';
 
   const [id, setId] = useState(mappingId ? Number(mappingId) : null);
   const [name, setName] = useState('Untitled Mapping');
-  const [source, setSource] = useState(emptyRef());
-  const [target, setTarget] = useState(emptyRef());
+  const [source, setSource] = useState(() => {
+    if (mappingId) return emptyRef();
+    const connection_id = searchParams.get('sourceConnectionId');
+    return connection_id
+      ? { connection_id: Number(connection_id), schema_name: searchParams.get('sourceSchema') || '', object_name: searchParams.get('sourceObject') || '' }
+      : emptyRef();
+  });
+  const [target, setTarget] = useState(() => {
+    if (mappingId) return emptyRef();
+    const connection_id = searchParams.get('targetConnectionId');
+    return connection_id
+      ? { connection_id: Number(connection_id), schema_name: searchParams.get('targetSchema') || '', object_name: searchParams.get('targetObject') || '' }
+      : emptyRef();
+  });
   const [sourceColumns, setSourceColumns] = useState([]);
   const [targetColumns, setTargetColumns] = useState([]);
   const [mappings, setMappings] = useState([]);
   const [savedSnapshot, setSavedSnapshot] = useState(null);
+  const [versionInfo, setVersionInfo] = useState(null); // { latest_version, current_published_version, status }
+  const [publishing, setPublishing] = useState(false);
+  const [publishNotice, setPublishNotice] = useState('');
+  const [usage, setUsage] = useState(null); // CM11 — { items, total } from GET /mappings/{id}/usage
 
   const [loading, setLoading] = useState(!!mappingId);
   const [loadError, setLoadError] = useState('');
@@ -113,6 +139,7 @@ export default function ObjectColumnMapping() {
   const [previewError, setPreviewError] = useState('');
   const [saving, setSaving] = useState(false);
   const [actionError, setActionError] = useState('');
+  const [saveNotice, setSaveNotice] = useState('');
 
   const [viewMode, setViewMode] = useState('grid');
   const [editingRow, setEditingRow] = useState(undefined); // undefined = closed, null = new, row = edit
@@ -134,7 +161,18 @@ export default function ObjectColumnMapping() {
       setSourceColumns(d.source_columns);
       setTargetColumns(d.target_columns);
       setSavedSnapshot(JSON.stringify({ name: d.name, mappings: d.mappings }));
+      setVersionInfo({ latest_version: d.latest_version, current_published_version: d.current_published_version, status: d.status });
     }).catch((err) => setLoadError(apiErrorMessage(err, 'Could not load this mapping.'))).finally(() => setLoading(false));
+  }, [mappingId]);
+
+  // CM11 — usage warning: purely informational, never blocks Save/Publish.
+  // A pipeline attached to an older version keeps running that exact
+  // version untouched regardless of what happens here — see
+  // ColumnMappingConfig.jsx's "Upgrade Mapping" button for the only
+  // action that actually moves a pipeline node onto a newer version.
+  useEffect(() => {
+    if (!mappingId) return;
+    mappingApi.getUsage(mappingId).then(setUsage).catch(() => setUsage(null));
   }, [mappingId]);
 
   const sourceReady = !!(source.connection_id && source.object_name);
@@ -194,19 +232,59 @@ export default function ObjectColumnMapping() {
   };
 
   const runSave = async () => {
-    setSaving(true); setActionError('');
+    setSaving(true); setActionError(''); setSaveNotice('');
     try {
       if (id) {
-        const r = await mappingApi.update(id, { name, mappings });
-        setSavedSnapshot(JSON.stringify({ name: r.name, mappings: r.mappings }));
+        // Editing an existing mapping's rows never overwrites in place —
+        // it creates a new immutable version (mirrors Pipeline Builder's
+        // own Save-always-versions behavior). The header's `name` is a
+        // separate, lightweight edit, only sent when it actually changed.
+        const prevName = savedSnapshot ? JSON.parse(savedSnapshot).name : name;
+        if (name !== prevName) await mappingApi.update(id, { name });
+
+        const v = await mappingApi.createVersion(id, { mappings, change_description: 'Edited via Column Mapping editor.' });
+        setSavedSnapshot(JSON.stringify({ name, mappings: v.mappings }));
+        setValidation(null);
+        setVersionInfo((prev) => ({ ...prev, latest_version: v.version_number, status: v.status }));
+        setSaveNotice(`Saved as version ${v.version_number} (${v.status}) — Validate, then Publish to make it available to production pipelines.`);
       } else {
         const r = await mappingApi.create({ name, source, target, mappings });
         setId(r.id);
         setSavedSnapshot(JSON.stringify({ name: r.name, mappings: r.mappings }));
-        navigate(`/app/mapping/${r.id}`, { replace: true });
+        setVersionInfo({ latest_version: r.latest_version, current_published_version: r.current_published_version, status: r.status });
+        navigate(`/app/mapping/${r.id}${window.location.search}`, { replace: true });
       }
     } catch (err) { setActionError(apiErrorMessage(err, 'Could not save mapping.')); }
     finally { setSaving(false); }
+  };
+
+  // ── Version lifecycle: Validate then Publish the latest saved version ──
+
+  const runValidateAndPublish = async () => {
+    if (!id || !versionInfo) return;
+    const versionNumber = versionInfo.latest_version;
+    setPublishing(true); setActionError(''); setPublishNotice('');
+    try {
+      const result = await mappingApi.validateVersion(id, versionNumber);
+      setValidation(result);
+      if (result.overall_status === 'CONFLICT') {
+        setActionError(`Version ${versionNumber} has blocking errors — fix them before it can be published.`);
+        setVersionInfo((prev) => ({ ...prev, status: 'DRAFT' }));
+        return;
+      }
+      const published = await mappingApi.publishVersion(id, versionNumber, {});
+      setVersionInfo({ latest_version: published.version_number, current_published_version: published.version_number, status: published.status });
+      setPublishNotice(`Version ${published.version_number} is now PUBLISHED — available to production pipelines.`);
+
+      if (isPipelineNodeReturn && window.opener) {
+        window.opener.postMessage(
+          { type: 'column-mapping-published', mappingId: id, mappingVersion: published.version_number, mappingName: name },
+          window.location.origin,
+        );
+        setPublishNotice(`Version ${published.version_number} is now PUBLISHED. The Pipeline Builder tab has been notified — you can close this tab and return there.`);
+      }
+    } catch (err) { setActionError(apiErrorMessage(err, 'Validate/Publish failed.')); }
+    finally { setPublishing(false); }
   };
 
   const runReset = () => {
@@ -299,7 +377,53 @@ export default function ObjectColumnMapping() {
           </PermissionGate>
         </div>
 
+        {/* Version & Publish — only PUBLISHED versions can be attached to a
+            production pipeline (spec section 13). Editing/Save always
+            creates a new DRAFT version (see runSave above); this is the
+            explicit action that advances it to VALIDATED then PUBLISHED. */}
+        {id && versionInfo && (
+          <div className="ocm-action-bar" style={{ marginBottom: 4 }}>
+            <span className="ocm-muted" style={{ fontSize: 12.5 }}>
+              Version {versionInfo.latest_version} — <strong>{versionInfo.status}</strong>
+              {versionInfo.current_published_version != null && versionInfo.current_published_version !== versionInfo.latest_version && (
+                <> (v{versionInfo.current_published_version} is the currently published version)</>
+              )}
+            </span>
+            <div className="ocm-action-bar-spacer" />
+            <PermissionGate {...MAPPING_PERMISSIONS.MAPPING_EDIT} fallback={null}>
+              <Button
+                variant="primary" size="sm" icon={publishing ? <Loader2 size={13} className="sdc-spin" /> : <UploadCloud size={13} />}
+                disabled={dirty || publishing || versionInfo.status === 'PUBLISHED'}
+                onClick={runValidateAndPublish}
+              >
+                {versionInfo.status === 'PUBLISHED' ? 'Published' : `Validate & Publish v${versionInfo.latest_version}`}
+              </Button>
+            </PermissionGate>
+          </div>
+        )}
+        {isPipelineNodeReturn && (
+          <div className="ocm-banner info">
+            Opened from a Pipeline Builder Column Mapping node — publish this mapping to attach it back to that pipeline.
+          </div>
+        )}
+        {usage && usage.total > 0 && (
+          <div className="ocm-banner info">
+            Used by {usage.total} pipeline{usage.total === 1 ? '' : 's'} —{' '}
+            {usage.items.map((u, i) => (
+              <span key={u.id}>
+                {i > 0 && ', '}
+                <a href={`/app/transform?pipelineId=${u.pipeline_id}`} target="_blank" rel="noreferrer">
+                  {u.pipeline_name || `Pipeline #${u.pipeline_id}`} (v{u.mapping_version})
+                </a>
+              </span>
+            ))}
+            . Editing here never affects those pipelines until someone explicitly clicks Upgrade Mapping on that node.
+          </div>
+        )}
+
         {actionError && <div className="ocm-banner error">{actionError}</div>}
+        {saveNotice && <div className="ocm-banner success">{saveNotice}</div>}
+        {publishNotice && <div className="ocm-banner success">{publishNotice}</div>}
         {!bothReady && <div className="ocm-banner info">Select a source and target object above to start mapping.</div>}
 
         {validation && (

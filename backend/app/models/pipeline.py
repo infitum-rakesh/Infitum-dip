@@ -27,6 +27,16 @@ from app.database.connection import TenantBase
 
 class Pipeline(TenantBase):
     __tablename__ = "pipelines"
+    # Forces SQLite's real AUTOINCREMENT (tracked in its own sqlite_sequence
+    # table) instead of the default "reuse the highest deleted rowid"
+    # behavior — see PipelineJob's __table_args__ comment for the exact
+    # failure mode this prevents. Found live: creating a brand-new pipeline
+    # reused the id of an old, already-deleted one, and its very first
+    # PipelineVersion insert (version_number=1) collided with an orphaned
+    # version row still sitting under that reused id from the deleted
+    # pipeline — "Could not save pipeline" with a raw IntegrityError. No-op
+    # on Postgres, which never reuses sequence values anyway.
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
 
@@ -56,7 +66,10 @@ class PipelineVersion(TenantBase):
     load never needs a translation layer.
     """
     __tablename__ = "pipeline_versions"
-    __table_args__ = (UniqueConstraint("pipeline_id", "version_number", name="uq_pipeline_version"),)
+    __table_args__ = (
+        UniqueConstraint("pipeline_id", "version_number", name="uq_pipeline_version"),
+        {"sqlite_autoincrement": True},  # same id-reuse protection as Pipeline — see its comment
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     pipeline_id: Mapped[int] = mapped_column(ForeignKey("pipelines.id"), nullable=False, index=True)

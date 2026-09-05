@@ -7,18 +7,25 @@ back subscriptions in this build)."""
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import select
+
 from app.core.deps import require_seller_action
 from app.database.connection import get_db
+from app.models.customer_module import CustomerModule
 from app.models.plan import Plan
 from app.models.subscription import Subscription
 from app.models.user import User
 from app.schemas.seller.subscriptions import (
+    AddModuleRequest,
     ChangePlanRequest,
     CreatePlanRequest,
     CreateSubscriptionRequest,
+    ExtendSubscriptionRequest,
     PlanListOut,
     PlanOut,
     SubscriptionListOut,
+    SubscriptionModuleOut,
+    SubscriptionModulesOut,
     SubscriptionOut,
     UpdatePlanRequest,
     UpdateSubscriptionRequest,
@@ -88,6 +95,23 @@ async def create_subscription(body: CreateSubscriptionRequest, user: User = Depe
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
 
 
+@router.post("/subscriptions/add-module", response_model=SubscriptionOut, status_code=status.HTTP_201_CREATED)
+async def add_module(body: AddModuleRequest, user: User = Depends(_create), db: AsyncSession = Depends(get_db)):
+    """Spec section 38 — purchase an additional module as its own small
+    subscription, without touching any existing subscription. Registered
+    before /subscriptions/{subscription_id} (literal-route-before-path-
+    param ordering, this router's existing convention) — moot here since
+    it's a distinct exact path, but kept consistent regardless."""
+    try:
+        return await svc.add_module(
+            db, organization_id=body.organization_id, module=body.module, actor=user,
+            amount=body.amount, currency=body.currency, billing_cycle=body.billing_cycle,
+            auto_renew=body.auto_renew, end_date=body.end_date,
+        )
+    except svc.SubscriptionServiceError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+
+
 @router.get("/subscriptions/{subscription_id}", response_model=SubscriptionOut)
 async def get_subscription(subscription_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
     return await _get_sub_or_404(db, subscription_id)
@@ -105,11 +129,28 @@ async def renew_subscription(subscription_id: int, user: User = Depends(_edit), 
     return await svc.renew_subscription(db, sub, actor=user)
 
 
+@router.post("/subscriptions/{subscription_id}/extend", response_model=SubscriptionOut)
+async def extend_subscription(subscription_id: int, body: ExtendSubscriptionRequest, user: User = Depends(_edit), db: AsyncSession = Depends(get_db)):
+    sub = await _get_sub_or_404(db, subscription_id)
+    return await svc.extend_subscription(db, sub, days=body.days, actor=user)
+
+
+@router.get("/subscriptions/{subscription_id}/modules", response_model=SubscriptionModulesOut)
+async def get_subscription_modules(subscription_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_db)):
+    await _get_sub_or_404(db, subscription_id)
+    result = await db.execute(select(CustomerModule).where(CustomerModule.subscription_id == subscription_id))
+    items = [
+        SubscriptionModuleOut(module=cm.module, status=cm.status, enabled=cm.enabled, expiry_date=cm.expiry_date)
+        for cm in result.scalars().all()
+    ]
+    return SubscriptionModulesOut(subscription_id=subscription_id, items=items)
+
+
 @router.post("/subscriptions/{subscription_id}/change-plan", response_model=SubscriptionOut)
 async def change_plan(subscription_id: int, body: ChangePlanRequest, user: User = Depends(_edit), db: AsyncSession = Depends(get_db)):
     sub = await _get_sub_or_404(db, subscription_id)
     try:
-        return await svc.change_plan(db, sub, new_plan_id=body.plan_id, actor=user)
+        return await svc.change_plan(db, sub, new_plan_id=body.plan_id, actor=user, effective=body.effective)
     except svc.SubscriptionServiceError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
 
@@ -130,3 +171,21 @@ async def resume_subscription(subscription_id: int, user: User = Depends(_edit),
 async def cancel_subscription(subscription_id: int, user: User = Depends(_edit), db: AsyncSession = Depends(get_db)):
     sub = await _get_sub_or_404(db, subscription_id)
     return await svc.cancel_subscription(db, sub, actor=user)
+
+
+@router.post("/subscriptions/{subscription_id}/mark-past-due", response_model=SubscriptionOut)
+async def mark_past_due(subscription_id: int, user: User = Depends(_edit), db: AsyncSession = Depends(get_db)):
+    sub = await _get_sub_or_404(db, subscription_id)
+    return await svc.mark_past_due(db, sub, actor=user)
+
+
+@router.post("/subscriptions/{subscription_id}/mark-payment-pending", response_model=SubscriptionOut)
+async def mark_payment_pending(subscription_id: int, user: User = Depends(_edit), db: AsyncSession = Depends(get_db)):
+    sub = await _get_sub_or_404(db, subscription_id)
+    return await svc.mark_payment_pending(db, sub, actor=user)
+
+
+@router.post("/subscriptions/{subscription_id}/terminate", response_model=SubscriptionOut)
+async def terminate_subscription(subscription_id: int, user: User = Depends(_edit), db: AsyncSession = Depends(get_db)):
+    sub = await _get_sub_or_404(db, subscription_id)
+    return await svc.terminate_subscription(db, sub, actor=user)

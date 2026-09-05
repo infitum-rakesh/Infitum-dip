@@ -72,6 +72,32 @@ DEFAULT_SETTINGS = {
         "default_timeout_seconds": 3600,
         "max_concurrent_pipelines": 3,
     },
+    # AD9 — org-wide defaults an Anomaly Job editor pre-fills a NEW job
+    # with (see AnomalyJobEditor.jsx's create path and
+    # anomaly_service.get_configuration/update_configuration). Real
+    # wiring, not just "stored + displayed": unlike most sections above,
+    # a new anomaly job's threshold_config/baseline_config/retention_days/
+    # on_critical actually read these on creation. Exposed both here
+    # (generic Settings admin path) and via a dedicated
+    # /anomaly/configuration route pair gated on ANOMALY_DETECTION
+    # permissions rather than Settings — an anomaly-detection editor
+    # shouldn't need Settings access just to set these defaults.
+    "anomaly_detection": {
+        # Same shape as anomaly/scoring.py's DEFAULT_BANDS / bands_from_config's
+        # expected threshold_config["score_bands"]: ascending "upper" bounds,
+        # last one is the ceiling regardless of its stated value.
+        "default_score_bands": [
+            {"upper": 1.0, "label": "NORMAL"},
+            {"upper": 3.0, "label": "LOW"},
+            {"upper": 5.0, "label": "MEDIUM"},
+            {"upper": 8.0, "label": "HIGH"},
+            {"upper": 999999999, "label": "CRITICAL"},
+        ],
+        "default_retention_days": None,
+        "default_baseline_source": "PREVIOUS_RUN",
+        "default_require_baseline_approval": False,
+        "default_create_incident_on_critical": False,
+    },
 }
 
 

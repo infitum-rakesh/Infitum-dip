@@ -38,7 +38,8 @@ AUDIT_MODULES = [
     "Authentication", "User Management", "Role Management", "Permission Changes",
     "License Changes", "Connection Changes", "Document Upload", "OCR",
     "AI Extraction", "Transformation", "Validation", "Reconciliation",
-    "Pipeline", "Schedule", "Incident", "Settings",
+    "Pipeline", "Schedule", "Incident", "Settings", "Anomaly Detection",
+    "Column Mapping",
 ]
 
 

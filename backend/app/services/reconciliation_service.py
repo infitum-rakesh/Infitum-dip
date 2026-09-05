@@ -32,7 +32,7 @@ from app.reconciliation.engine import (
     diff_keys_and_fields,
     require_matching_columns,
 )
-from app.services import connection_service, uploaded_file_service
+from app.services import connection_service, mapping_service, uploaded_file_service
 
 MAX_PERSISTED_EXCEPTIONS = 1000
 
@@ -91,6 +91,56 @@ async def _assert_name_available(
 
 # ── CRUD ─────────────────────────────────────────────────────────
 
+async def derive_from_column_mapping(
+    db: AsyncSession, *, mapping_id: int, mapping_version: int, organization_id: int | None,
+) -> dict:
+    """CM10 — pure convenience: reads a real, exact ColumnMappingVersion's
+    rows and turns them into what ReconciliationJob's own fields already
+    understand: column_mapping ({source_column: target_column}, only for
+    rows that actually rename — reconciliation/engine.py's
+    require_matching_columns() already handles same-named columns without
+    any mapping entry) and key_columns (target columns the mapping itself
+    flagged is_key, same CM7 precedent as the pipeline target node's
+    "Use business keys from Column Mapping" button). Never touches
+    diff_keys_and_fields() or any other part of the real comparison
+    engine — this only ever prefills two plain fields on the job row
+    before it's created, exactly like every other convenience wiring in
+    this build.
+
+    Only pure renames (a single source column, no lookup/transformation/
+    constant_value) become a column_mapping entry — reconciliation
+    compares raw values under an assumed-equal identity, so a lookup or
+    transformation row (whose target value is genuinely derived, not
+    just renamed — e.g. a looked-up customer NAME sitting where the
+    source had a customer_id) would make the comparison compare two
+    structurally different values and always mismatch. Excluding those
+    rows here is a correctness choice, not an oversight."""
+    version = await mapping_service.get_version(db, mapping_id, mapping_version)
+    if version is None:
+        raise ReconciliationServiceError(f"Column Mapping {mapping_id} version {mapping_version} was not found.")
+    column_mapping: dict[str, str] = {}
+    key_columns: list[str] = []
+    for row in (version.mappings or []):
+        target = row.get("target_column")
+        sources = row.get("source_columns") or []
+        if not target:
+            continue
+        is_pure_rename = len(sources) == 1 and not row.get("lookup") and not row.get("transformation") and row.get("constant_value") is None
+        # key_columns/compare_columns are always expressed in SOURCE-side
+        # names — reconciliation_service.py's own key/compare-column
+        # resolution (below) translates through column_mapping to find
+        # the target-side equivalent, exactly like diff_keys_and_fields()'s
+        # own docstring describes. Only a pure-rename row has a real
+        # source-side name to use here; an is_key row that's constant/
+        # looked-up/transformed has no source column that actually
+        # identifies a record on both sides, so it can't become a key.
+        if row.get("is_key") and is_pure_rename:
+            key_columns.append(sources[0])
+        if is_pure_rename and sources[0] != target:
+            column_mapping[sources[0]] = target
+    return {"column_mapping": column_mapping, "key_columns": key_columns}
+
+
 async def create_job(
     db: AsyncSession, *, organization_id: int | None, name: str,
     source_connection_id: int, source_schema: str | None, source_object: str,
@@ -98,12 +148,24 @@ async def create_job(
     key_columns: list[str], compare_columns: list[str], comparison_types: list[str],
     created_by: int | None, column_mapping: dict[str, str] | None = None,
     source_uploaded_file_id: int | None = None, target_uploaded_file_id: int | None = None,
+    source_mapping_id: int | None = None, source_mapping_version: int | None = None,
 ) -> ReconciliationJob:
     await _assert_name_available(db, organization_id=organization_id, name=name)
     await _verify_connection_owned(db, source_connection_id, organization_id)
     await _verify_connection_owned(db, target_connection_id, organization_id)
     await _verify_uploaded_file_owned(db, source_uploaded_file_id, organization_id)
     await _verify_uploaded_file_owned(db, target_uploaded_file_id, organization_id)
+    # CM10 — only fills in what the caller left empty; an explicitly
+    # provided column_mapping/key_columns is never overridden by the
+    # mapping-derived values.
+    if source_mapping_id is not None and source_mapping_version is not None:
+        derived = await derive_from_column_mapping(
+            db, mapping_id=source_mapping_id, mapping_version=source_mapping_version, organization_id=organization_id,
+        )
+        if not column_mapping:
+            column_mapping = derived["column_mapping"]
+        if not key_columns:
+            key_columns = derived["key_columns"]
     row = ReconciliationJob(
         organization_id=organization_id, name=name,
         source_connection_id=source_connection_id, source_schema=source_schema, source_object=source_object,

@@ -89,6 +89,21 @@ export function SourceDatasetConfig({ cfg, set, pipelineId, nodeId, pipelineDirt
   const [schemas, setSchemas] = useState([]);
   const [schemasLoading, setSchemasLoading] = useState(false);
   const [schemaError, setSchemaError] = useState('');
+  // Manual-entry fallback: some sources (NetSuite's SuiteAnalytics Connect
+  // ODBC driver especially — see connectors/database/netsuite_suiteql.py)
+  // can be slow enough enumerating tables/saved-searches that the browse
+  // request times out server-side, or the account's catalog is just too
+  // large/unusual to browse successfully at all. Rather than leave the
+  // picker permanently stuck once that happens, an error on either fetch
+  // auto-switches that field to a plain text input (still writing straight
+  // into cfg.schema/cfg.object), and a manual "Type it in instead" link
+  // offers the same switch even before any error, for a user who already
+  // knows the exact name and doesn't want to wait on the browse call at
+  // all. Found live: "when i configuring source object as netsuite then
+  // still its not able to fetch schema list... allow to enter object name
+  // manually."
+  const [manualSchema, setManualSchema] = useState(false);
+  const [manualObject, setManualObject] = useState(false);
 
   const [objects, setObjects] = useState([]);
   const [objectSearch, setObjectSearch] = useState('');
@@ -139,6 +154,14 @@ export function SourceDatasetConfig({ cfg, set, pipelineId, nodeId, pipelineDirt
     setColumns(null); setRowCount(null); setColumnsError('');
     setPreview(null); setPreviewError('');
   }, [cfg.connectionId, cfg.schema, cfg.object, cfg.objectType, cfg.customSql]);
+
+  // Default back to browsing on a genuinely new connection/object-type
+  // selection — only an actual fetch error (handled where each fetch is
+  // kicked off, above) should auto-switch into manual entry.
+  useEffect(() => {
+    setManualSchema(false);
+    setManualObject(false);
+  }, [cfg.connectionId, cfg.objectType]);
 
   // Hydrate the uploaded-file panel from the backend — covers both
   // reopening this node's properties within the same session and loading
@@ -197,7 +220,7 @@ export function SourceDatasetConfig({ cfg, set, pipelineId, nodeId, pipelineDirt
     setSchemasLoading(true); setSchemaError('');
     connectionApi.getSchemas(cfg.connectionId)
       .then((r) => setSchemas(r.schemas))
-      .catch((err) => setSchemaError(apiErrorMessage(err, 'Could not load schemas.')))
+      .catch((err) => { setSchemaError(apiErrorMessage(err, 'Could not load schemas.')); setManualSchema(true); })
       .finally(() => setSchemasLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cfg.connectionId, cfg.objectType]);
@@ -223,7 +246,7 @@ export function SourceDatasetConfig({ cfg, set, pipelineId, nodeId, pipelineDirt
       // uses, so "what would this match right now" is always accurate.
       connectionApi.getObjects(cfg.connectionId, { schema: isFile ? undefined : (cfg.schema || undefined), q: (isFile ? cfg.object : objectSearch) || undefined })
         .then((r) => setObjects(r.items))
-        .catch((err) => setObjectError(apiErrorMessage(err, 'Could not load objects.')))
+        .catch((err) => { setObjectError(apiErrorMessage(err, 'Could not load objects.')); setManualObject(true); })
         .finally(() => setObjectsLoading(false));
     }, 250);
     return () => clearTimeout(t);
@@ -365,28 +388,50 @@ export function SourceDatasetConfig({ cfg, set, pipelineId, nodeId, pipelineDirt
           ) : (
             <div className="pc-config-row">
               <label className="pc-config-label">Schema</label>
-              <select className="pc-config-select" value={cfg.schema} onChange={(e) => { set('schema', e.target.value); set('object', ''); }}>
-                <option value="">{schemasLoading ? 'Loading…' : 'Select a schema…'}</option>
-                {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
-              {schemaError && <span className="sdc-error-text">{schemaError}</span>}
+              {manualSchema ? (
+                <input
+                  className="pc-config-input" placeholder="Type the exact schema name…"
+                  value={cfg.schema} onChange={(e) => { set('schema', e.target.value); set('object', ''); }}
+                />
+              ) : (
+                <select className="pc-config-select" value={cfg.schema} onChange={(e) => { set('schema', e.target.value); set('object', ''); }}>
+                  <option value="">{schemasLoading ? 'Loading…' : 'Select a schema…'}</option>
+                  {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              )}
+              {schemaError && <span className="sdc-error-text">{schemaError} — enter it manually below.</span>}
+              <button type="button" className="sdc-link-btn" onClick={() => setManualSchema((v) => !v)}>
+                {manualSchema ? 'Browse from connection instead' : "Can't find it? Type it in instead"}
+              </button>
             </div>
           )}
 
-          {(cfg.schema || noSchemaConcept) && (
+          {(cfg.schema || noSchemaConcept || manualObject) && (
             <div className="pc-config-row">
               <label className="pc-config-label">Object ({objectTypeDef.label})</label>
-              <div className="sdc-search-box">
-                <Search size={12} />
-                <input placeholder="Search tables/views…" value={objectSearch} onChange={(e) => setObjectSearch(e.target.value)} />
-              </div>
-              <select className="pc-config-select" style={{ marginTop: 6 }} value={cfg.object} onChange={(e) => set('object', e.target.value)}>
-                <option value="">{objectsLoading ? 'Loading…' : `Select ${objectTypeDef.label.toLowerCase()}…`}</option>
-                {objects.filter((o) => o.object_type === cfg.objectType).map((o) => (
-                  <option key={o.name} value={o.name}>{o.name}</option>
-                ))}
-              </select>
-              {objectError && <span className="sdc-error-text">{objectError}</span>}
+              {manualObject ? (
+                <input
+                  className="pc-config-input" placeholder={`Type the exact ${objectTypeDef.label.toLowerCase()} name…`}
+                  value={cfg.object} onChange={(e) => set('object', e.target.value)}
+                />
+              ) : (
+                <>
+                  <div className="sdc-search-box">
+                    <Search size={12} />
+                    <input placeholder="Search tables/views…" value={objectSearch} onChange={(e) => setObjectSearch(e.target.value)} />
+                  </div>
+                  <select className="pc-config-select" style={{ marginTop: 6 }} value={cfg.object} onChange={(e) => set('object', e.target.value)}>
+                    <option value="">{objectsLoading ? 'Loading…' : `Select ${objectTypeDef.label.toLowerCase()}…`}</option>
+                    {objects.filter((o) => o.object_type === cfg.objectType).map((o) => (
+                      <option key={o.name} value={o.name}>{o.name}</option>
+                    ))}
+                  </select>
+                </>
+              )}
+              {objectError && <span className="sdc-error-text">{objectError} — enter it manually below.</span>}
+              <button type="button" className="sdc-link-btn" onClick={() => setManualObject((v) => !v)}>
+                {manualObject ? 'Browse from connection instead' : "Can't find it? Type it in instead"}
+              </button>
             </div>
           )}
 
@@ -450,15 +495,27 @@ export function SourceDatasetConfig({ cfg, set, pipelineId, nodeId, pipelineDirt
           {cfg.schema && (
             <div className="pc-config-row">
               <label className="pc-config-label">Saved Search</label>
-              <div className="sdc-search-box">
-                <Search size={12} />
-                <input placeholder="Search saved searches…" value={objectSearch} onChange={(e) => setObjectSearch(e.target.value)} />
-              </div>
-              <select className="pc-config-select" style={{ marginTop: 6 }} value={cfg.object} onChange={(e) => set('object', e.target.value)}>
-                <option value="">{objectsLoading ? 'Loading…' : 'Select a saved search…'}</option>
-                {objects.map((o) => <option key={o.name} value={o.name}>{o.name}</option>)}
-              </select>
-              {objectError && <span className="sdc-error-text">{objectError}</span>}
+              {manualObject ? (
+                <input
+                  className="pc-config-input" placeholder="Type the exact saved search's internal ID…"
+                  value={cfg.object} onChange={(e) => set('object', e.target.value)}
+                />
+              ) : (
+                <>
+                  <div className="sdc-search-box">
+                    <Search size={12} />
+                    <input placeholder="Search saved searches…" value={objectSearch} onChange={(e) => setObjectSearch(e.target.value)} />
+                  </div>
+                  <select className="pc-config-select" style={{ marginTop: 6 }} value={cfg.object} onChange={(e) => set('object', e.target.value)}>
+                    <option value="">{objectsLoading ? 'Loading…' : 'Select a saved search…'}</option>
+                    {objects.map((o) => <option key={o.name} value={o.name}>{o.name}</option>)}
+                  </select>
+                </>
+              )}
+              {objectError && <span className="sdc-error-text">{objectError} — enter it manually below.</span>}
+              <button type="button" className="sdc-link-btn" onClick={() => setManualObject((v) => !v)}>
+                {manualObject ? 'Browse from connection instead' : "Can't find it? Type it in instead"}
+              </button>
             </div>
           )}
         </>

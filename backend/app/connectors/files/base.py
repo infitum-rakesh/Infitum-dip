@@ -17,6 +17,7 @@ move_file, file_checksum, _resolve_path) — this class does all the
 """
 from __future__ import annotations
 
+import ftplib
 import itertools
 
 from app.connectors.base import BaseConnector, ColumnInfo, ConnectorValidationError, ObjectInfo, PreviewResult
@@ -45,19 +46,22 @@ class FileRowStream:
 
 
 def _open_stream_or_validation_error(connector: "FileConnectorBase", path: str, object_name: str):
-    # open_read_stream() is real I/O (local disk or a remote SFTP round
-    # trip) and raises plain OSError/FileNotFoundError/PermissionError for
-    # a file that doesn't exist or isn't readable — neither is a
-    # ConnectorUnsupportedError nor a ConnectorValidationError, so left
-    # uncaught it would escape as an unhandled 500 instead of the clean
-    # 400 every other "bad object_name" case in this module produces.
-    # Translated here, once, for every concrete file connector.
+    # open_read_stream() is real I/O (local disk, a remote SFTP round
+    # trip, or an FTP RETR) and raises plain OSError/FileNotFoundError/
+    # PermissionError (local/SFTP) or ftplib.all_errors (FTP — e.g. a 550
+    # from the server) for a file that doesn't exist or isn't readable —
+    # none of those are ConnectorUnsupportedError/ConnectorValidationError,
+    # so left uncaught they'd escape as an unhandled 500 instead of the
+    # clean 400 every other "bad object_name" case in this module
+    # produces. Translated here, once, for every concrete file connector.
     try:
         return connector.open_read_stream(path)
     except ConnectorValidationError:
         raise
     except OSError as exc:
         raise ConnectorValidationError(f"Could not read '{object_name}': {exc.strerror or exc}.") from exc
+    except ftplib.all_errors as exc:
+        raise ConnectorValidationError(f"Could not read '{object_name}': {exc}.") from exc
 
 
 class FileConnectorBase(BaseConnector):

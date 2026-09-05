@@ -1,0 +1,25 @@
+.sen-wrap {
+  display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px;
+  padding: 40px 24px; background: var(--color-danger-bg, #FEF2F2); border: 1px solid var(--color-danger-border, #FEE2E2);
+  border-radius: var(--radius-xl, 14px);
+}
+.sen-icon {
+  width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  background: #FEE2E2; color: #B91C1C;
+}
+.sen-module { font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: #B91C1C; }
+.sen-message { font-size: var(--fs-md); color: #7F1D1D; max-width: 440px; line-height: 1.6; margin: 0; }
+.sen-expired-at { font-size: var(--fs-xs); color: #991B1B; margin: -4px 0 0; }
+
+.sen-actions { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 8px; }
+.sen-btn {
+  display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: var(--radius-md, 8px);
+  font-size: var(--fs-sm); font-weight: var(--fw-medium); transition: var(--transition);
+}
+.sen-btn-primary { background: var(--color-primary); color: #fff; }
+.sen-btn-primary:hover { opacity: 0.9; }
+.sen-btn-secondary { background: #fff; border: 1px solid #FCA5A5; color: #B91C1C; }
+.sen-btn-secondary:hover { background: #FEF2F2; }
+
+.sen-contact { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; }
+.sen-contact-name { font-size: var(--fs-xs); color: #991B1B; width: 100%; }

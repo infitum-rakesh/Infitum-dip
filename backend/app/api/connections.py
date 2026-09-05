@@ -63,12 +63,24 @@ async def _get_or_404(db: AsyncSession, connection_id: int, user: User):
     return conn
 
 
-def _require_secret_permission(user: User, connection_type: str, raw_config: dict) -> None:
-    """CONNECTION_MANAGE_SECRET gate — only enforced when the payload
-    actually attempts to set/rotate a secret field."""
-    secret_keys = svc.secret_keys_for(connection_type)
+def _require_secret_permission(user: User, conn, raw_config: dict) -> None:
+    """CONNECTION_MANAGE_SECRET (ADMIN-tier) gate — only enforced when the
+    payload actually attempts to set/rotate a secret field, AND the caller
+    isn't the connection's own owner. The owner exemption matters: they
+    already typed that secret in themselves at create time (CREATE has no
+    ADMIN gate at all, by the same reasoning — see connection_service.py's
+    create_connection()), so requiring ADMIN just to update it later
+    protects nothing from them — it was only ever meant to stop a
+    *different*, lower-privileged user from rotating a credential they
+    never had. Without this exemption, a connection's own creator (e.g. a
+    Data Engineer — the default trial-signup role, see QQ1) could set a
+    connection's password once and then never touch it again — reported
+    live as "not able to set connection password in edit mode" while
+    editing a self-owned Fabric connection."""
+    secret_keys = svc.secret_keys_for(conn.connection_type.value)
     touches_secret = any(k in secret_keys and v not in (None, "") for k, v in raw_config.items())
-    if touches_secret and not _has_action(user, "ADMIN"):
+    is_owner = conn.owner_id is not None and conn.owner_id == user.id
+    if touches_secret and not is_owner and not _has_action(user, "ADMIN"):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "Rotating or setting connection credentials requires secret-management permission.",
@@ -151,7 +163,7 @@ async def update_connection(
 ):
     conn = await _get_or_404(db, connection_id, user)
     if body.config:
-        _require_secret_permission(user, conn.connection_type.value, body.config)
+        _require_secret_permission(user, conn, body.config)
     conn = await svc.update_connection(db, conn, name=body.name, environment=body.environment, raw_config=body.config)
     name_map = await svc.owner_name_map(db, {conn.owner_id} if conn.owner_id else set())
     return svc.to_out(conn, name_map.get(conn.owner_id))
@@ -200,6 +212,8 @@ async def get_schemas(connection_id: int, user: User = Depends(_execute), db: As
         raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, str(exc))
     except ConnectorValidationError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    except ConnectorError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
     return SchemaListOut(schemas=schemas)
 
 
@@ -218,6 +232,8 @@ async def get_objects(
         raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, str(exc))
     except ConnectorValidationError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    except ConnectorError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
     return ObjectListOut(items=[ObjectOut(name=o.name, schema_name=o.schema, object_type=o.object_type) for o in objects])
 
 
@@ -237,6 +253,8 @@ async def get_columns(
         raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, str(exc))
     except ConnectorValidationError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    except ConnectorError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
     return ColumnListOut(
         columns=[ColumnOut(**vars(c)) for c in columns],
         row_count=row_count,
@@ -260,6 +278,8 @@ async def preview_connection_data(
         raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, str(exc))
     except ConnectorValidationError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    except ConnectorError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
     return PreviewOut(columns=result.columns, rows=result.rows, row_count=result.row_count, truncated=result.truncated)
 
 

@@ -9,17 +9,22 @@ import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import {
   Plus, RefreshCcw, Eye, MoreVertical, Pencil, Power, PowerOff,
-  ShieldAlert, Building2, X,
+  ShieldAlert, Building2, X, Link2,
 } from 'lucide-react';
 import { Button, StatusBadge, DataTable, SearchBox, EmptyState, PermissionGate, Modal } from '@/components/common/index.js';
 import { PAGINATION, SELLER_PERMISSIONS } from '@/utils/constants.js';
 import { formatDate } from '@/utils/formatters.js';
 import { useAuth } from '@/hooks/useAuth.js';
 import { customerApi } from '@/services/api/seller/customerApi.js';
+import { billingInvoicesApi } from '@/services/api/seller/billingInvoicesApi.js';
 import { CreateCustomerModal } from './CreateCustomerModal.jsx';
 import './customers.css';
 
 const STATUS_VARIANT = { active: 'success', trial: 'info', expiring: 'warning', expired: 'gray', suspended: 'danger' };
+const PAYMENT_STATUS_VARIANT = {
+  PAID: 'success', NO_PAYMENT_REQUIRED: 'success',
+  PAYMENT_PENDING: 'warning', PARTIALLY_PAID: 'warning', OVERDUE: 'danger',
+};
 const EMPTY_FILTERS = { status: 'All', plan: 'All' };
 
 export default function Customers() {
@@ -41,6 +46,7 @@ export default function Customers() {
   const [createOpen, setCreateOpen] = useState(false);
   const [impersonateTarget, setImpersonateTarget] = useState(null);
   const [impersonating, setImpersonating] = useState(false);
+  const [payBusyId, setPayBusyId] = useState(null);
 
   useEffect(() => {
     const t = setTimeout(() => { setSearch(searchInput); setPage(1); }, 300);
@@ -70,6 +76,37 @@ export default function Customers() {
   const runSuspend = async (row) => {
     if (!window.confirm(`Suspend "${row.name}"? Their users will lose access immediately.`)) return;
     await customerApi.suspend(row.id); refreshAll();
+  };
+
+  /** Generates a real payment link for this customer's pending invoice and
+   * opens it — the same PaymentLink flow Billing -> Invoices uses, just
+   * reachable straight from the customer's row. Opens the tab SYNCHRONOUSLY
+   * on the click (before the await) — a window.open() issued after an
+   * async gap is no longer "user-initiated" as far as most browsers'
+   * popup blockers are concerned and gets silently blocked. The blank tab
+   * is redirected to the real URL once the link comes back.
+   * IMPORTANT: no 'noopener'/'noreferrer' here — per the HTML spec those
+   * flags make window.open() return null in every modern browser, which
+   * silently broke this exact redirect (found live: click did nothing).
+   * We navigate the tab ourselves to our own /pay/{token} URL, so keeping
+   * the window handle is safe. If a popup blocker still eats the new tab
+   * (tab is null), fall back to navigating THIS tab there instead of just
+   * alerting a raw URL — the payment screen must actually show up either
+   * way, not leave the user stuck reading a dismissible alert. */
+  const runPayNow = async (row) => {
+    if (!row.pending_invoice_id) return;
+    const tab = window.open('', '_blank');
+    setPayBusyId(row.id);
+    try {
+      const result = await billingInvoicesApi.createPaymentLink(row.pending_invoice_id);
+      if (tab) tab.location.href = result.payment_url;
+      else window.location.href = result.payment_url;
+    } catch (err) {
+      if (tab) tab.close();
+      window.alert(err?.response?.data?.detail ?? err?.message ?? 'Could not generate a payment link.');
+    } finally {
+      setPayBusyId(null);
+    }
   };
 
   const confirmImpersonate = async () => {
@@ -108,6 +145,10 @@ export default function Customers() {
     },
     { key: 'plan', header: 'Plan', render: (v) => <span className="sc-plan-pill">{v}</span> },
     { key: 'license_status', header: 'Status', render: (v) => <StatusBadge variant={STATUS_VARIANT[v] ?? 'gray'} dot>{v.charAt(0).toUpperCase() + v.slice(1)}</StatusBadge> },
+    {
+      key: 'payment_status', header: 'Payment',
+      render: (v) => v ? <StatusBadge variant={PAYMENT_STATUS_VARIANT[v] ?? 'gray'} dot>{v.replace(/_/g, ' ')}</StatusBadge> : <span style={{ color: 'var(--text-faint)' }}>—</span>,
+    },
     { key: 'users_count', header: 'Users', render: (v, row) => `${v} / ${row.max_users > 0 ? row.max_users : '∞'}` },
     { key: 'modules_count', header: 'Modules', render: (v) => v },
     { key: 'subscription_end', header: 'Expiry', sortable: true, render: (v) => v ? formatDate(v) : '—' },
@@ -123,6 +164,8 @@ export default function Customers() {
             onActivate={() => runActivate(row)}
             onSuspend={() => runSuspend(row)}
             onImpersonate={() => setImpersonateTarget(row)}
+            onPay={row.pending_invoice_id ? () => runPayNow(row) : null}
+            payBusy={payBusyId === row.id}
           />
         </div>
       ),
@@ -228,7 +271,7 @@ export default function Customers() {
 
 // ── Row kebab menu ───────────────────────────────────────────────
 
-function RowMenu({ row, onEdit, onActivate, onSuspend, onImpersonate }) {
+function RowMenu({ row, onEdit, onActivate, onSuspend, onImpersonate, onPay, payBusy }) {
   const [open, setOpen] = useState(false);
   const [coords, setCoords] = useState(null);
   const btnRef = useRef(null);
@@ -251,6 +294,11 @@ function RowMenu({ row, onEdit, onActivate, onSuspend, onImpersonate }) {
         <>
           <div className="sc-row-menu-backdrop" onClick={() => setOpen(false)} />
           <div className="sc-row-menu-list" style={{ position: 'fixed', top: coords.top, left: coords.left }}>
+            {onPay && (
+              <button className="sc-row-menu-pay" disabled={payBusy} onClick={act(onPay)}>
+                <Link2 size={13} /> {payBusy ? 'Opening…' : 'Pay Now'}
+              </button>
+            )}
             <button onClick={act(onEdit)}><Pencil size={13} /> Edit</button>
             {suspended
               ? <button onClick={act(onActivate)}><Power size={13} /> Activate</button>

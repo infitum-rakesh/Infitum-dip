@@ -36,6 +36,10 @@ class OverviewOut(BaseModel):
     reconciliations_failed: int
     incidents_open: int
     records_processed: int
+    anomalies_critical: int
+    anomalies_warning: int
+    invoices_dead_letter: int
+    invoices_reconciliation_mismatch: int
     success_rate_pct: float | None
     recent_jobs: list[JobSummaryOut]
     window_days: int
@@ -99,13 +103,74 @@ class ReconciliationRunSummaryOut(BaseModel):
     completed_at: datetime | None
 
 
+class AnomalyExecutionSummaryOut(BaseModel):
+    id: int
+    job_id: int
+    status: str
+    overall_status: str | None
+    records_scanned: int | None
+    anomalies_found: int
+    critical_count: int
+    warning_count: int
+    trigger: str
+    started_at: datetime | None
+    completed_at: datetime | None
+
+
+class InvoiceErpDeadLetterSummaryOut(BaseModel):
+    id: int
+    invoice_id: int
+    invoice_number: str | None
+    erp_connection_id: int | None
+    attempt_number: int
+    error_code: str | None
+    error_message: str | None
+    created_at: datetime
+
+
+class InvoiceReconciliationMismatchSummaryOut(BaseModel):
+    id: int
+    invoice_id: int
+    invoice_number: str | None
+    mismatched_fields: list[str]
+    created_at: datetime
+
+
 class DataQualityOut(BaseModel):
     validation_runs: list[ValidationRunSummaryOut]
     validation_total: int
     reconciliation_runs: list[ReconciliationRunSummaryOut]
     reconciliation_total: int
+    anomaly_executions: list[AnomalyExecutionSummaryOut]
+    anomaly_total: int
+    invoice_erp_dead_letters: list[InvoiceErpDeadLetterSummaryOut]
+    invoice_erp_dead_letter_total: int
+    invoice_reconciliation_mismatches: list[InvoiceReconciliationMismatchSummaryOut]
+    invoice_reconciliation_mismatch_total: int
     page: int
     page_size: int
+
+
+# ── Invoice Processing (INV21) ──
+
+class InvoiceProcessingOut(BaseModel):
+    decided_total: int
+    straight_through_count: int
+    review_required_count: int
+    reject_count: int
+    retry_count: int
+    straight_through_rate_pct: float | None
+    erp_calls_total: int
+    erp_succeeded: int
+    erp_failed: int
+    erp_dead_letter: int
+    erp_retry_attempts: int
+    erp_in_flight: int
+    review_queue_depth: int
+    avg_decision_to_erp_submit_seconds: float | None
+    avg_erp_submit_to_succeeded_seconds: float | None
+    avg_succeeded_to_reconciled_seconds: float | None
+    window_days: int
 
 
 # ── Performance ──

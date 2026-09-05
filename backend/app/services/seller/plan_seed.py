@@ -13,6 +13,11 @@ One-time (idempotent) seed/backfill run at startup — see main.py lifespan.
    that doesn't have one yet, so the Seller Dashboard's subscription/
    revenue KPIs reflect real rows instead of re-deriving from
    Organization fields every time.
+4. Seeds a default price for every catalog module (models/billing/
+   module_price.py) — what ad-hoc Purchased-Modules grants and "Custom"
+   plan subscriptions are billed at. A Seller can edit any of these for
+   real afterward (Settings -> Module Prices); this only fills in what's
+   missing so an edit is never silently overwritten on the next startup.
 
 Safe to run on every startup — each step only inserts what's missing.
 """
@@ -21,10 +26,32 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.billing.module_price import ModulePrice
 from app.models.organization import LicenseStatus, Organization
 from app.models.plan import BillingCycle, Plan
 from app.models.seller import Seller
 from app.models.subscription import Subscription, SubscriptionStatus
+
+# Default monthly USD price per module — a starting point, not a fixed
+# rule; edit for real in Seller Settings -> Module Prices. Keys must match
+# services/seller/module_service.py's MODULE_CATALOG (checked at seed
+# time, not hardcoded here, so this file never drifts from that list).
+_DEFAULT_MODULE_PRICES: dict[str, float] = {
+    "DOCUMENT_INTELLIGENCE": 149.0,
+    "OCR": 49.0,
+    "AI_EXTRACTION": 99.0,
+    "TRANSFORMATION": 129.0,
+    "SQL_WORKSPACE": 149.0,
+    "VALIDATION": 79.0,
+    "RECONCILIATION": 99.0,
+    "PIPELINE_SCHEDULER": 89.0,
+    "INCIDENTS": 69.0,
+    "LINEAGE": 99.0,
+    "OBSERVABILITY": 119.0,
+    "ANOMALY_DETECTION": 129.0,
+    "DATA_CATALOG": 79.0,
+    "INVOICE_INTELLIGENCE": 179.0,
+}
 
 # Mirrors frontend/src/utils/permissions.js SUBSCRIPTION_PLANS module lists
 # and services/license_service.py PLAN_LIMITS — kept in sync manually until
@@ -120,6 +147,16 @@ async def ensure_seller_seeded(db: AsyncSession) -> Seller:
             auto_renew=False,
         )
         db.add(sub)
+
+    # Module price catalog — one row per MODULE_CATALOG key, only inserting
+    # what's missing (never overwrites a Seller's real edit). Imported
+    # locally to dodge a startup-order import cycle with module_service.
+    from app.services.seller.module_service import MODULE_CATALOG
+    existing_prices = {mp.module for mp in (await db.execute(select(ModulePrice))).scalars().all()}
+    for module in MODULE_CATALOG:
+        if module in existing_prices:
+            continue
+        db.add(ModulePrice(module=module, price=_DEFAULT_MODULE_PRICES.get(module, 0.0), currency="USD"))
 
     await db.commit()
     return seller

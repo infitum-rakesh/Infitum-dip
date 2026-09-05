@@ -28,6 +28,7 @@ from app.api.audit_logs import router as audit_logs_router
 from app.api.settings import router as settings_router
 from app.api.executions import router as executions_router
 from app.api.mapping import router as mapping_router
+from app.api.pipeline_mapping import router as pipeline_mapping_router
 from app.api.loads import router as loads_router
 from app.api.validation import router as validation_router
 from app.api.reconciliation import router as reconciliation_router
@@ -42,6 +43,8 @@ from app.api.seller.usage import router as seller_usage_router
 from app.api.seller.seller_users import router as seller_users_router
 from app.api.seller.audit_logs import router as seller_audit_logs_router
 from app.api.seller.settings import router as seller_settings_router
+from app.api.seller.billing import router as seller_billing_router
+from app.api.seller.companies import router as seller_companies_router
 from app.api.pipeline_files import router as pipeline_files_router
 from app.api.pipeline_jobs import router as pipeline_jobs_router
 from app.api.dashboard import router as dashboard_router
@@ -50,6 +53,17 @@ from app.api.monitoring import router as monitoring_router
 from app.api.lineage import router as lineage_router
 from app.api.uploaded_files import router as uploaded_files_router
 from app.api.settings_database import router as settings_database_router
+from app.api.anomaly import router as anomaly_router
+from app.api.access import router as access_router
+from app.api.billing.invoices import router as billing_invoices_router
+from app.api.billing.payment_gateways import router as payment_gateways_router
+from app.api.billing.notifications import router as notifications_router
+from app.api.billing.subscriptions import router as billing_subscriptions_router
+from app.api.payments.webhook import router as payments_webhook_router
+from app.api.payments.pay import router as payments_pay_router
+from app.api.invoices import router as invoices_router
+from app.api.invoice_mappings import router as invoice_mappings_router
+from app.api.invoice_rules import router as invoice_rules_router
 from app.models.pipeline_source_file import PipelineSourceFile  # noqa: F401 — string FK to pipelines.id needs this imported before init_db()
 from app.models.tenant_database import TenantDatabase  # noqa: F401 — new table, needs registering before init_db()
 from app.models.tenant_migration_job import TenantMigrationJob, TenantMigrationJobLog  # noqa: F401 — new tables, need registering before init_db()
@@ -68,6 +82,36 @@ from app.models.monitoring import SlaDefinition, AlertRule, AlertEvent  # noqa: 
 from app.models.user_session import UserSession  # noqa: F401 — new table, needs registering before init_db()
 from app.models.sso_configuration import SsoConfiguration  # noqa: F401 — new table, needs registering before init_db()
 from app.models.uploaded_dataset_file import UploadedDatasetFile  # noqa: F401 — new table, needs registering before init_db()
+from app.models.anomaly import (  # noqa: F401 — new tables, need registering before init_db()
+    AnomalyJob, AnomalyExecution, AnomalyColumnResult, AnomalyRecord,
+    AnomalyBaseline, AnomalyFeedback, AnomalyReport,
+)
+# Multi-Subscription Billing & Payments Platform (2026) — new tables,
+# need registering before init_db(). No routers reference them yet
+# (SB2 is models-only); explicit imports here follow this file's own
+# established pattern for that situation (see PipelineJob/TenantDatabase
+# above).
+from app.models.billing.invoice import Invoice, InvoiceLineItem, InvoiceCounter  # noqa: F401
+from app.models.billing.payment_gateway import PaymentGateway, PaymentGatewayConfiguration  # noqa: F401
+from app.models.billing.payment import Payment  # noqa: F401
+from app.models.billing.payment_link import PaymentLink  # noqa: F401
+from app.models.billing.payment_webhook_event import PaymentWebhookEvent  # noqa: F401
+from app.models.billing.notification import Notification  # noqa: F401
+from app.models.billing.module_price import ModulePrice  # noqa: F401 — per-module price catalog, see SC1
+from app.models.company import Company  # noqa: F401 — new table, needs registering before init_db()
+# Scheduled Document Intelligence Workflow (2026) — new tables, need
+# registering before init_db() the same way every model above does.
+from app.models.document_schedule import DocumentScheduleConfig, DocumentSourceRegistry  # noqa: F401
+# Invoice Intelligence (2026, INV1) — canonical AP-invoice domain models,
+# new tables, need registering before init_db(). `ApInvoice*` prefix
+# avoids colliding with models.billing.invoice.Invoice (SaaS subscription
+# billing — a different domain entirely).
+from app.models.invoice_intelligence.core import ApInvoice, ApInvoiceLine, ApInvoiceVendor  # noqa: F401
+from app.models.invoice_intelligence.erp import ApInvoiceErpTransaction, ApInvoiceReconciliation  # noqa: F401
+from app.models.invoice_intelligence.rules import (  # noqa: F401
+    ApInvoiceValidationRule, ApInvoiceValidationResult, ApInvoiceErpMapping, ApInvoiceModelVersion,
+)
+from app.models.invoice_intelligence.learning import ApInvoiceLearningRecord, ApInvoiceAuditEvent  # noqa: F401
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -81,8 +125,76 @@ async def lifespan(app: FastAPI):
     await _seed_seller_admin()
     await _seed_seller_data()
     await _seed_customer_modules()
+    await _recover_document_schedules()
+    scheduler = _start_billing_scheduler()
     yield
+    scheduler.shutdown(wait=False)
     logger.info("Shutting down.")
+
+
+async def _recover_document_schedules() -> None:
+    """Scheduled Document Intelligence Workflow (2026) — spec section
+    56/58 startup recovery: any ScheduleRun/DocumentSourceRegistry row
+    left RUNNING/PROCESSING/QUEUED by a backend process that died mid-run
+    gets un-stuck here, same place every other one-time startup task
+    above already runs. See schedule_service.recover_stuck_document_schedules()."""
+    from app.services.schedule_service import recover_stuck_document_schedules
+
+    stats = await recover_stuck_document_schedules()
+    if stats["recovered_runs"] or stats["requeued_documents"] or stats["failed_documents"]:
+        logger.info("Document schedule recovery: %s", stats)
+
+
+def _start_billing_scheduler():
+    """The one in-process AsyncIOScheduler this backend runs, inside the
+    same event loop uvicorn already uses — no separate worker process.
+    Originally just the two billing sweeps (SB22 — the first real
+    background worker this codebase had); now also runs the Schedules
+    poller (scheduler_poller.run_poll — spec section 10/56's "scheduler
+    starts automatically", closing the gap schedule_service.py's own
+    prior docstring called out: "nothing here fires automatically on a
+    wall-clock timer"). Every job is individually try/excepted so one
+    job's failure never cancels the others or crashes the scheduler
+    thread."""
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+    from app.services.billing.billing_scheduler import run_billing_sweep_standalone
+    from app.services.billing.expiry_job import run_expiry_sweep_standalone
+    from app.services.scheduler_poller import run_poll as run_schedule_poll
+
+    async def _run_expiry_sweep_safely():
+        try:
+            stats = await run_expiry_sweep_standalone()
+            logger.info("Expiry sweep completed: %s", stats)
+        except Exception:
+            logger.exception("Expiry sweep failed")
+
+    async def _run_billing_sweep_safely():
+        try:
+            stats = await run_billing_sweep_standalone()
+            logger.info("Billing sweep completed: %s", stats)
+        except Exception:
+            logger.exception("Billing sweep failed")
+
+    async def _run_schedule_poll_safely():
+        try:
+            stats = await run_schedule_poll()
+            if stats["fired"] or stats["errors"]:
+                logger.info("Schedule poll: %s", stats)
+        except Exception:
+            logger.exception("Schedule poll failed")
+
+    scheduler = AsyncIOScheduler(timezone="UTC")
+    scheduler.add_job(_run_expiry_sweep_safely, "interval", hours=1, id="billing_expiry_sweep")
+    scheduler.add_job(_run_billing_sweep_safely, "interval", hours=1, id="billing_cycle_sweep")
+    # 60s — real-time enough that "Daily at 02:00" fires within a minute
+    # of due, without hammering the DB with a due-schedules query faster
+    # than any real schedule frequency (minimum granularity is "Every
+    # Hour") would ever need.
+    scheduler.add_job(_run_schedule_poll_safely, "interval", seconds=60, id="schedule_poll")
+    scheduler.start()
+    logger.info("Backend scheduler started — billing sweeps hourly, schedule poll every 60s.")
+    return scheduler
 
 
 async def _seed_superadmin() -> None:
@@ -198,6 +310,7 @@ app.include_router(audit_logs_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
 app.include_router(executions_router, prefix="/api")
 app.include_router(mapping_router, prefix="/api")
+app.include_router(pipeline_mapping_router, prefix="/api")
 app.include_router(loads_router, prefix="/api")
 app.include_router(validation_router, prefix="/api")
 app.include_router(reconciliation_router, prefix="/api")
@@ -212,6 +325,8 @@ app.include_router(seller_usage_router, prefix="/api")
 app.include_router(seller_users_router, prefix="/api")
 app.include_router(seller_audit_logs_router, prefix="/api")
 app.include_router(seller_settings_router, prefix="/api")
+app.include_router(seller_billing_router, prefix="/api")
+app.include_router(seller_companies_router, prefix="/api")
 app.include_router(pipeline_files_router, prefix="/api")
 app.include_router(uploaded_files_router, prefix="/api")
 app.include_router(pipeline_jobs_router, prefix="/api")
@@ -220,6 +335,17 @@ app.include_router(extraction_router, prefix="/api")
 app.include_router(monitoring_router, prefix="/api")
 app.include_router(lineage_router, prefix="/api")
 app.include_router(settings_database_router, prefix="/api")
+app.include_router(anomaly_router, prefix="/api")
+app.include_router(access_router, prefix="/api")
+app.include_router(billing_invoices_router, prefix="/api")
+app.include_router(payment_gateways_router, prefix="/api")
+app.include_router(notifications_router, prefix="/api")
+app.include_router(billing_subscriptions_router, prefix="/api")
+app.include_router(payments_webhook_router, prefix="/api")
+app.include_router(payments_pay_router, prefix="/api")
+app.include_router(invoices_router, prefix="/api")
+app.include_router(invoice_mappings_router, prefix="/api")
+app.include_router(invoice_rules_router, prefix="/api")
 
 
 @app.get("/api/health")

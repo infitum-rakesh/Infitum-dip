@@ -58,6 +58,17 @@
 .sst-color-input-row { display: flex; align-items: center; gap: 10px; }
 .sst-color-input-row input[type="color"] { width: 40px; height: 34px; padding: 2px; border: 1px solid var(--border); border-radius: var(--radius-md); cursor: pointer; }
 
+/* ── Image upload (Company logo/signature) ───────────────────── */
+.sst-image-upload-preview { display: flex; align-items: center; gap: 10px; }
+.sst-image-upload-preview img { max-width: 96px; max-height: 56px; object-fit: contain; background: white; border: 1px solid var(--border); border-radius: var(--radius-md); padding: 4px; }
+.sst-checkbox-row { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--text-primary); cursor: pointer; }
+
+/* ── Companies list ────────────────────────────────────────── */
+.sst-companies-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; gap: 12px; flex-wrap: wrap; }
+.sst-company-logo-cell { width: 36px; height: 36px; object-fit: contain; background: white; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.sst-company-logo-placeholder { width: 36px; height: 36px; border-radius: var(--radius-md); background: var(--bg-body); border: 1px dashed var(--border); display: flex; align-items: center; justify-content: center; color: var(--text-faint); font-size: 9px; }
+.sst-default-badge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; color: var(--color-primary); background: rgba(79,70,229,0.1); border-radius: 999px; padding: 2px 8px; margin-left: 6px; }
+
 /* ── Plans tab ─────────────────────────────────────────────── */
 .sst-plans-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; }
 .sst-table-wrap { overflow-x: auto; }

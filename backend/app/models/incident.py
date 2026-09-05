@@ -1,7 +1,7 @@
 """
 Incident models — centralized monitoring of failures/anomalies across the
 platform (Pipeline, Connection, OCR, AI Extraction, Transformation,
-Validation, Reconciliation, Schedule, Data Quality).
+Validation, Reconciliation, Schedule, Data Quality, Anomaly Detection).
 
 Additive module: no FKs into pipelines/connections/schedules/etc — those
 are referenced by id/name only (mirrors models/schedule.py's own note on
@@ -29,6 +29,18 @@ class IncidentSource(str, enum.Enum):
     RECONCILIATION = "RECONCILIATION"
     SCHEDULE = "SCHEDULE"
     DATA_QUALITY = "DATA_QUALITY"
+    # AD10 — filed by pipeline_job_executor._run_anomaly_detection's
+    # on-critical action (create_incident), and by AD11's standalone-job
+    # critical-result path once that's wired.
+    ANOMALY_DETECTION = "ANOMALY_DETECTION"
+    # INV12 — filed by invoice_erp_service._post_in_background() when an
+    # ERP posting attempt exhausts retries or is blocked by an open
+    # circuit breaker (DEAD_LETTER), and by invoice_reconciliation_
+    # service.reconcile_invoice() when a post-success reconciliation
+    # finds a genuine field mismatch — same "best-effort, never fails the
+    # real operation" convention as ANOMALY_DETECTION above.
+    INVOICE_ERP_POSTING = "INVOICE_ERP_POSTING"
+    INVOICE_RECONCILIATION = "INVOICE_RECONCILIATION"
 
 
 class IncidentSeverity(str, enum.Enum):

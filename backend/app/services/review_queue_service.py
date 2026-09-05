@@ -205,6 +205,31 @@ async def create_from_document(db: AsyncSession, doc: Document) -> ReviewQueueIt
     return item
 
 
+async def create_from_anomaly(db: AsyncSession, doc: Document, issue: str) -> ReviewQueueItem | None:
+    """INV23 — Invoice Intelligence's anomaly check (invoice_anomaly_
+    service.py) calls this when it downgrades an otherwise-STRAIGHT_
+    THROUGH invoice to REVIEW_REQUIRED. Unlike create_from_document(),
+    doesn't depend on _pick_primary_issue() finding a flagged extraction
+    field — there may be none at all (the document extracted cleanly;
+    what's suspicious is the business context — e.g. a first-time vendor
+    or an amount statistically unlike this org's history — not the
+    extraction), so this builds a BUSINESS_RULE item directly. Same
+    idempotent-ish open-item guard as create_from_document()."""
+    if await _open_item_for_document(db, doc.id):
+        return None
+    picked = {
+        "review_type": ReviewType.BUSINESS_RULE, "issue": issue, "field_name": None,
+        "extracted_value": None, "expected_value": None, "confidence": doc.confidence, "validation_status": None,
+    }
+    item = _build_item(doc, picked)
+    db.add(item)
+    await db.flush()
+    await _log(db, item.id, None, "Flagged for Review", new_value=issue, reason="Auto-flagged by Invoice Anomaly Detection")
+    await db.commit()
+    await db.refresh(item)
+    return item
+
+
 _MANUAL_ISSUE = {
     "review_type": ReviewType.VALIDATION,
     "issue": "Manually sent for review",
@@ -550,6 +575,23 @@ async def approve(db: AsyncSession, item: ReviewQueueItem, actor: User) -> Revie
     await _log(db, item.id, actor.id, "Approved", reason=None)
     await db.commit()
     await db.refresh(item)
+
+    # Invoice Intelligence re-materialization (INV5) — a reviewer's
+    # corrections just changed doc.extraction_result above; re-run
+    # materialize_invoice() so the ApInvoice row picks up the corrected
+    # values. Only for a document already pinned to the INVOICE taxonomy
+    # (never inferred) — a no-op for every other document type. Never
+    # fails the approval itself.
+    if doc and doc.extraction_result and doc.extraction_result.get("document_type") == "INVOICE":
+        try:
+            from app.services.invoice import invoice_processing_service, invoice_validation_service, invoice_decision_service
+            invoice = await invoice_processing_service.materialize_invoice(db, doc)
+            await invoice_validation_service.seed_default_rules(db, doc.organization_id)
+            validation_results = await invoice_validation_service.evaluate_invoice(db, invoice)
+            await invoice_decision_service.decide(db, invoice, validation_results)
+        except Exception:  # noqa: BLE001 - approval must succeed even if invoice re-normalization has a bug
+            pass
+
     return item
 
 

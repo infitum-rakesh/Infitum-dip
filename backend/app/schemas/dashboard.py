@@ -10,6 +10,10 @@ class DashboardMetrics(BaseModel):
     pipeline_runs_today: int
     pipeline_runs_today_trend_pct: float | None
     pipeline_success_rate: float | None  # % SUCCEEDED among terminal pipeline jobs
+    active_document_schedules: int  # Schedules with a DocumentScheduleConfig and status ACTIVE
+    scheduled_docs_today: int  # DocumentSourceRegistry rows PROCESSED since local midnight
+    scheduled_docs_review_required: int  # currently sitting in Review Queue via a schedule
+    scheduled_docs_failed_today: int  # DocumentSourceRegistry rows FAILED since local midnight
 
 
 class RecentRunOut(BaseModel):

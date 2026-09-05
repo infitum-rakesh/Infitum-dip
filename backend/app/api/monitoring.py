@@ -20,6 +20,7 @@ from app.schemas.monitoring import (
     AlertRuleUpdateRequest,
     AvailableChannelsOut,
     DataQualityOut,
+    InvoiceProcessingOut,
     JobDetailOut,
     OverviewOut,
     PerformanceOut,
@@ -48,6 +49,16 @@ def _org_id(user: User) -> int | None:
 @router.get("/overview", response_model=OverviewOut)
 async def overview(days: int = Query(7, ge=1, le=90), user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     return await svc.get_overview(db, _org_id(user), days=days)
+
+
+@router.get("/invoice-processing", response_model=InvoiceProcessingOut)
+async def invoice_processing(days: int = Query(7, ge=1, le=90), user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
+    """INV21 — real invoice-processing rollup (decision outcomes, ERP call
+    outcomes/queue depth, review queue depth, stage durations) surfaced
+    natively in the Monitoring module — see monitoring/repository.py's
+    invoice_processing_overview() for exactly what's real vs honestly
+    disclosed as unavailable (no worker-pool concept exists in this build)."""
+    return await svc.get_invoice_processing(db, _org_id(user), days=days)
 
 
 @router.get("/pipeline-runs", response_model=PipelineRunsOut)

@@ -75,6 +75,8 @@ _AI_TEMPLATES = {
     IncidentSource.AI_EXTRACTION: "AI Extraction confidence fell below threshold on a cluster of documents sharing the same layout, suggesting a template change.",
     IncidentSource.SCHEDULE: "The scheduled run{pipeline_clause} failed before completing — the underlying pipeline reported an error partway through execution.",
     IncidentSource.DATA_QUALITY: "An anomaly was detected in{dataset_clause} volume/shape compared to its historical baseline.",
+    IncidentSource.INVOICE_ERP_POSTING: "The ERP posting attempt{dataset_clause} exhausted its retry budget (or was blocked by an open circuit breaker) — consistent with the ERP connection being unreachable or a genuine business-validation rejection recurring across attempts.",
+    IncidentSource.INVOICE_RECONCILIATION: "A post-success reconciliation{dataset_clause} found a field-level mismatch against the ERP's own record — consistent with a correction made after posting, or the ERP silently normalizing a submitted value.",
 }
 
 

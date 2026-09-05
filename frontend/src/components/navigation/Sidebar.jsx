@@ -5,12 +5,13 @@ import {
   GitBranch, Shuffle, Terminal, ShieldCheck, Scale, Network, Activity,
   AlertTriangle, PlayCircle, Clock, Users, Shield, Building2, Key,
   ScrollText, Settings, ChevronRight, LogOut, BarChart3, ArrowLeftRight,
-  CreditCard, Puzzle, Gauge, UserCog, Monitor,
+  CreditCard, Puzzle, Gauge, UserCog, Monitor, DollarSign, Receipt, Zap, Lock,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth.js';
 import { usePermission } from '@/hooks/usePermission.js';
+import { useAccessSummary } from '@/context/AccessSummaryContext.jsx';
 import { MODULES, ROLES } from '@/utils/constants.js';
-import { initials } from '@/utils/formatters.js';
+import { initials, formatDate } from '@/utils/formatters.js';
 import { reviewQueueApi } from '@/services/api/reviewQueueApi.js';
 import { incidentApi } from '@/services/api/incidentApi.js';
 import './Sidebar.css';
@@ -40,6 +41,14 @@ const NAV = [
     ],
   },
   {
+    section: 'INVOICE INTELLIGENCE',
+    module: MODULES.INVOICE_INTELLIGENCE,
+    items: [
+      { to: '/app/invoice-intel', label: 'Invoice Inbox', icon: Receipt },
+      { to: '/app/invoice-intel/settings', label: 'Rules & Analytics', icon: Settings },
+    ],
+  },
+  {
     section: 'TRANSFORMATION',
     items: [
       { to: '/app/pipeline',   label: 'Pipeline Builder',      icon: GitBranch },
@@ -50,8 +59,9 @@ const NAV = [
   {
     section: 'DATA QUALITY',
     items: [
-      { to: '/app/validation',    label: 'Validation',     icon: ShieldCheck, module: MODULES.VALIDATION },
-      { to: '/app/reconciliation',label: 'Reconciliation', icon: Scale,       module: MODULES.RECONCILIATION },
+      { to: '/app/validation',    label: 'Validation',        icon: ShieldCheck, module: MODULES.VALIDATION },
+      { to: '/app/reconciliation',label: 'Reconciliation',    icon: Scale,       module: MODULES.RECONCILIATION },
+      { to: '/app/anomaly',       label: 'Anomaly Detection', icon: Activity,    module: MODULES.ANOMALY_DETECTION },
     ],
   },
   {
@@ -73,13 +83,24 @@ const NAV = [
     section: 'ADMINISTRATION',
     role: ROLES.ORG_ADMIN,
     items: [
-      { to: '/app/admin/users',    label: 'Users',          icon: Users },
-      { to: '/app/admin/sessions', label: 'Active Sessions',icon: Monitor },
-      { to: '/app/admin/roles',    label: 'Roles',          icon: Shield },
+      // orgScoped: true — these all resolve the viewer's own organization
+      // server-side (e.g. licenses.py's _get_org_or_404) and 404 for
+      // anyone without one. hasRole(ORG_ADMIN) alone isn't enough to gate
+      // them: it's a numeric hierarchy (see ROLE_RANK) where SELLER/
+      // SUPER_ADMIN outrank ORG_ADMIN, but neither role actually belongs
+      // to an organization — a Seller manages every org, not one, and has
+      // organization_id: null same as a Super Admin. Without this check
+      // those roles could open a page guaranteed to fail and show a
+      // generic "Could not load licenses"-style error instead of just
+      // not seeing a link that was never going to work for them.
+      { to: '/app/admin/users',    label: 'Users',          icon: Users,    orgScoped: true },
+      { to: '/app/admin/sessions', label: 'Active Sessions',icon: Monitor,  orgScoped: true },
+      { to: '/app/admin/roles',    label: 'Roles',          icon: Shield,   orgScoped: true },
       { to: '/app/admin/orgs',     label: 'Organizations',  icon: Building2, role: ROLES.SUPER_ADMIN },
-      { to: '/app/admin/licenses', label: 'Licenses',       icon: Key },
-      { to: '/app/admin/audit',    label: 'Audit Logs',     icon: ScrollText },
-      { to: '/app/admin/settings', label: 'Settings',       icon: Settings },
+      { to: '/app/admin/licenses', label: 'Licenses',       icon: Key,      orgScoped: true },
+      { to: '/app/billing',        label: 'Billing',        icon: Receipt,  orgScoped: true },
+      { to: '/app/admin/audit',    label: 'Audit Logs',     icon: ScrollText, orgScoped: true },
+      { to: '/app/admin/settings', label: 'Settings',       icon: Settings, orgScoped: true },
     ],
   },
   {
@@ -87,6 +108,10 @@ const NAV = [
     role: ROLES.SELLER,
     items: [
       { to: '/app/seller',                    label: 'Seller Dashboard',   icon: BarChart3 },
+      { to: '/app/seller/billing',            label: 'Billing',            icon: DollarSign },
+      { to: '/app/seller/billing/invoices',   label: 'Invoices',           icon: Receipt },
+      { to: '/app/seller/billing/payments',   label: 'Payments',           icon: CreditCard },
+      { to: '/app/seller/billing/gateways',   label: 'Payment Gateways',   icon: Zap },
       { to: '/app/seller/customers',          label: 'Customers',          icon: Building2 },
       { to: '/app/seller/subscriptions',      label: 'Subscriptions',      icon: CreditCard },
       { to: '/app/seller/purchased-modules',  label: 'Purchased Modules',  icon: Puzzle },
@@ -108,7 +133,13 @@ const NAV = [
 export function Sidebar({ collapsed, onToggle }) {
   const { user, organization, logout } = useAuth();
   const { hasRole, hasModule, isTrialing, trialDaysLeft } = usePermission();
+  const { summary } = useAccessSummary();
   const location = useLocation();
+  // SB30 — modules that WERE purchased but have since expired (real
+  // subscription rows past end_date, per GET /access/modules-summary),
+  // distinct from modules never purchased at all. Nav items for these
+  // render LOCKED (visible, dimmed, lock icon) instead of just hidden.
+  const expiredModuleKeys = new Set(Object.keys(summary?.expired_modules ?? {}));
 
   // Real trial progress: % of the trial elapsed since the org was created,
   // through to trial_expires_at — never a hardcoded fill. Falls back to null
@@ -182,32 +213,51 @@ export function Sidebar({ collapsed, onToggle }) {
           // Section-level module gate
           if (group.module && !hasModule(group.module)) return null;
 
+          // Item-level gates, resolved once so we can also tell whether
+          // the section would end up empty (e.g. every item in
+          // ADMINISTRATION is orgScoped and the viewer has no
+          // organization — a Seller or Super Admin) and skip rendering
+          // a section label with nothing under it.
+          const visibleItems = group.items
+            .filter((item) => {
+              if (item.role && !hasRole(item.role)) return false;
+              if (item.orgScoped && !organization) return false;
+              // Module items: shown normally when currently licensed,
+              // shown LOCKED when it's a real expired entitlement, hidden
+              // entirely only when the org never purchased it at all.
+              if (item.module && !hasModule(item.module) && !expiredModuleKeys.has(item.module)) return false;
+              return true;
+            })
+            .map((item) => ({ ...item, locked: item.module ? !hasModule(item.module) && expiredModuleKeys.has(item.module) : false }));
+          if (visibleItems.length === 0) return null;
+
           return (
             <div key={group.section ?? 'main'} className="nav-group">
               {group.section && !collapsed && (
                 <span className="nav-section-label">{group.section}</span>
               )}
-              {group.items.map((item) => {
-                // Item-level gates
-                if (item.role && !hasRole(item.role)) return null;
-                if (item.module && !hasModule(item.module)) return null;
-
+              {visibleItems.map((item) => {
                 const Icon = item.icon;
                 const badgeValue = item.dynamicBadge === 'reviewQueue' ? reviewQueueCount
                   : item.dynamicBadge === 'incidents' ? openIncidentCount
                   : item.badge;
+                const expiredAt = item.locked ? summary?.expired_modules?.[item.module] : null;
+                const title = item.locked
+                  ? `${item.label} — subscription expired${expiredAt ? ` on ${formatDate(expiredAt)}` : ''}. Click to renew.`
+                  : (collapsed ? item.label : undefined);
                 return (
                   <NavLink
                     key={item.to}
                     to={item.to}
-                    title={collapsed ? item.label : undefined}
+                    title={title}
                     className={({ isActive }) =>
-                      ['nav-item', isActive ? 'nav-item-active' : ''].filter(Boolean).join(' ')
+                      ['nav-item', isActive ? 'nav-item-active' : '', item.locked ? 'nav-item-locked' : ''].filter(Boolean).join(' ')
                     }
                   >
                     <Icon size={16} className="nav-icon" />
                     {!collapsed && <span className="nav-label">{item.label}</span>}
-                    {!collapsed && !!badgeValue && (
+                    {!collapsed && item.locked && <Lock size={12} className="nav-lock-icon" />}
+                    {!collapsed && !item.locked && !!badgeValue && (
                       <span className="nav-badge">{badgeValue}</span>
                     )}
                   </NavLink>

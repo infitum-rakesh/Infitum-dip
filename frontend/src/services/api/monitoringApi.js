@@ -9,6 +9,11 @@ import apiClient from './apiClient.js';
 export const monitoringApi = {
   getOverview: (days = 7) => apiClient.get('/monitoring/overview', { params: { days } }).then((r) => r.data),
 
+  // INV21 — decision outcomes, ERP call/queue metrics, review queue depth,
+  // real stage durations derived from Invoice Intelligence's own lifecycle
+  // events (see monitoring/repository.py's invoice_processing_overview()).
+  getInvoiceProcessing: (days = 7) => apiClient.get('/monitoring/invoice-processing', { params: { days } }).then((r) => r.data),
+
   listPipelineRuns: (params = {}) => apiClient.get('/monitoring/pipeline-runs', { params }).then((r) => r.data),
 
   listScheduleRuns: (params = {}) => apiClient.get('/monitoring/schedule-runs', { params }).then((r) => r.data),
@@ -49,6 +54,7 @@ export const ALERT_CONDITIONS = [
   { value: 'VALIDATION_FAILED', label: 'Validation run failed' },
   { value: 'RECONCILIATION_MISMATCH', label: 'Reconciliation mismatch' },
   { value: 'CONSECUTIVE_FAILURES', label: 'Consecutive failures ≥ threshold' },
+  { value: 'ANOMALY_DETECTED', label: 'Anomaly detected (warning or critical)' },
 ];
 
 export const SLA_STATUS_META = {

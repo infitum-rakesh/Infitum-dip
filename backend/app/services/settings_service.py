@@ -15,7 +15,13 @@ Nothing here is wired into what it configures (session_timeout_minutes
 doesn't change the JWT's real expiry, max_upload_size_mb doesn't affect
 Documents' real upload limit, etc.) — same "stored + displayed, not yet
 enforced" scope boundary used everywhere in this codebase for settings
-that would otherwise require touching an unrelated module's engine.
+that would otherwise require touching an unrelated module's engine. The
+one exception is "anomaly_detection" (AD9) — AnomalyJobEditor.jsx's
+create-new-job path genuinely reads these defaults (via the dedicated
+/anomaly/configuration routes in api/anomaly.py, gated on
+ANOMALY_DETECTION permissions rather than Settings — see
+services/anomaly_service.get_configuration/update_configuration) to
+pre-fill threshold_config/baseline_config/retention_days/on_critical.
 """
 import copy
 
@@ -30,7 +36,7 @@ from app.models.user import User
 SECTION_LABELS = {
     "general": "General", "data": "Data", "document_intelligence": "Document Intelligence",
     "ai": "AI", "notifications": "Notifications", "security": "Security",
-    "audit": "Audit", "pipelines": "Pipelines",
+    "audit": "Audit", "pipelines": "Pipelines", "anomaly_detection": "Anomaly Detection",
 }
 
 

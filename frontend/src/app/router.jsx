@@ -76,6 +76,16 @@ import Validation     from '@/pages/validation/Validation.jsx';
 import ValidationList from '@/pages/validation/ValidationList.jsx';
 import Reconciliation     from '@/pages/reconciliation/Reconciliation.jsx';
 import ReconciliationList from '@/pages/reconciliation/ReconciliationList.jsx';
+import AnomalyOverview    from '@/pages/anomaly-detection/AnomalyOverview.jsx';
+import AnomalyJobs        from '@/pages/anomaly-detection/AnomalyJobs.jsx';
+import AnomalyJobEditor   from '@/pages/anomaly-detection/AnomalyJobEditor.jsx';
+import AnomalyResults        from '@/pages/anomaly-detection/AnomalyResults.jsx';
+import AnomalyExecutionDetail from '@/pages/anomaly-detection/AnomalyExecutionDetail.jsx';
+import AnomalyReports        from '@/pages/anomaly-detection/AnomalyReports.jsx';
+import AnomalyConfiguration  from '@/pages/anomaly-detection/AnomalyConfiguration.jsx';
+import InvoiceInbox    from '@/pages/invoice-intelligence/InvoiceInbox.jsx';
+import InvoiceDetail   from '@/pages/invoice-intelligence/InvoiceDetail.jsx';
+import InvoiceSettings from '@/pages/invoice-intelligence/InvoiceSettings.jsx';
 
 // SQL Workspace (implemented)
 import SqlWorkspace from '@/pages/sql-workspace/SqlWorkspace.jsx';
@@ -87,11 +97,21 @@ import PipelineRuns    from '@/pages/pipeline/PipelineRuns.jsx';
 // Schedules (implemented)
 import Schedules from '@/pages/schedules/Schedules.jsx';
 
+// Customer Billing (implemented, SB29)
+import CustomerBilling from '@/pages/billing/CustomerBilling.jsx';
+
+// Public Custom Gateway checkout (implemented, SB31 — found missing live)
+import PayPage from '@/pages/pay/PayPage.jsx';
+
 // Seller Portal (Phase 1: Dashboard, Phase 2: Customers, Phase 3:
 // Subscriptions, Phase 4: Purchased Modules, Phase 5: License Management
 // implemented; rest are placeholders per SELLER PORTAL spec's phased
 // implementation strategy)
 import SellerDashboard from '@/pages/seller/dashboard/SellerDashboard.jsx';
+import SellerBillingDashboard from '@/pages/seller/billing/SellerBillingDashboard.jsx';
+import SellerInvoices from '@/pages/seller/billing/SellerInvoices.jsx';
+import SellerPayments from '@/pages/seller/billing/SellerPayments.jsx';
+import PaymentGateways from '@/pages/seller/billing/PaymentGateways.jsx';
 import Customers from '@/pages/seller/customers/Customers.jsx';
 import CustomerDetails from '@/pages/seller/customers/CustomerDetails.jsx';
 import Subscriptions from '@/pages/seller/subscriptions/Subscriptions.jsx';
@@ -169,6 +189,11 @@ export const router = createBrowserRouter([
   { path: '/', element: <Home /> },
   { path: '/docs', element: <Docs /> },
 
+  // Public Custom Gateway checkout — no auth, no app shell, reachable by
+  // anyone holding the signed token (SB16/SB31: the exact same contract
+  // as a real external gateway's hosted checkout link).
+  { path: '/pay/:token', element: <PayPage /> },
+
   // Public auth routes
   {
     element: <PublicRoute />,
@@ -242,6 +267,28 @@ export const router = createBrowserRouter([
           { path: 'reconciliation',          element: <ReconciliationList /> },
           { path: 'reconciliation/new',      element: <Reconciliation /> },
           { path: 'reconciliation/:jobId',   element: <Reconciliation /> },
+          // Anomaly Detection — Overview is the bare-path landing page
+          // (KPIs/filters/charts across every job's executions); Jobs
+          // (AD7) is the list + create/edit wizard. Results/Reports/
+          // Configuration land as sibling routes in later phases
+          // (AD8-AD9), same incremental-route pattern every other
+          // module here follows.
+          { path: 'anomaly',                 element: <AnomalyOverview /> },
+          { path: 'anomaly/jobs',             element: <AnomalyJobs /> },
+          { path: 'anomaly/jobs/new',         element: <AnomalyJobEditor /> },
+          { path: 'anomaly/jobs/:jobId',      element: <AnomalyJobEditor /> },
+          { path: 'anomaly/results',              element: <AnomalyResults /> },
+          { path: 'anomaly/executions/:executionId', element: <AnomalyExecutionDetail /> },
+          { path: 'anomaly/reports',               element: <AnomalyReports /> },
+          { path: 'anomaly/configuration',         element: <AnomalyConfiguration /> },
+
+          // Invoice Intelligence — Inbox (INV14) is the landing page;
+          // InvoiceDetail (INV15/INV16 — full workspace + evidence viewer
+          // + corrections). "settings" is a static-prefix route and must
+          // stay registered before the :invoiceId catch-all below it.
+          { path: 'invoice-intel',            element: <InvoiceInbox /> },
+          { path: 'invoice-intel/settings',   element: <InvoiceSettings /> },
+          { path: 'invoice-intel/:invoiceId', element: <InvoiceDetail /> },
 
           // Observability
           { path: 'lineage',    element: <Lineage /> },
@@ -252,6 +299,11 @@ export const router = createBrowserRouter([
           // Operations
           { path: 'pipeline-runs', element: <PipelineRuns /> },
           { path: 'schedules',     element: <Schedules /> },
+
+          // Billing (SB29) — org-scoped self-service Subscriptions/
+          // Invoices/Payments, reachable regardless of subscription
+          // state (spec section 60's non-billable-route allowlist).
+          { path: 'billing', element: <CustomerBilling /> },
 
           // Admin
           { path: 'admin/users',            element: <Users /> },
@@ -284,6 +336,10 @@ export const router = createBrowserRouter([
             element: <SellerRoute />,
             children: [
               { path: 'seller',                    element: <SellerDashboard /> },
+              { path: 'seller/billing',            element: <SellerBillingDashboard /> },
+              { path: 'seller/billing/invoices',   element: <SellerInvoices /> },
+              { path: 'seller/billing/payments',   element: <SellerPayments /> },
+              { path: 'seller/billing/gateways',   element: <PaymentGateways /> },
               { path: 'seller/customers',          element: <Customers /> },
               { path: 'seller/customers/:customerId', element: <CustomerDetails /> },
               { path: 'seller/subscriptions',      element: <Subscriptions /> },

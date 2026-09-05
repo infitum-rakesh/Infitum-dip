@@ -22,6 +22,7 @@ from app.connectors.base import (
     ChunkResult,
     ColumnInfo,
     ConnectionTestResult,
+    ConnectorError,
     ConnectorUnsupportedError,
     ConnectorValidationError,
     ExplainResult,
@@ -104,21 +105,35 @@ class SqlAlchemyDatabaseConnector(BaseConnector):
         return set()
 
     def list_schemas(self) -> list[str]:
-        insp = inspect(self.engine(pool_size=1))
         try:
-            names = insp.get_schema_names()
-        except NotImplementedError:
-            return []
+            insp = inspect(self.engine(pool_size=1))
+            try:
+                names = insp.get_schema_names()
+            except NotImplementedError:
+                return []
+        except SQLAlchemyError as exc:
+            raise ConnectorError(self._scrub(f"Could not list schemas: {_root_cause_message(exc)}")) from exc
+        except ConnectorError:
+            raise
+        except Exception as exc:  # driver raised something SQLAlchemy didn't wrap (e.g. a raw socket/ODBC error)
+            raise ConnectorError(self._scrub(f"Could not list schemas: {exc}")) from exc
         excluded = self.excluded_schemas()
         return sorted(n for n in names if n not in excluded)
 
     def list_objects(self, schema: str | None, search: str | None = None) -> list[ObjectInfo]:
-        insp = inspect(self.engine(pool_size=1))
-        tables = insp.get_table_names(schema=schema)
         try:
-            views = insp.get_view_names(schema=schema)
-        except NotImplementedError:
-            views = []
+            insp = inspect(self.engine(pool_size=1))
+            tables = insp.get_table_names(schema=schema)
+            try:
+                views = insp.get_view_names(schema=schema)
+            except NotImplementedError:
+                views = []
+        except SQLAlchemyError as exc:
+            raise ConnectorError(self._scrub(f"Could not list tables/views: {_root_cause_message(exc)}")) from exc
+        except ConnectorError:
+            raise
+        except Exception as exc:
+            raise ConnectorError(self._scrub(f"Could not list tables/views: {exc}")) from exc
         objects = [ObjectInfo(name=t, schema=schema, object_type="TABLE") for t in tables]
         objects += [ObjectInfo(name=v, schema=schema, object_type="VIEW") for v in views]
         if search:
@@ -128,8 +143,15 @@ class SqlAlchemyDatabaseConnector(BaseConnector):
         return objects
 
     def get_columns(self, object_name: str, schema: str | None = None) -> list[ColumnInfo]:
-        insp = inspect(self.engine(pool_size=1))
-        cols = insp.get_columns(object_name, schema=schema)
+        try:
+            insp = inspect(self.engine(pool_size=1))
+            cols = insp.get_columns(object_name, schema=schema)
+        except SQLAlchemyError as exc:
+            raise ConnectorError(self._scrub(f"Could not read columns for {object_name}: {_root_cause_message(exc)}")) from exc
+        except ConnectorError:
+            raise
+        except Exception as exc:
+            raise ConnectorError(self._scrub(f"Could not read columns for {object_name}: {exc}")) from exc
 
         pk_cols: set[str] = set()
         try:
@@ -212,12 +234,19 @@ class SqlAlchemyDatabaseConnector(BaseConnector):
             return None
 
     def preview_object(self, object_name: str, schema: str | None, limit: int) -> PreviewResult:
-        engine = self.engine(pool_size=1)
-        quoted = self._quote_object(object_name, schema, engine)
-        with engine.connect() as conn:
-            result = conn.execute(text(f"SELECT * FROM {quoted}"))
-            columns = list(result.keys())
-            rows = result.fetchmany(limit + 1)  # +1 to detect truncation without a second COUNT(*)
+        try:
+            engine = self.engine(pool_size=1)
+            quoted = self._quote_object(object_name, schema, engine)
+            with engine.connect() as conn:
+                result = conn.execute(text(f"SELECT * FROM {quoted}"))
+                columns = list(result.keys())
+                rows = result.fetchmany(limit + 1)  # +1 to detect truncation without a second COUNT(*)
+        except SQLAlchemyError as exc:
+            raise ConnectorError(self._scrub(f"Preview of {object_name} failed: {_root_cause_message(exc)}")) from exc
+        except ConnectorError:
+            raise
+        except Exception as exc:
+            raise ConnectorError(self._scrub(f"Preview of {object_name} failed: {exc}")) from exc
         return PreviewResult(columns=columns, rows=[list(r) for r in rows[:limit]], row_count=None, truncated=len(rows) > limit)
 
     def preview_sql(self, sql: str, parameters: dict, limit: int) -> PreviewResult:

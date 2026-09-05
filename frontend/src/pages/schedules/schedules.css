@@ -97,6 +97,10 @@ select.sched-input.sched-inline-filter { width: auto; min-width: 140px; }
 .sched-input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
 
 .sched-form-divider { height: 1px; background: var(--border); margin: 4px 0 14px; }
+.sched-section-title {
+  font-size: var(--fs-sm); font-weight: 700; color: var(--text-primary); margin: 4px 0 10px;
+}
+.sched-field-hint { font-size: var(--fs-xs); color: var(--text-muted); line-height: 1.4; }
 .sched-form-error {
   padding: 10px 12px; margin-bottom: 14px; background: var(--color-danger-bg); color: var(--color-danger-dark);
   border-radius: var(--radius-md); font-size: var(--fs-sm);
@@ -119,6 +123,35 @@ select.sched-input.sched-inline-filter { width: auto; min-width: 140px; }
   white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: 12px;
   color: var(--text-secondary); background: var(--bg-body); border-radius: var(--radius-md);
   padding: 12px; max-height: 320px; overflow: auto;
+}
+
+/* ── Scheduled Document Intelligence Workflow — run progress ──── */
+.sched-doc-progress { margin-bottom: 4px; }
+.sched-doc-progress-header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.sched-doc-progress-bar-track {
+  flex: 1; height: 8px; border-radius: var(--radius-full); background: var(--bg-body);
+  border: 1px solid var(--border); overflow: hidden;
+}
+.sched-doc-progress-bar-fill {
+  height: 100%; background: var(--color-primary); border-radius: var(--radius-full);
+  transition: width 0.4s ease;
+}
+.sched-doc-progress-label { font-size: var(--fs-sm); font-weight: 700; color: var(--text-primary); white-space: nowrap; }
+.sched-doc-progress-current { font-size: var(--fs-sm); color: var(--text-secondary); margin-bottom: 12px; }
+
+.sched-doc-stat-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.sched-doc-stat-tile {
+  background: var(--bg-body); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  padding: 10px 12px; text-align: center;
+}
+.sched-doc-stat-value { font-size: 18px; font-weight: 800; color: var(--text-primary); line-height: 1.2; }
+.sched-doc-stat-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600; margin-top: 2px; }
+.sched-doc-stat-tile--success .sched-doc-stat-value { color: var(--color-success-dark); }
+.sched-doc-stat-tile--warning .sched-doc-stat-value { color: var(--color-warning-dark, #b45309); }
+.sched-doc-stat-tile--danger  .sched-doc-stat-value { color: var(--color-danger-dark); }
+
+@media (max-width: 640px) {
+  .sched-doc-stat-tiles { grid-template-columns: repeat(2, 1fr); }
 }
 
 /* ============================================================

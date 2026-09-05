@@ -10,6 +10,8 @@ from app.core.deps import require_action
 from app.database.tenant_routing import get_tenant_db
 from app.models.user import User, UserRole
 from app.schemas.schedules import (
+    DocumentRegistryListOut,
+    DocumentRegistryRowOut,
     ScheduleCreateRequest,
     ScheduleListOut,
     ScheduleOut,
@@ -19,6 +21,7 @@ from app.schemas.schedules import (
     ScheduleStatsOut,
     ScheduleUpdateRequest,
 )
+from app.services import document_schedule_service as doc_sched_svc
 from app.services import schedule_service as svc
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
@@ -50,6 +53,15 @@ async def _get_or_404(db: AsyncSession, schedule_id: int, user: User):
     return schedule
 
 
+async def _to_out(db: AsyncSession, schedule, owner_name: str | None) -> dict:
+    """svc.to_out() needs the schedule's DocumentScheduleConfig row (if
+    any) to include `document_config` in the response — fetched once here
+    so every route below stays a one-liner instead of repeating the
+    lookup."""
+    document_config = await svc.get_document_config(db, schedule.id)
+    return svc.to_out(schedule, owner_name, document_config)
+
+
 # ── KPIs ──────────────────────────────────────────────────────────
 # NOTE: literal-path /stats must stay registered before /{schedule_id} —
 # Starlette matches by position, not type.
@@ -67,6 +79,7 @@ async def list_schedules(
     status_filter: str | None = Query(None, alias="status"),
     environment: str | None = Query(None),
     frequency: str | None = Query(None),
+    anomaly_job_id: int | None = Query(None, description="Filter to the schedule(s) linked to one AnomalyJob"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     sort_by: str = Query("next_run_at"),
@@ -76,10 +89,10 @@ async def list_schedules(
 ):
     schedules, total, name_map = await svc.list_schedules(
         db, organization_id=_effective_org_id(user), search=q, status_filter=status_filter,
-        environment=environment, frequency=frequency, page=page, page_size=page_size,
+        environment=environment, frequency=frequency, anomaly_job_id=anomaly_job_id, page=page, page_size=page_size,
         sort_by=sort_by, sort_dir=sort_dir,
     )
-    items = [svc.to_out(s, name_map.get(s.owner_id)) for s in schedules]
+    items = [await _to_out(db, s, name_map.get(s.owner_id)) for s in schedules]
     return ScheduleListOut(items=items, total=total, page=page, page_size=page_size)
 
 
@@ -87,7 +100,7 @@ async def list_schedules(
 async def get_schedule(schedule_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     schedule = await _get_or_404(db, schedule_id, user)
     name_map = await svc.owner_name_map(db, {schedule.owner_id} if schedule.owner_id else set())
-    return svc.to_out(schedule, name_map.get(schedule.owner_id))
+    return await _to_out(db, schedule, name_map.get(schedule.owner_id))
 
 
 # ── Create / update / delete ──────────────────────────────────────
@@ -98,7 +111,7 @@ async def create_schedule(body: ScheduleCreateRequest, user: User = Depends(_cre
         schedule = await svc.create_schedule(db, organization_id=user.organization_id, owner_id=user.id, body=body)
     except svc.ScheduleValidationError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
-    return svc.to_out(schedule, user.full_name)
+    return await _to_out(db, schedule, user.full_name)
 
 
 @router.put("/{schedule_id}", response_model=ScheduleOut)
@@ -109,7 +122,7 @@ async def update_schedule(schedule_id: int, body: ScheduleUpdateRequest, user: U
     except svc.ScheduleValidationError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
     name_map = await svc.owner_name_map(db, {schedule.owner_id} if schedule.owner_id else set())
-    return svc.to_out(schedule, name_map.get(schedule.owner_id))
+    return await _to_out(db, schedule, name_map.get(schedule.owner_id))
 
 
 @router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -123,9 +136,12 @@ async def delete_schedule(schedule_id: int, user: User = Depends(_delete), db: A
 @router.post("/{schedule_id}/run", response_model=ScheduleOut)
 async def run_now(schedule_id: int, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
     schedule = await _get_or_404(db, schedule_id, user)
-    await svc.execute_schedule(db, schedule, trigger="Manual")
+    try:
+        await svc.execute_schedule(db, schedule, trigger="Manual")
+    except svc.ScheduleAlreadyRunningError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
     name_map = await svc.owner_name_map(db, {schedule.owner_id} if schedule.owner_id else set())
-    return svc.to_out(schedule, name_map.get(schedule.owner_id))
+    return await _to_out(db, schedule, name_map.get(schedule.owner_id))
 
 
 @router.post("/{schedule_id}/pause", response_model=ScheduleOut)
@@ -133,7 +149,7 @@ async def pause_schedule(schedule_id: int, user: User = Depends(_edit), db: Asyn
     schedule = await _get_or_404(db, schedule_id, user)
     schedule = await svc.pause_schedule(db, schedule)
     name_map = await svc.owner_name_map(db, {schedule.owner_id} if schedule.owner_id else set())
-    return svc.to_out(schedule, name_map.get(schedule.owner_id))
+    return await _to_out(db, schedule, name_map.get(schedule.owner_id))
 
 
 @router.post("/{schedule_id}/resume", response_model=ScheduleOut)
@@ -141,14 +157,19 @@ async def resume_schedule(schedule_id: int, user: User = Depends(_edit), db: Asy
     schedule = await _get_or_404(db, schedule_id, user)
     schedule = await svc.resume_schedule(db, schedule)
     name_map = await svc.owner_name_map(db, {schedule.owner_id} if schedule.owner_id else set())
-    return svc.to_out(schedule, name_map.get(schedule.owner_id))
+    return await _to_out(db, schedule, name_map.get(schedule.owner_id))
 
 
 @router.post("/{schedule_id}/clone", response_model=ScheduleOut, status_code=status.HTTP_201_CREATED)
 async def clone_schedule(schedule_id: int, user: User = Depends(_create), db: AsyncSession = Depends(get_tenant_db)):
     schedule = await _get_or_404(db, schedule_id, user)
     clone = await svc.clone_schedule(db, schedule, user.id)
-    return svc.to_out(clone, user.full_name)
+    # A document-source schedule's config isn't cloned yet (spec section
+    # 12's Duplicate action still works for the schedule shell; the clone
+    # simply has no source configured until the user fills it in via Edit
+    # — same "starts PAUSED so it can't silently double-run" caution
+    # clone_schedule() already applies to the schedule itself).
+    return await _to_out(db, clone, user.full_name)
 
 
 # ── Execution history ─────────────────────────────────────────────
@@ -181,5 +202,37 @@ async def rerun(schedule_id: int, run_id: int, user: User = Depends(_execute), d
     original = await svc.get_run(db, schedule_id, run_id)
     if original is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
-    new_run = await svc.execute_schedule(db, schedule, trigger="Rerun")
+    try:
+        new_run = await svc.execute_schedule(db, schedule, trigger="Rerun")
+    except svc.ScheduleAlreadyRunningError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
     return ScheduleRunDetailOut(**svc.run_to_out(new_run))
+
+
+@router.post("/{schedule_id}/runs/{run_id}/cancel", response_model=ScheduleRunDetailOut)
+async def cancel_run(schedule_id: int, run_id: int, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
+    """Spec section 81 — cooperative cancellation, meaningful only for a
+    RUNNING document-schedule run (see schedule_service._bounded()'s
+    between-files checkpoint); a harmless no-op flag-set on anything else."""
+    await _get_or_404(db, schedule_id, user)
+    run = await svc.get_run(db, schedule_id, run_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
+    run = await svc.request_cancel(db, run)
+    return ScheduleRunDetailOut(**svc.run_to_out(run))
+
+
+@router.get("/{schedule_id}/runs/{run_id}/documents", response_model=DocumentRegistryListOut)
+async def list_run_documents(
+    schedule_id: int, run_id: int,
+    page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=500),
+    user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db),
+):
+    """Per-file breakdown for a document-schedule run (spec section 15/44)
+    — the Run Detail screen's drilldown table."""
+    await _get_or_404(db, schedule_id, user)
+    run = await svc.get_run(db, schedule_id, run_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
+    rows, total = await doc_sched_svc.list_registry_for_run(db, run_id, page=page, page_size=page_size)
+    return DocumentRegistryListOut(items=[DocumentRegistryRowOut.model_validate(r) for r in rows], total=total)

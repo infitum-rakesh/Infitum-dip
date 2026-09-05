@@ -19,7 +19,11 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.anomaly import AnomalyExecution, OverallStatus
 from app.models.incident import Incident, IncidentStatus
+from app.models.invoice_intelligence.core import ApInvoice
+from app.models.invoice_intelligence.erp import ApInvoiceErpStatus, ApInvoiceErpTransaction, ApInvoiceReconciliation, ApInvoiceReconciliationStatus
+from app.models.invoice_intelligence.learning import ApInvoiceAuditEvent, ApInvoiceAuditEventType
 from app.models.pipeline import Pipeline, PipelineVersion
 from app.models.pipeline_job import JobStatus, PipelineJob, PipelineJobLog
 from app.models.pipeline_run import PipelineRun
@@ -127,6 +131,13 @@ async def overview_counts(db: AsyncSession, organization_id: int | None, since: 
         incidents_open_stmt = incidents_open_stmt.where(Incident.organization_id == organization_id)
     incidents_open = (await db.execute(incidents_open_stmt)).scalar_one()
 
+    anomalies_critical = await _count(AnomalyExecution, AnomalyExecution.overall_status == OverallStatus.CRITICAL)
+    anomalies_warning = await _count(AnomalyExecution, AnomalyExecution.overall_status == OverallStatus.WARNING)
+
+    # INV12 — same window-scoped count pattern as anomalies above.
+    invoices_dead_letter = await _count(ApInvoiceErpTransaction, ApInvoiceErpTransaction.status == ApInvoiceErpStatus.DEAD_LETTER)
+    invoices_reconciliation_mismatch = await _count(ApInvoiceReconciliation, ApInvoiceReconciliation.status == ApInvoiceReconciliationStatus.MISMATCH)
+
     records_stmt = select(func.coalesce(func.sum(PipelineJob.records_out), 0)).where(PipelineJob.created_at >= since)
     if organization_id is not None:
         records_stmt = records_stmt.where(PipelineJob.organization_id == organization_id)
@@ -137,6 +148,8 @@ async def overview_counts(db: AsyncSession, organization_id: int | None, since: 
         "loads_total": loads_total, "loads_failed": loads_failed,
         "validations_failed": validations_failed, "reconciliations_failed": reconciliations_failed,
         "incidents_open": incidents_open, "records_processed": int(records_processed or 0),
+        "anomalies_critical": anomalies_critical, "anomalies_warning": anomalies_warning,
+        "invoices_dead_letter": invoices_dead_letter, "invoices_reconciliation_mismatch": invoices_reconciliation_mismatch,
     }
 
 
@@ -191,6 +204,166 @@ async def list_reconciliation_runs(db: AsyncSession, organization_id: int | None
     total = (await db.execute(count_stmt)).scalar_one()
     stmt = stmt.order_by(ReconciliationRun.id.desc()).offset(offset).limit(limit)
     return list((await db.execute(stmt)).scalars().all()), total
+
+
+async def list_anomaly_executions(db: AsyncSession, organization_id: int | None, limit: int = 50, offset: int = 0) -> tuple[list[AnomalyExecution], int]:
+    stmt = select(AnomalyExecution)
+    count_stmt = select(func.count()).select_from(AnomalyExecution)
+    if organization_id is not None:
+        stmt = stmt.where(AnomalyExecution.organization_id == organization_id)
+        count_stmt = count_stmt.where(AnomalyExecution.organization_id == organization_id)
+    total = (await db.execute(count_stmt)).scalar_one()
+    stmt = stmt.order_by(AnomalyExecution.id.desc()).offset(offset).limit(limit)
+    return list((await db.execute(stmt)).scalars().all()), total
+
+
+# INV12 — Invoice Intelligence rollup into the same Data Quality tab.
+# Joins ApInvoice for invoice_number purely for display (the transaction/
+# reconciliation row itself is the real record; the join never filters).
+
+async def list_invoice_erp_dead_letters(db: AsyncSession, organization_id: int | None, limit: int = 50, offset: int = 0) -> tuple[list[tuple[ApInvoiceErpTransaction, str | None]], int]:
+    stmt = select(ApInvoiceErpTransaction, ApInvoice.invoice_number).join(ApInvoice, ApInvoice.id == ApInvoiceErpTransaction.invoice_id).where(
+        ApInvoiceErpTransaction.status == ApInvoiceErpStatus.DEAD_LETTER
+    )
+    count_stmt = select(func.count()).select_from(ApInvoiceErpTransaction).where(ApInvoiceErpTransaction.status == ApInvoiceErpStatus.DEAD_LETTER)
+    if organization_id is not None:
+        stmt = stmt.where(ApInvoiceErpTransaction.organization_id == organization_id)
+        count_stmt = count_stmt.where(ApInvoiceErpTransaction.organization_id == organization_id)
+    total = (await db.execute(count_stmt)).scalar_one()
+    stmt = stmt.order_by(ApInvoiceErpTransaction.id.desc()).offset(offset).limit(limit)
+    return [(row[0], row[1]) for row in (await db.execute(stmt)).all()], total
+
+
+async def list_invoice_reconciliation_mismatches(db: AsyncSession, organization_id: int | None, limit: int = 50, offset: int = 0) -> tuple[list[tuple[ApInvoiceReconciliation, str | None]], int]:
+    stmt = select(ApInvoiceReconciliation, ApInvoice.invoice_number).join(ApInvoice, ApInvoice.id == ApInvoiceReconciliation.invoice_id).where(
+        ApInvoiceReconciliation.status == ApInvoiceReconciliationStatus.MISMATCH
+    )
+    count_stmt = select(func.count()).select_from(ApInvoiceReconciliation).where(ApInvoiceReconciliation.status == ApInvoiceReconciliationStatus.MISMATCH)
+    if organization_id is not None:
+        stmt = stmt.where(ApInvoiceReconciliation.organization_id == organization_id)
+        count_stmt = count_stmt.where(ApInvoiceReconciliation.organization_id == organization_id)
+    total = (await db.execute(count_stmt)).scalar_one()
+    stmt = stmt.order_by(ApInvoiceReconciliation.id.desc()).offset(offset).limit(limit)
+    return [(row[0], row[1]) for row in (await db.execute(stmt)).all()], total
+
+
+# ── Invoice Processing (INV21 — spec §114) ──────────────────────────
+# Real rollup over data this build already records: ApInvoiceAuditEvent
+# (the narrow lifecycle log Invoice Detail's own "Lifecycle Events" card
+# reads — DECISION_MADE/ERP_SUBMITTED/ERP_SUCCEEDED/RECONCILIATION_RUN,
+# see models/invoice_intelligence/learning.py), ApInvoiceErpTransaction
+# (one row per real ERP HTTP attempt), and ReviewQueueItem (reused,
+# unmodified). "Worker activity" has no persistent worker-pool concept in
+# this codebase (ERP posting is a plain asyncio background task, not a
+# worker with an id) — reported honestly here as "in-flight ERP attempts"
+# rather than inventing worker identities that don't exist.
+
+async def invoice_processing_overview(db: AsyncSession, organization_id: int | None, since: datetime) -> dict:
+    async def _count(model, extra_where=None, *, since_field: str | None = "created_at"):
+        stmt = select(func.count()).select_from(model)
+        if since_field is not None:
+            stmt = stmt.where(getattr(model, since_field) >= since)
+        if organization_id is not None and hasattr(model, "organization_id"):
+            stmt = stmt.where(model.organization_id == organization_id)
+        if extra_where is not None:
+            stmt = stmt.where(extra_where)
+        return (await db.execute(stmt)).scalar_one()
+
+    # ── Decision outcomes — real DECISION_MADE lifecycle events in window.
+    # The decision itself is read out of the event's own recorded details
+    # (invoice_decision_service.decide() writes {"decision": ..., "scores": ...}
+    # there) rather than ApInvoice.final_decision, since a later correction
+    # can move final_decision forward while this window still wants "what
+    # was actually decided during this period."
+    decision_events_stmt = select(ApInvoiceAuditEvent.invoice_id, ApInvoiceAuditEvent.details, ApInvoiceAuditEvent.created_at).where(
+        ApInvoiceAuditEvent.event_type == ApInvoiceAuditEventType.DECISION_MADE, ApInvoiceAuditEvent.created_at >= since,
+    )
+    if organization_id is not None:
+        decision_events_stmt = decision_events_stmt.where(ApInvoiceAuditEvent.organization_id == organization_id)
+    decision_rows = (await db.execute(decision_events_stmt)).all()
+    decided_total = len(decision_rows)
+    decision_counts = {"STRAIGHT_THROUGH": 0, "REVIEW_REQUIRED": 0, "REJECT": 0, "RETRY": 0}
+    for _inv_id, details, _created_at in decision_rows:
+        d = (details or {}).get("decision")
+        if d in decision_counts:
+            decision_counts[d] += 1
+    straight_through_rate_pct = round(100.0 * decision_counts["STRAIGHT_THROUGH"] / decided_total, 1) if decided_total else None
+
+    # ── ERP call outcomes — every ApInvoiceErpTransaction row IS one real
+    # HTTP attempt (see invoice_erp_service.py's own docstring).
+    erp_calls_total = await _count(ApInvoiceErpTransaction)
+    erp_succeeded = await _count(ApInvoiceErpTransaction, ApInvoiceErpTransaction.status == ApInvoiceErpStatus.SUCCEEDED)
+    erp_failed = await _count(ApInvoiceErpTransaction, ApInvoiceErpTransaction.status == ApInvoiceErpStatus.FAILED)
+    erp_dead_letter = await _count(ApInvoiceErpTransaction, ApInvoiceErpTransaction.status == ApInvoiceErpStatus.DEAD_LETTER)
+    erp_retry_attempts = await _count(ApInvoiceErpTransaction, ApInvoiceErpTransaction.attempt_number > 1)
+    # In-flight right now (not window-scoped — a real current queue depth).
+    erp_in_flight_stmt = select(func.count()).select_from(ApInvoiceErpTransaction).where(
+        ApInvoiceErpTransaction.status.in_([ApInvoiceErpStatus.PENDING, ApInvoiceErpStatus.RETRYING])
+    )
+    if organization_id is not None:
+        erp_in_flight_stmt = erp_in_flight_stmt.where(ApInvoiceErpTransaction.organization_id == organization_id)
+    erp_in_flight = (await db.execute(erp_in_flight_stmt)).scalar_one()
+
+    # ── Review queue depth — current open items for invoice-typed documents
+    # (ReviewQueueItem is reused unmodified; "Invoice" is the exact string
+    # review_queue_service._build_item() stamps for this document type).
+    from app.models.review_queue import ReviewQueueItem, ReviewStatus
+    review_depth_stmt = select(func.count()).select_from(ReviewQueueItem).where(
+        ReviewQueueItem.document_type == "Invoice",
+        ReviewQueueItem.status.in_([ReviewStatus.PENDING, ReviewStatus.IN_PROGRESS, ReviewStatus.ESCALATED]),
+    )
+    if organization_id is not None:
+        review_depth_stmt = review_depth_stmt.where(ReviewQueueItem.organization_id == organization_id)
+    review_queue_depth = (await db.execute(review_depth_stmt)).scalar_one()
+
+    # ── Stage durations — real deltas between consecutive lifecycle-event
+    # timestamps, averaged per invoice. Bounded by the same window; fetched
+    # once and grouped in Python (SQLite has no reliable cross-dialect
+    # window-function story worth depending on here).
+    all_events_stmt = select(ApInvoiceAuditEvent.invoice_id, ApInvoiceAuditEvent.event_type, ApInvoiceAuditEvent.created_at).where(
+        ApInvoiceAuditEvent.created_at >= since,
+        ApInvoiceAuditEvent.event_type.in_([
+            ApInvoiceAuditEventType.DECISION_MADE, ApInvoiceAuditEventType.ERP_SUBMITTED,
+            ApInvoiceAuditEventType.ERP_SUCCEEDED, ApInvoiceAuditEventType.RECONCILIATION_RUN,
+        ]),
+    )
+    if organization_id is not None:
+        all_events_stmt = all_events_stmt.where(ApInvoiceAuditEvent.organization_id == organization_id)
+    by_invoice: dict[int, dict] = {}
+    for invoice_id, event_type, created_at in (await db.execute(all_events_stmt)).all():
+        slot = by_invoice.setdefault(invoice_id, {})
+        # Earliest occurrence of each stage — a retry loop fires ERP_SUBMITTED
+        # once per attempt; the first one is when the invoice actually
+        # entered the ERP posting stage, which is the duration that matters.
+        if event_type.value not in slot or created_at < slot[event_type.value]:
+            slot[event_type.value] = created_at
+
+    def _avg_delta(from_key: str, to_key: str) -> float | None:
+        deltas = [
+            (slot[to_key] - slot[from_key]).total_seconds()
+            for slot in by_invoice.values()
+            if from_key in slot and to_key in slot and slot[to_key] >= slot[from_key]
+        ]
+        return round(sum(deltas) / len(deltas), 1) if deltas else None
+
+    avg_decision_to_erp_submit_seconds = _avg_delta("DECISION_MADE", "ERP_SUBMITTED")
+    avg_erp_submit_to_succeeded_seconds = _avg_delta("ERP_SUBMITTED", "ERP_SUCCEEDED")
+    avg_succeeded_to_reconciled_seconds = _avg_delta("ERP_SUCCEEDED", "RECONCILIATION_RUN")
+
+    return {
+        "decided_total": decided_total,
+        "straight_through_count": decision_counts["STRAIGHT_THROUGH"],
+        "review_required_count": decision_counts["REVIEW_REQUIRED"],
+        "reject_count": decision_counts["REJECT"],
+        "retry_count": decision_counts["RETRY"],
+        "straight_through_rate_pct": straight_through_rate_pct,
+        "erp_calls_total": erp_calls_total, "erp_succeeded": erp_succeeded, "erp_failed": erp_failed,
+        "erp_dead_letter": erp_dead_letter, "erp_retry_attempts": erp_retry_attempts, "erp_in_flight": erp_in_flight,
+        "review_queue_depth": review_queue_depth,
+        "avg_decision_to_erp_submit_seconds": avg_decision_to_erp_submit_seconds,
+        "avg_erp_submit_to_succeeded_seconds": avg_erp_submit_to_succeeded_seconds,
+        "avg_succeeded_to_reconciled_seconds": avg_succeeded_to_reconciled_seconds,
+    }
 
 
 # ── Pipelines (for pickers / SLA scoping) ──

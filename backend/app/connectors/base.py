@@ -443,6 +443,47 @@ class BaseConnector(abc.ABC):
         fabricated. Only connectors/ocr/* override this."""
         raise ConnectorUnsupportedError(f"{self.connection_type} does not support OCR.")
 
+    # ── ERP invoice posting (Invoice Intelligence, Oracle ERP Cloud) ──
+    # Only connectors/application/oracle_erp.py overrides these — a
+    # dedicated Accounts Payable Invoices REST integration. Modeled after
+    # the generate()/ocr() extension pattern above rather than a second,
+    # parallel adapter hierarchy: an ERP connection IS a Connection like
+    # any other (Test Connection, encrypted secrets, connector registry),
+    # it just has ERP-shaped verbs instead of tabular ones. Idempotency
+    # across retries is enforced at OUR layer (invoice_erp_service.py /
+    # ApInvoiceErpTransaction.idempotency_key — see INV9), never assumed
+    # to be guaranteed by the ERP platform itself; idempotency_key is
+    # still passed through here so a genuinely idempotency-aware ERP
+    # endpoint can also de-dupe on its own side.
+
+    def submit_invoice(self, payload: dict, *, idempotency_key: str | None = None) -> dict:
+        """Real POST of one AP invoice (header + lines) to the ERP's
+        documented invoice-creation resource. Returns the ERP's own
+        response body verbatim (includes its assigned invoice id/number
+        and any links) — never a synthesized "success" shape. Raises
+        ConnectorError with the real HTTP status/body on rejection."""
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support ERP invoice submission.")
+
+    def get_invoice_status(self, erp_invoice_id: str) -> dict:
+        """Real GET of one ERP-side invoice's current status fields
+        (validation/approval/payment status, in the ERP's own field
+        names) — used by reconciliation and status polling."""
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support ERP invoice status lookup.")
+
+    def cancel_invoice(self, erp_invoice_id: str) -> dict:
+        """Real cancel/void call against the ERP's documented custom
+        action for this resource. Raises ConnectorError if the ERP
+        refuses (e.g. already paid) rather than reporting a fake success."""
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support ERP invoice cancellation.")
+
+    def health_check(self) -> ConnectionTestResult:
+        """Lighter-weight liveness probe than test_connection() — same
+        shape, but hits the ERP's own service-health/ping-style endpoint
+        (when the ERP documents one) instead of the invoices resource
+        itself. Default implementation just delegates to test_connection()
+        so any connector may leave this unoverridden."""
+        return self.test_connection()
+
     def _scrub(self, message: str) -> str:
         """Instance-method convenience wrapper around the module-level
         scrub_secrets() — see its docstring for the full rationale."""
