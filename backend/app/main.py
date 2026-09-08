@@ -65,6 +65,7 @@ from app.api.invoices import router as invoices_router
 from app.api.invoice_mappings import router as invoice_mappings_router
 from app.api.invoice_rules import router as invoice_rules_router
 from app.api.approvals import router as approvals_router
+from app.api.bulk_migration import router as bulk_migration_router
 from app.models.pipeline_source_file import PipelineSourceFile  # noqa: F401 — string FK to pipelines.id needs this imported before init_db()
 from app.models.tenant_database import TenantDatabase  # noqa: F401 — new table, needs registering before init_db()
 from app.models.tenant_migration_job import TenantMigrationJob, TenantMigrationJobLog  # noqa: F401 — new tables, need registering before init_db()
@@ -103,6 +104,13 @@ from app.models.company import Company  # noqa: F401 — new table, needs regist
 # Scheduled Document Intelligence Workflow (2026) — new tables, need
 # registering before init_db() the same way every model above does.
 from app.models.document_schedule import DocumentScheduleConfig, DocumentSourceRegistry  # noqa: F401
+# Bulk Object Migration (2026, BM1) — config-driven 5,000+ object migration
+# domain (one pipeline + many objects + one run + many tasks). New tables,
+# need registering before init_db(). "bulk_migration"/BulkMigration* prefix
+# avoids colliding with the unrelated TenantMigrationJob (BYODB org/platform
+# database migration — see models/tenant_migration_job.py).
+from app.models.bulk_migration import BulkMigrationPipeline, BulkMigrationObject  # noqa: F401
+from app.models.bulk_migration_run import BulkMigrationRun, BulkMigrationTask, BulkMigrationTaskEvent  # noqa: F401
 # Invoice Intelligence (2026, INV1) — canonical AP-invoice domain models,
 # new tables, need registering before init_db(). `ApInvoice*` prefix
 # avoids colliding with models.billing.invoice.Invoice (SaaS subscription
@@ -142,6 +150,7 @@ async def lifespan(app: FastAPI):
     await _seed_seller_data()
     await _seed_customer_modules()
     await _recover_document_schedules()
+    await _recover_bulk_migration_tasks()
     scheduler = _start_billing_scheduler()
     yield
     scheduler.shutdown(wait=False)
@@ -159,6 +168,17 @@ async def _recover_document_schedules() -> None:
     stats = await recover_stuck_document_schedules()
     if stats["recovered_runs"] or stats["requeued_documents"] or stats["failed_documents"]:
         logger.info("Document schedule recovery: %s", stats)
+
+
+async def _recover_bulk_migration_tasks() -> None:
+    """Bulk Object Migration (2026, BM5) startup recovery — same place
+    and same shape as _recover_document_schedules() above. See
+    bulk_migration_service.recover_stuck_bulk_migration_tasks()."""
+    from app.services.bulk_migration_service import recover_stuck_bulk_migration_tasks
+
+    stats = await recover_stuck_bulk_migration_tasks()
+    if stats["recovered_runs"] or stats["requeued_tasks"] or stats["failed_tasks"]:
+        logger.info("Bulk migration recovery: %s", stats)
 
 
 def _start_billing_scheduler():
@@ -179,6 +199,7 @@ def _start_billing_scheduler():
     from app.services.scheduler_poller import run_poll as run_schedule_poll
     from app.services.approval.notification_outbox_service import process_pending_standalone as run_approval_notification_outbox
     from app.services.approval.sla_scheduler_service import run_sla_sweep_standalone as run_approval_sla_sweep
+    from app.services.bulk_migration_service import sweep_stale_bulk_migration_tasks as run_bulk_migration_stale_sweep
 
     async def _run_expiry_sweep_safely():
         try:
@@ -218,6 +239,14 @@ def _start_billing_scheduler():
         except Exception:
             logger.exception("Approval SLA sweep failed")
 
+    async def _run_bulk_migration_stale_sweep_safely():
+        try:
+            stats = await run_bulk_migration_stale_sweep()
+            if stats["requeued_tasks"] or stats["failed_tasks"]:
+                logger.info("Bulk migration stale-task sweep: %s", stats)
+        except Exception:
+            logger.exception("Bulk migration stale-task sweep failed")
+
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(_run_expiry_sweep_safely, "interval", hours=1, id="billing_expiry_sweep")
     scheduler.add_job(_run_billing_sweep_safely, "interval", hours=1, id="billing_cycle_sweep")
@@ -236,6 +265,10 @@ def _start_billing_scheduler():
     # doesn't need 60s polling; 15 min keeps a breach from sitting
     # unnoticed for long without adding meaningful DB load.
     scheduler.add_job(_run_approval_sla_sweep_safely, "interval", minutes=15, id="approval_sla_sweep")
+    # 2 minutes — well under STALE_HEARTBEAT_THRESHOLD_SECONDS (5 min), so
+    # a hung task's heartbeat isn't stale for much longer than the
+    # threshold itself before this sweep notices and requeues it.
+    scheduler.add_job(_run_bulk_migration_stale_sweep_safely, "interval", minutes=2, id="bulk_migration_stale_sweep")
     scheduler.start()
     logger.info("Backend scheduler started — billing sweeps hourly, schedule poll + approval notification outbox every 60s, approval SLA sweep every 15min.")
     return scheduler
@@ -391,6 +424,7 @@ app.include_router(invoices_router, prefix="/api")
 app.include_router(invoice_mappings_router, prefix="/api")
 app.include_router(invoice_rules_router, prefix="/api")
 app.include_router(approvals_router, prefix="/api")
+app.include_router(bulk_migration_router, prefix="/api")
 
 
 @app.get("/api/health")

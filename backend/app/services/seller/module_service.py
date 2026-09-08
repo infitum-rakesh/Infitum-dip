@@ -65,6 +65,7 @@ MODULE_CATALOG: dict[str, dict] = {
     "ANOMALY_DETECTION":    {"label": "Anomaly Detection",     "category": "QUALITY"},
     "INVOICE_INTELLIGENCE":{"label": "Invoice Intelligence",  "category": "DOCUMENT INTELLIGENCE"},
     "PAYMENT_APPROVAL":     {"label": "Payment Approvals",      "category": "OPERATIONS"},
+    "BULK_MIGRATION":       {"label": "Bulk Object Migration",  "category": "OPERATIONS"},
 }
 CATALOG_VERSION = "1.0.0"  # matches main.py's FastAPI(version=...) — one platform release, no per-module versioning exists
 
