@@ -21,7 +21,7 @@ spec section 7 describes.
 import enum
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Enum, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.connection import TenantBase
@@ -83,6 +83,62 @@ class DocumentScheduleConfig(TenantBase):
     # catalogue by id only, so a connection being deleted later is a clean
     # "connection not found" runtime error, not a migration-blocking FK.
     source_connection_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+
+    # PAY18/PAY20 — non-file intake sources. "FILE" (default) is every
+    # schedule created before this existed: source_connection_id points at
+    # a STORAGE connection and source_path/file_pattern/recursive_scan
+    # drive discover_files() exactly as before, completely unaffected.
+    # "DATABASE" instead points source_connection_id at a real
+    # DATABASE-category connection (Postgres/MySQL/SQL Server/...) and
+    # runs source_query via that connector's own preview_sql() (see
+    # document_schedule_service.discover_database_records()). "API"
+    # (PAY20) points source_connection_id at a real API-category
+    # connection (REST) and runs the source_api_* fields below through
+    # that connector's own fetch_api() — the same real, paginated HTTP
+    # fetch the SQL Workspace/Source Dataset "preview-api" surface already
+    # uses (see document_schedule_service.discover_api_records()). Either
+    # non-file kind's returned rows become one Document each, mapped
+    # directly onto the pinned document_type's canonical taxonomy field
+    # names with NO OCR/AI Extraction stage (the row is already
+    # structured; see document_service.process_document()'s
+    # preextracted_fields param). source_path stays required for every
+    # kind and is reused as a free-text label (e.g. "AP invoices table" /
+    # "Vendor invoices API") shown wherever a file schedule would show its
+    # path — not a filesystem path for either non-file kind.
+    source_kind: Mapped[str] = mapped_column(String(20), default="FILE")
+    source_query: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Column in the source row (a DATABASE query's result set, or one
+    # decoded API record) that uniquely identifies it (e.g. an invoice
+    # number or primary key) — used to build the DocumentSourceRegistry
+    # per-record dedup identity (file_name column, reused unchanged) the
+    # same way a file's own name does. Shared by DATABASE and API kinds.
+    # Optional: a source with no natural key still gets a stable identity
+    # from a hash of the row's own content (see document_schedule_service.
+    # record_identity()), it just can't tell "this row changed" apart
+    # from "this is a genuinely different row" as precisely.
+    source_record_key_column: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    # PAY20 — API-kind fields (all None/default for FILE/DATABASE kinds).
+    # Mirrors connectors/base.py's fetch_api() kwargs directly rather than
+    # inventing a parallel shape — see that method's docstring for the
+    # pagination dict's contract (style/offset/page/cursor/token) and
+    # json_path's dot-path envelope-extraction syntax.
+    source_api_endpoint: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source_api_method: Mapped[str] = mapped_column(String(10), default="GET")
+    source_api_query_params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    source_api_pagination: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    source_api_json_path: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    # PAY21 — ERP-kind's one config field: source_connection_id already
+    # points at the ORACLE_ERP_CLOUD connection to pull from (see
+    # OracleErpConnector.list_invoices()), so there's no endpoint/method
+    # to configure the way API-kind needs — Oracle's own documented
+    # Invoices collection resource is implicit. This is the only knob:
+    # an optional Oracle REST query-language filter string (e.g.
+    # "ValidationStatus='NEEDS_REVALIDATION'"), passed through verbatim as
+    # list_invoices()'s `q` param. Blank means "no filter — pull every
+    # invoice the connection's credentials can see".
+    source_erp_query: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     source_path: Mapped[str] = mapped_column(String(1000), nullable=False)
     file_pattern: Mapped[str] = mapped_column(String(200), default="*")

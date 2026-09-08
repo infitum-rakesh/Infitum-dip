@@ -34,7 +34,10 @@ placeholders.
 """
 import asyncio
 import base64
+import datetime as _dt
+import decimal
 import hashlib
+import json
 import os
 import random
 import time
@@ -55,7 +58,9 @@ from app.database import tenant_engine_registry
 from app.models.connection import Connection, ConnectionCategory, ConnectionStatus
 from app.models.document import Document, DocumentStatus, DocumentType
 from app.models.user import User
-from app.ocr.engine import OcrEngineError, OcrNotApplicableError, render_pages_as_png, run_ocr
+from app.ocr.engine import OcrEngineError, OcrNotApplicableError, render_pages_as_png
+from app.ocr.language_errors import LanguageProcessingError
+from app.ocr.multilingual_ocr_service import detect_language_only, evaluate_ocr_quality, run_multilingual_ocr
 from app.services import extraction_service
 from app.services import document_taxonomies
 from app.services import evidence_service
@@ -206,6 +211,158 @@ async def save_from_source(
     await db.commit()
     await db.refresh(doc)
     return doc
+
+
+async def save_database_record(
+    db: AsyncSession, *, row: dict, organization_id: int | None,
+    source_connection_id: int, source_path: str, file_name: str, source_schedule_id: int | None,
+) -> Document:
+    """PAY18 — DATABASE-kind document schedules' counterpart to
+    save_from_source() above: there is no uploaded/downloaded FILE at all
+    here (the "document" is a query result row), so this deliberately
+    does NOT go through _validate_upload()'s extension allow-list — a
+    ".json" snapshot isn't one of the OCR-capable extensions manual
+    upload accepts, and shouldn't be; that allow-list exists to gate what
+    OCR can attempt, which is irrelevant here (see process_document()'s
+    preextracted_fields branch: this document's pipeline never calls
+    read_file()/run_ocr() at all).
+
+    The row is still persisted to disk as an indented JSON snapshot
+    (content_hash'd exactly like every other stored document) purely as
+    a genuine evidence/audit artifact — "what did the source system
+    actually return for this record" — mirroring why save_upload() keeps
+    the original bytes rather than only the extracted fields."""
+    # ensure_ascii=False — this snapshot is a genuine evidence artifact of
+    # the source row; a multilingual field value in it must stay real
+    # UTF-8 glyphs, not \uXXXX escapes (see connection.py's json_serializer
+    # comment for the same class of bug fixed at the DB-column level).
+    content = json.dumps(row, indent=2, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8")
+    content_hash = hashlib.sha256(content).hexdigest()
+
+    org_dir = Path(settings.upload_dir) / (str(organization_id) if organization_id else "unassigned")
+    org_dir.mkdir(parents=True, exist_ok=True)
+
+    stored_name = f"{uuid.uuid4().hex}_{file_name}.json"
+    dest = org_dir / stored_name
+    dest.write_bytes(content)
+
+    doc = Document(
+        organization_id=organization_id,
+        uploaded_by_id=None,
+        filename=f"{file_name}.json",
+        doc_type=DocumentType.OTHER,
+        mime_type="application/json",
+        size_bytes=len(content),
+        page_count=1,
+        storage_path=str(dest),
+        content_hash=content_hash,
+        source_connection_id=source_connection_id,
+        source_path=source_path,
+        source_schedule_id=source_schedule_id,
+        status=DocumentStatus.UPLOADED,
+        timeline=[_stage_record("Discovered (Database Record)", "completed", datetime.now(timezone.utc), datetime.now(timezone.utc))],
+    )
+    db.add(doc)
+    await db.commit()
+    await db.refresh(doc)
+    return doc
+
+
+# Normalizes an arbitrary source column name down to the same snake_case
+# key shape every document_taxonomies.py field name already uses (e.g. a
+# SQL alias of "Invoice Number" or "InvoiceNumber" both resolve to
+# "invoice_number") — so a DATABASE schedule's SELECT ... AS aliases don't
+# have to be written in exactly that shape to be recognized.
+def _normalize_field_key(name: str) -> str:
+    s = "".join(ch if ch.isalnum() else "_" for ch in str(name).strip())
+    s = "".join(f"_{ch.lower()}" if ch.isupper() else ch for ch in s)
+    while "__" in s:
+        s = s.replace("__", "_")
+    return s.strip("_").lower()
+
+
+def _json_safe_value(value):
+    """A real DB driver hands back native Python types for DATE/NUMERIC/
+    etc columns (datetime.date, decimal.Decimal, ...) — genuinely correct
+    values, but not directly JSON-serializable, and doc.extraction_result/
+    doc.dataset are both persisted as JSON columns. Every other field
+    producer in this file (_reshape_extraction_fields, apply_manual_
+    extraction) only ever sees strings the AI model or a human typed, so
+    this gap is specific to a DATABASE-kind schedule's raw query rows —
+    normalizes to the same plain str/int/float/bool shape those already
+    use, never dropping or truncating the real value."""
+    if isinstance(value, (_dt.date, _dt.datetime)):
+        return value.isoformat()
+    if isinstance(value, decimal.Decimal):
+        return float(value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def build_fields_from_record(row: dict, document_type: str | None) -> list[dict]:
+    """PAY18 — turns one DATABASE query result row directly into the same
+    field shape _run_ai_extraction()/apply_manual_extraction() produce,
+    with NO AI model and NO OCR involved: the source system's own columns
+    ARE the structured data, so there's nothing to extract FROM — mapping
+    is a straight rename onto the canonical taxonomy's field names (see
+    document_taxonomies.py), the same honesty standard the Custom
+    Extraction Engine already applies to unstructured documents (real
+    deterministic logic, not a language model, clearly labeled as such —
+    see doc.extraction_model = "STRUCTURED_SOURCE" in process_document()).
+
+    A column whose normalized name matches a known taxonomy field is
+    mapped onto it; every other column is still included as its own
+    scalar field (normalized name, not silently dropped) so an org's
+    genuinely extra columns remain visible — same principle as AI
+    Extraction surfacing fields beyond the canonical list.
+
+    A `line_items` column (list of dicts, or a JSON-encoded string
+    thereof) becomes the taxonomy's real repeating table field instead of
+    an opaque scalar blob — the one genuinely repeating structure invoice
+    intake needs (see document_taxonomies.INVOICE_LINE_ITEMS_TABLE)."""
+    table_def = None
+    if document_type:
+        taxonomy = document_taxonomies.TAXONOMIES.get(document_type)
+        if taxonomy:
+            table_def = taxonomy.get("table")
+
+    fields: list[dict] = []
+    for raw_key, raw_value in row.items():
+        key = _normalize_field_key(raw_key)
+        if not key:
+            continue
+
+        if table_def and key == table_def["name"]:
+            table_rows_raw = raw_value
+            if isinstance(table_rows_raw, str):
+                try:
+                    table_rows_raw = json.loads(table_rows_raw) if table_rows_raw.strip() else []
+                except (json.JSONDecodeError, AttributeError):
+                    table_rows_raw = []
+            table_columns = [c["name"] for c in table_def["columns"]]
+            rows = []
+            for r in (table_rows_raw or []):
+                if isinstance(r, dict):
+                    rows.append({c: ("" if r.get(c) is None else _json_safe_value(r.get(c))) for c in table_columns})
+            fields.append({
+                "name": table_def["name"], "type": "table", "columns": table_columns, "rows": rows,
+                "value": f"{len(rows)} row{'s' if len(rows) != 1 else ''}" if rows else "",
+                "confidence": 100.0, "source_page": 1, "bbox": None,
+                "validation_status": "valid" if rows else "invalid",
+                "suggested_correction": None, "missing": len(rows) == 0,
+            })
+            continue
+
+        missing = raw_value is None or raw_value == ""
+        value = "" if missing else _json_safe_value(raw_value)
+        fields.append({
+            "name": key, "type": "scalar", "value": value,
+            "confidence": 100.0, "source_page": 1, "bbox": None,
+            "validation_status": "valid" if not missing else "invalid",
+            "suggested_correction": None, "missing": missing,
+        })
+    return fields
 
 
 def read_file(document: Document) -> bytes:
@@ -1195,16 +1352,20 @@ def _stage(stage: str, status: str, started: datetime, seconds: float, confidenc
     return _stage_record(stage, status, started, ended, confidence, error), ended
 
 
-def _friendly_db_error(exc: Exception) -> str:
+def friendly_db_error(exc: Exception) -> str:
     """A raw sqlite3.OperationalError's str() includes the full failed SQL
     statement and every bound parameter value (see this function's
-    caller) — genuinely useful in a server log, but alarming and useless
-    shown verbatim as a document's error_message in the UI. Collapse the
-    one transient case this codebase is actually prone to (concurrent
-    writers briefly colliding on SQLite's single-writer lock — see
-    database/connection.py's busy_timeout comment) to one clear,
-    actionable sentence; anything else still passes through unmodified so
-    a genuinely new failure mode isn't hidden from whoever reads it."""
+    callers) — genuinely useful in a server log, but alarming and useless
+    shown verbatim as a document's error_message in the UI, or as an API
+    error response. Collapse the one transient case this codebase is
+    actually prone to (concurrent writers briefly colliding on SQLite's
+    single-writer lock — see database/connection.py's busy_timeout
+    comment) to one clear, actionable sentence; anything else still
+    passes through unmodified so a genuinely new failure mode isn't
+    hidden from whoever reads it. Public (not just this module's own
+    process_document()) so route handlers can give the same honest,
+    non-alarming message for the identical lock collision hitting a
+    plain save_upload() — see api/invoices.py and api/documents.py."""
     text = str(exc)
     if "database is locked" in text.lower():
         return "The document database was temporarily busy processing other documents — please try again in a moment."
@@ -1217,6 +1378,7 @@ async def process_document(
     document_type: str | None = None,
     invoice_auto_post: bool = False, invoice_erp_connection_id: int | None = None,
     skip_invoice_pipeline: bool = False,
+    preextracted_fields: list[dict] | None = None,
 ) -> Document:
     """Runs the Document Intelligence pipeline synchronously and persists
     timeline/OCR/extraction/dataset results onto the document. OCR (stage 2)
@@ -1244,7 +1406,21 @@ async def process_document(
     node (execution/pipeline_job_executor.py) passes True, so that its
     separate "Invoice Validation" node can run that same real chain exactly
     once as its own distinct pipeline stage instead of it happening twice
-    or being silently absorbed into this one."""
+    or being silently absorbed into this one.
+
+    preextracted_fields (PAY18 — DATABASE-kind document schedules) — when
+    given, this document's "content" is already structured data from a
+    non-file source (see document_service.build_fields_from_record()),
+    not an image/PDF to scan. Image Scanner/OCR are skipped outright
+    (there is no image at all — read_file()/run_ocr() are never called)
+    and AI Extraction is replaced with these fields directly at 100%
+    confidence, labeled doc.extraction_model = "STRUCTURED_SOURCE" (a
+    real, honest label for "no model ran, the source system's own
+    columns already were the structured data" — same spirit as
+    "CUSTOM_ENGINE" for the rule-based OCR-text fallback). Every stage
+    from Structured Dataset onward is completely unchanged — the same
+    validation/business-rule/invoice-materialization chain runs
+    regardless of where the fields came from."""
     doc_id = doc.id  # saved before anything can fail — used to re-fetch a clean instance if the except block below needs to recover from a broken session
     rnd = random.Random()
     now = datetime.now(timezone.utc)
@@ -1253,131 +1429,232 @@ async def process_document(
         timeline.append(_stage_record("Uploaded", "completed", now, now))
 
     try:
-        # 1. Image Scanner
-        doc.status = DocumentStatus.SCANNING
         cursor = now
-        scan_conf = round(rnd.uniform(90, 99.5), 1)
-        rec, cursor = _stage("Image Scanner", "completed", cursor, rnd.uniform(0.8, 2.5), scan_conf)
-        timeline.append(rec)
-
-        # 2. OCR — real, see app/ocr/engine.py. Not simulated: opens the
-        # actual uploaded file and runs Tesseract on it. The rest of this
-        # timeline runs on a *synthetic* clock (each stage's "started_at" is
-        # the previous stage's simulated end, not real wall-clock time — see
-        # _stage() above), so OCR's real wall-clock duration is measured
-        # separately (time.monotonic()) and then applied on top of that same
-        # synthetic cursor — keeps the timeline internally consistent
-        # (monotonically increasing) while the recorded OCR duration is
-        # genuinely real, not a random placeholder.
-        doc.status = DocumentStatus.OCR_PROCESSING
-        ocr_start = cursor
-        real_ocr_start = time.monotonic()
-        try:
-            file_bytes = read_file(doc)
-            # Real dispatch on the org's Settings > Document Intelligence >
-            # OCR Provider value — "tesseract" (the default) and any legacy
-            # value need no Connection and fall straight through to the
-            # existing Tesseract-first path below. A cloud provider name
-            # (aws-textract/google-vision/azure-form-recognizer) genuinely
-            # runs through that vendor's real API instead — see
-            # _run_cloud_ocr()/OCR_PROVIDER_CONNECTION_TYPES above. If the
-            # org picked a cloud provider but hasn't configured a matching
-            # OCR_PROVIDER connection yet, this fails with a real, specific
-            # error rather than silently using Tesseract anyway — using a
-            # provider the org didn't choose would be exactly the kind of
-            # fake functionality this codebase's OCR engine was built to
-            # avoid (see ocr/engine.py's own docstring).
-            org_settings = await settings_service.get_or_create(db, doc.organization_id) if doc.organization_id else None
-            provider_setting = ((org_settings.values or {}).get("document_intelligence", {}) or {}).get("ocr_provider") \
-                if org_settings else None
-            cloud_connection_type = OCR_PROVIDER_CONNECTION_TYPES.get(provider_setting or "")
-            if cloud_connection_type:
-                ocr_conn = await _pick_ocr_connection(db, doc.organization_id, cloud_connection_type)
-                if ocr_conn is None:
-                    raise OcrEngineError(
-                        f"Settings > Document Intelligence has OCR Provider set to '{provider_setting}', but no "
-                        f"active {cloud_connection_type.replace('_', ' ').title()} connection is configured — add "
-                        "one on the Connections page, or switch the OCR Provider setting back to Tesseract."
-                    )
-                ocr_result = await _run_cloud_ocr(doc, file_bytes, ocr_conn)
-            else:
-                try:
-                    ocr_result = await asyncio.to_thread(run_ocr, file_bytes, doc.doc_type)
-                    if not (ocr_result["full_text"] or "").strip():
-                        # Tesseract ran without error but genuinely found no
-                        # readable text (handwriting, an unsupported script, a
-                        # photo of a mostly-blank/graphic page, ...) — try the
-                        # real AI-vision fallback before giving up on this page.
-                        vision_result = await _run_vision_ocr_fallback(db, doc, file_bytes)
-                        if vision_result is not None:
-                            ocr_result = vision_result
-                except OcrEngineError:
-                    # Tesseract itself failed for real (missing binary, corrupt
-                    # render, ...) — this is exactly the "if OCR not work, try
-                    # available AI agent" case. Only re-raise if the fallback
-                    # itself has nothing to offer (no vision connection
-                    # configured) or also genuinely fails.
-                    vision_result = await _run_vision_ocr_fallback(db, doc, file_bytes)
-                    if vision_result is None:
-                        raise
-                    ocr_result = vision_result
-            real_elapsed = time.monotonic() - real_ocr_start
-            ocr_conf = ocr_result["confidence"] if ocr_result["confidence"] is not None else 0.0
-            doc.ocr_result = {
-                "full_text": ocr_result["full_text"],
-                "confidence": ocr_result["confidence"],
-                "regions": ocr_result["regions"],
-                "pages": ocr_result["pages"],
-                "source": ocr_result.get("source", "tesseract"),
-            }
-            doc.ocr_percent = ocr_result["confidence"]
-            if ocr_result["page_count"]:
-                doc.page_count = ocr_result["page_count"]
-            rec, cursor = _stage("OCR", "completed", ocr_start, real_elapsed, ocr_result["confidence"])
-            if ocr_result.get("source") == "ai_vision":
-                rec["note"] = f"Tesseract found no readable text — transcribed via AI vision ({ocr_result.get('vision_connection_name', 'AI connection')})."
-            elif ocr_result.get("ocr_connection_name"):
-                rec["note"] = f"OCR'd via {ocr_result['source']} ({ocr_result['ocr_connection_name']}) — org's configured OCR Provider."
-            timeline.append(rec)
-        except OcrNotApplicableError as exc:
-            # Word/Excel/text/other — these carry content natively; OCR
-            # genuinely doesn't apply, so this is skipped (not faked) and
-            # the pipeline continues.
-            real_elapsed = time.monotonic() - real_ocr_start
+        # Multilingual Document Processing, Phase 6 — real OCR quality/
+        # script-mismatch flags (see multilingual_ocr_service.evaluate_
+        # ocr_quality()). Declared here so it's always in scope for the
+        # needs_review computation below regardless of which branch below
+        # runs; stays [] for the structured-source/no-OCR path and the
+        # OcrNotApplicableError path — there's no OCR result to evaluate.
+        ocr_quality_flags: list[dict] = []
+        if preextracted_fields is not None:
+            # PAY18 — structured, non-file source: no image, no OCR, no AI
+            # model. Image Scanner/OCR are recorded as genuinely skipped
+            # (not faked with a random confidence number that implies a
+            # scan happened) and AI Extraction is recorded as "completed"
+            # because real, structured field values genuinely ARE
+            # available at this point — just not produced by a model.
+            scan_conf = None
+            timeline.append(_stage_record("Image Scanner", "skipped", cursor, cursor, error="Structured source (database record) — no image to scan."))
             ocr_conf = None
             doc.ocr_result = None
             doc.ocr_percent = None
-            cursor = ocr_start + timedelta(seconds=real_elapsed)
-            timeline.append(_stage_record("OCR", "skipped", ocr_start, cursor, error=str(exc)))
-        # OcrEngineError that survives the vision-fallback attempt above
-        # (Tesseract failed AND no vision fallback was available/worked)
-        # is deliberately NOT caught here — it propagates to the outer
-        # try/except below, which marks the whole document FAILED with the
-        # real error rather than continuing to layer simulated stages on
-        # top of a real OCR failure.
+            timeline.append(_stage_record("OCR", "skipped", cursor, cursor, error="Structured source (database record) — OCR does not apply."))
 
-        # 3. AI Extraction — real, see _run_ai_extraction() above (same LLM
-        # engine as the Document Intelligence wizard). Real elapsed time is
-        # measured the same way OCR's is above: applied on top of the
-        # synthetic cursor so the timeline stays monotonically increasing
-        # while the recorded duration is genuine, not a random placeholder.
-        doc.status = DocumentStatus.AI_EXTRACTION
-        ai_start = cursor
-        real_ai_start = time.monotonic()
-        fields, extraction_conf, ai_skip_reason, ai_raw_response, ai_model_name = await _run_ai_extraction(
-            db, doc, document_type=document_type,
-        )
-        doc.ai_raw_response = ai_raw_response
-        doc.extraction_model = ai_model_name
-        real_ai_elapsed = time.monotonic() - real_ai_start
-        if ai_skip_reason:
-            cursor = ai_start + timedelta(seconds=real_ai_elapsed)
-            timeline.append(_stage_record("AI Extraction", "skipped", ai_start, cursor, error=ai_skip_reason))
-            doc.extraction_percent = None
-        else:
-            rec, cursor = _stage("AI Extraction", "completed", ai_start, real_ai_elapsed, extraction_conf)
+            doc.status = DocumentStatus.AI_EXTRACTION
+            ai_start = cursor
+            fields = preextracted_fields
+            extraction_conf = 100.0
+            doc.ai_raw_response = None
+            doc.extraction_model = "STRUCTURED_SOURCE"
+            rec, cursor = _stage("AI Extraction", "completed", ai_start, 0.05, extraction_conf)
+            rec["note"] = "Fields mapped directly from the source system's own columns — no OCR or AI model involved."
             timeline.append(rec)
             doc.extraction_percent = extraction_conf
+        else:
+            # 1. Image Scanner
+            doc.status = DocumentStatus.SCANNING
+            scan_conf = round(rnd.uniform(90, 99.5), 1)
+            rec, cursor = _stage("Image Scanner", "completed", cursor, rnd.uniform(0.8, 2.5), scan_conf)
+            timeline.append(rec)
+
+            # 2. OCR — real, see app/ocr/engine.py. Not simulated: opens the
+            # actual uploaded file and runs Tesseract on it. The rest of this
+            # timeline runs on a *synthetic* clock (each stage's "started_at" is
+            # the previous stage's simulated end, not real wall-clock time — see
+            # _stage() above), so OCR's real wall-clock duration is measured
+            # separately (time.monotonic()) and then applied on top of that same
+            # synthetic cursor — keeps the timeline internally consistent
+            # (monotonically increasing) while the recorded OCR duration is
+            # genuinely real, not a random placeholder.
+            doc.status = DocumentStatus.OCR_PROCESSING
+            ocr_start = cursor
+            # Commit the status flip now, before the genuinely slow real work
+            # below (Tesseract, possibly an AI-vision fallback call). Without
+            # this, autoflush on the very next db.execute() (e.g.
+            # settings_service.get_or_create() just below) stages this UPDATE
+            # inside the still-open transaction from this session's LAST
+            # commit — and since process_document() previously committed only
+            # once at the very end, that transaction (and the SQLite writer
+            # lock it holds) stayed open for the full OCR+AI Extraction
+            # duration, causing concurrent uploads to hit real "database is
+            # locked" errors (see friendly_db_error's docstring and the
+            # except block below — this shrinks the window that causes it,
+            # it doesn't remove SQLite's single-writer limit entirely).
+            await db.commit()
+            real_ocr_start = time.monotonic()
+            try:
+                file_bytes = read_file(doc)
+                # Real dispatch on the org's Settings > Document Intelligence >
+                # OCR Provider value — "tesseract" (the default) and any legacy
+                # value need no Connection and fall straight through to the
+                # existing Tesseract-first path below. A cloud provider name
+                # (aws-textract/google-vision/azure-form-recognizer) genuinely
+                # runs through that vendor's real API instead — see
+                # _run_cloud_ocr()/OCR_PROVIDER_CONNECTION_TYPES above. If the
+                # org picked a cloud provider but hasn't configured a matching
+                # OCR_PROVIDER connection yet, this fails with a real, specific
+                # error rather than silently using Tesseract anyway — using a
+                # provider the org didn't choose would be exactly the kind of
+                # fake functionality this codebase's OCR engine was built to
+                # avoid (see ocr/engine.py's own docstring).
+                org_settings = await settings_service.get_or_create(db, doc.organization_id) if doc.organization_id else None
+                # Multilingual Document Processing, Phase 4 — real deep-merged
+                # document_intelligence settings (supported_languages/
+                # primary_language get their DEFAULT_SETTINGS values even for
+                # an org row that predates this feature; see
+                # settings_service.effective_document_intelligence_settings()).
+                di_settings = settings_service.effective_document_intelligence_settings(org_settings)
+                provider_setting = di_settings.get("ocr_provider")
+                cloud_connection_type = OCR_PROVIDER_CONNECTION_TYPES.get(provider_setting or "")
+                if cloud_connection_type:
+                    ocr_conn = await _pick_ocr_connection(db, doc.organization_id, cloud_connection_type)
+                    if ocr_conn is None:
+                        raise OcrEngineError(
+                            f"Settings > Document Intelligence has OCR Provider set to '{provider_setting}', but no "
+                            f"active {cloud_connection_type.replace('_', ' ').title()} connection is configured — add "
+                            "one on the Connections page, or switch the OCR Provider setting back to Tesseract."
+                        )
+                    ocr_result = await _run_cloud_ocr(doc, file_bytes, ocr_conn)
+                    # Cloud providers (Textract/Vision/Form Recognizer) already do
+                    # their own multilingual recognition — we don't re-OCR, only
+                    # report what language the result came back in (see
+                    # multilingual_ocr_service.detect_language_only's docstring).
+                    ocr_result["language"] = detect_language_only(ocr_result)
+                else:
+                    supported_languages = di_settings.get("supported_languages") or ["en"]
+                    primary_language = di_settings.get("primary_language") or "auto"
+                    try:
+                        # Real multilingual OCR — see ocr/multilingual_ocr_service.py's
+                        # own docstring for the two-pass "lightweight combined pass,
+                        # detect per page, re-OCR the pages that need a different
+                        # language model" flow. Reduces to a single plain-English
+                        # Tesseract pass (byte-identical to the old run_ocr() call
+                        # this replaces) for every org that hasn't opted into another
+                        # language yet — the shipped default.
+                        ocr_result = await asyncio.to_thread(
+                            run_multilingual_ocr, file_bytes, doc.doc_type,
+                            supported_languages=supported_languages, primary_language=primary_language,
+                        )
+                        if not (ocr_result["full_text"] or "").strip():
+                            # Tesseract ran without error but genuinely found no
+                            # readable text (handwriting, an unsupported script, a
+                            # photo of a mostly-blank/graphic page, ...) — try the
+                            # real AI-vision fallback before giving up on this page.
+                            vision_result = await _run_vision_ocr_fallback(db, doc, file_bytes)
+                            if vision_result is not None:
+                                vision_result["language"] = detect_language_only(vision_result)
+                                ocr_result = vision_result
+                    except (OcrEngineError, LanguageProcessingError):
+                        # Tesseract itself failed for real (missing binary, corrupt
+                        # render, a configured language's model genuinely not
+                        # installed, ...) — this is exactly the "if OCR not work, try
+                        # available AI agent" case. Only re-raise if the fallback
+                        # itself has nothing to offer (no vision connection
+                        # configured) or also genuinely fails — a real
+                        # OCR_LANGUAGE_MODEL_MISSING error must still surface (not
+                        # be silently swallowed) when there's no fallback to try.
+                        vision_result = await _run_vision_ocr_fallback(db, doc, file_bytes)
+                        if vision_result is None:
+                            raise
+                        vision_result["language"] = detect_language_only(vision_result)
+                        ocr_result = vision_result
+                real_elapsed = time.monotonic() - real_ocr_start
+                ocr_conf = ocr_result["confidence"] if ocr_result["confidence"] is not None else 0.0
+                # Multilingual Document Processing, Phase 6 — real OCR quality/
+                # script-mismatch validation, using the org's OWN configured
+                # thresholds (ocr_confidence_threshold/language_mismatch_threshold),
+                # not the generic extraction confidence_threshold checked below.
+                # A genuinely bad OCR result never gets to look like a quiet
+                # success just because the AI/Custom-Engine extraction stage
+                # downstream happened to produce plausible-looking field values
+                # from garbled text.
+                ocr_quality_flags = evaluate_ocr_quality(
+                    ocr_result,
+                    ocr_confidence_threshold=di_settings.get("ocr_confidence_threshold", 85),
+                    language_mismatch_threshold=di_settings.get("language_mismatch_threshold", 80),
+                    supported_languages=di_settings.get("supported_languages") or ["en"],
+                    primary_language=di_settings.get("primary_language") or "auto",
+                )
+                doc.ocr_result = {
+                    "full_text": ocr_result["full_text"],
+                    "confidence": ocr_result["confidence"],
+                    "regions": ocr_result["regions"],
+                    "pages": ocr_result["pages"],
+                    "source": ocr_result.get("source", "tesseract"),
+                    # Multilingual Document Processing, Phase 4 — real per-page +
+                    # document-level detected language(s), never a translation (see
+                    # ocr/multilingual_ocr_service.py). Stored in this existing JSON
+                    # column, no migration needed.
+                    "language": ocr_result.get("language"),
+                    # Phase 6 — real named quality issues (see evaluate_ocr_quality()
+                    # above); [] when the OCR result is genuinely clean.
+                    "quality_flags": ocr_quality_flags,
+                }
+                doc.ocr_percent = ocr_result["confidence"]
+                if ocr_result["page_count"]:
+                    doc.page_count = ocr_result["page_count"]
+                rec, cursor = _stage("OCR", "completed", ocr_start, real_elapsed, ocr_result["confidence"])
+                if ocr_result.get("source") == "ai_vision":
+                    rec["note"] = f"Tesseract found no readable text — transcribed via AI vision ({ocr_result.get('vision_connection_name', 'AI connection')})."
+                elif ocr_result.get("ocr_connection_name"):
+                    rec["note"] = f"OCR'd via {ocr_result['source']} ({ocr_result['ocr_connection_name']}) — org's configured OCR Provider."
+                timeline.append(rec)
+            except OcrNotApplicableError as exc:
+                # Word/Excel/text/other — these carry content natively; OCR
+                # genuinely doesn't apply, so this is skipped (not faked) and
+                # the pipeline continues.
+                real_elapsed = time.monotonic() - real_ocr_start
+                ocr_conf = None
+                doc.ocr_result = None
+                doc.ocr_percent = None
+                cursor = ocr_start + timedelta(seconds=real_elapsed)
+                timeline.append(_stage_record("OCR", "skipped", ocr_start, cursor, error=str(exc)))
+            # OcrEngineError that survives the vision-fallback attempt above
+            # (Tesseract failed AND no vision fallback was available/worked)
+            # is deliberately NOT caught here — it propagates to the outer
+            # try/except below, which marks the whole document FAILED with the
+            # real error rather than continuing to layer simulated stages on
+            # top of a real OCR failure.
+
+            # 3. AI Extraction — real, see _run_ai_extraction() above (same LLM
+            # engine as the Document Intelligence wizard). Real elapsed time is
+            # measured the same way OCR's is above: applied on top of the
+            # synthetic cursor so the timeline stays monotonically increasing
+            # while the recorded duration is genuine, not a random placeholder.
+            doc.status = DocumentStatus.AI_EXTRACTION
+            ai_start = cursor
+            # Same reasoning as the OCR commit above — persist the OCR
+            # result + status flip now, before the slow real LLM call(s) in
+            # _run_ai_extraction(), instead of holding the writer lock open
+            # underneath a network round trip that can legitimately take
+            # tens of seconds.
+            await db.commit()
+            real_ai_start = time.monotonic()
+            fields, extraction_conf, ai_skip_reason, ai_raw_response, ai_model_name = await _run_ai_extraction(
+                db, doc, document_type=document_type,
+            )
+            doc.ai_raw_response = ai_raw_response
+            doc.extraction_model = ai_model_name
+            real_ai_elapsed = time.monotonic() - real_ai_start
+            if ai_skip_reason:
+                cursor = ai_start + timedelta(seconds=real_ai_elapsed)
+                timeline.append(_stage_record("AI Extraction", "skipped", ai_start, cursor, error=ai_skip_reason))
+                doc.extraction_percent = None
+            else:
+                rec, cursor = _stage("AI Extraction", "completed", ai_start, real_ai_elapsed, extraction_conf)
+                timeline.append(rec)
+                doc.extraction_percent = extraction_conf
 
         # 4. Structured Dataset — packages the real extracted fields above;
         # skipped (not an empty fabricated table) when AI Extraction itself
@@ -1429,15 +1706,23 @@ async def process_document(
         # reprocess — none of which pass this yet) sees byte-identical
         # behavior. Only the Scheduled Document Intelligence Workflow
         # (schedule_service.py) passes a schedule-configured value.
-        needs_review = (
+        extraction_needs_review = (
             overall_conf < confidence_threshold
             or (fields and accuracy_score < accuracy_threshold)
             or any(f["validation_status"] == "invalid" for f in fields)
             or business_rule_flag
         )
+        # Multilingual Document Processing, Phase 6 — a real OCR quality/
+        # language issue (low confidence, mismatch, empty/unicode error)
+        # forces review even when every extracted field superficially looks
+        # "valid" — the AI/Custom Engine can produce plausible-looking
+        # values from garbled OCR text, and that must never pass as a quiet
+        # success.
+        needs_review = extraction_needs_review or bool(ocr_quality_flags)
         val_status = "completed" if not needs_review else "failed"
-        rec, cursor = _stage("Validation", val_status, cursor, rnd.uniform(0.2, 0.8), overall_conf,
-                              error="Low confidence on one or more fields — flagged for manual review." if needs_review else None)
+        validation_error = "Low confidence on one or more fields — flagged for manual review." if extraction_needs_review \
+            else (ocr_quality_flags[0]["message"] if ocr_quality_flags else None)
+        rec, cursor = _stage("Validation", val_status, cursor, rnd.uniform(0.2, 0.8), overall_conf, error=validation_error)
         timeline.append(rec)
 
         doc.confidence = overall_conf
@@ -1469,7 +1754,7 @@ async def process_document(
             return doc  # row vanished mid-run (e.g. deleted concurrently) — nothing left to persist to
         doc = recovered
         doc.status = DocumentStatus.FAILED
-        friendly_error = _friendly_db_error(exc)
+        friendly_error = friendly_db_error(exc)
         doc.error_message = friendly_error
         timeline.append(_stage_record("Processing", "failed", cursor, datetime.now(timezone.utc), error=friendly_error))
 
@@ -1600,7 +1885,7 @@ async def _process_in_background(document_id: int, reprocess: bool, organization
             if doc is None:
                 return
             doc.status = DocumentStatus.FAILED
-            doc.error_message = _friendly_db_error(exc)[:2000]
+            doc.error_message = friendly_db_error(exc)[:2000]
             await db.commit()
             return
 
@@ -1611,6 +1896,17 @@ async def _process_in_background(document_id: int, reprocess: bool, organization
         # paths in this file that never touch the review queue.
         from app.services import review_queue_service as review_svc
         if doc.status == DocumentStatus.NEEDS_REVIEW:
-            await review_svc.create_from_document(db, doc)
+            item = await review_svc.create_from_document(db, doc)
+            if item is None:
+                # Multilingual Document Processing, Phase 6 — create_from_document()
+                # only sees extraction-field issues; a document flagged for
+                # review purely over a real OCR quality/language problem (see
+                # evaluate_ocr_quality()) needs this fallback so it still gets
+                # a visible Review Queue entry rather than none at all. Same
+                # "returns None if an open item already exists" idempotency
+                # guard as create_from_document() itself.
+                ocr_flags = (doc.ocr_result or {}).get("quality_flags") or []
+                if ocr_flags:
+                    await review_svc.create_from_ocr_quality(db, doc, ocr_flags)
         else:
             await review_svc.auto_resolve_for_document(db, doc.id)

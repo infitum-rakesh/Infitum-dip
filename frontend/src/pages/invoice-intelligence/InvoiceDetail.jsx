@@ -20,7 +20,7 @@ import { ArrowLeft, Receipt, RefreshCw, RotateCcw, ListChecks, History, FileStac
 import { Button, StatusBadge, PermissionGate, LoadingSpinner, EmptyState } from '@/components/common/index.js';
 import { INVOICE_PERMISSIONS } from '@/utils/constants.js';
 import { formatDateTime } from '@/utils/formatters.js';
-import { invoiceApi } from '@/services/api/invoiceApi.js';
+import { invoiceApi, INVOICE_STATUS_VARIANT } from '@/services/api/invoiceApi.js';
 import { connectionApi } from '@/services/api/connectionApi.js';
 import InvoiceEvidenceViewer from './InvoiceEvidenceViewer.jsx';
 import './invoice-intelligence.css';
@@ -36,7 +36,10 @@ function formatCurrency(n, currency = 'USD') {
   }
 }
 
-const STATUS_VARIANT = { NEEDS_REVIEW: 'warning', COMPLETED: 'success', REJECTED: 'danger', FAILED: 'danger' };
+// Was a hand-guessed { NEEDS_REVIEW, COMPLETED, REJECTED, FAILED } — none of
+// which (bar REJECTED) exist on the real ApInvoiceStatus enum. Now sourced
+// from invoiceApi.js's single correct copy — see InvoiceInbox.jsx's fix.
+const STATUS_VARIANT = INVOICE_STATUS_VARIANT;
 const DECISION_VARIANT = { STRAIGHT_THROUGH: 'success', REVIEW_REQUIRED: 'warning', REJECT: 'danger', RETRY: 'info' };
 const DECISION_LABEL = { STRAIGHT_THROUGH: 'Straight-Through', REVIEW_REQUIRED: 'Review Required', REJECT: 'Rejected', RETRY: 'Retry' };
 const ERP_VARIANT = { NOT_SUBMITTED: 'gray', PENDING: 'info', RETRYING: 'warning', SUCCEEDED: 'success', FAILED: 'danger', DEAD_LETTER: 'danger', CANCELLED: 'gray' };

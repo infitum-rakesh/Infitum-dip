@@ -135,6 +135,7 @@ export function ScheduleHistoryModal({ open, onClose, schedule }) {
                   run={runDetail}
                   onCancel={runDetail.status === 'RUNNING' && !runDetail.cancel_requested ? handleCancel : null}
                   cancelling={cancelling}
+                  isInvoiceSchedule={schedule.document_config?.document_type === 'INVOICE'}
                 />
               )}
 

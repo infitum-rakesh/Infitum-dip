@@ -230,6 +230,19 @@ FIELD_SCHEMAS: dict[str, dict] = {
             {"key": "token_url", "label": "Token URL (IDCS / OCI IAM)", "type": "text", "show_if": {"field": "auth_type", "equals": "OAuth2"}},
         ],
     },
+    "LOCAL_FILE": {
+        "label": "Local Folder", "category": "STORAGE",
+        "fields": [
+            {"key": "base_path", "label": "Folder Path", "type": "text", "required": True,
+             "placeholder": "/absolute/path/to/folder",
+             "help": "A path on THIS SERVER's own filesystem (not your browser's computer) — the backend "
+                     "process reads directly from it. Every file operation is sandboxed to this folder and "
+                     "its subfolders; nothing outside it is reachable. Only usable when the backend runs "
+                     "somewhere you control (e.g. a self-hosted/on-prem deployment) — on shared or "
+                     "multi-tenant hosting this exposes whatever the backend process itself can read, so "
+                     "restrict it to a folder created just for this purpose."},
+        ],
+    },
     "SFTP": {
         "label": "SFTP", "category": "STORAGE",
         "fields": [
@@ -260,6 +273,21 @@ FIELD_SCHEMAS: dict[str, dict] = {
             {"key": "password", "label": "Password", "type": "password", "secret": True},
             {"key": "port", "label": "SMB Port", "type": "number", "default": 445,
              "help": "Only change this from the standard 445 for a non-default deployment (e.g. local testing)."},
+        ],
+    },
+    "EMAIL_IMAP": {
+        "label": "Email Inbox (IMAP)", "category": "STORAGE",
+        "fields": [
+            {"key": "host", "label": "IMAP Host", "type": "text", "required": True},
+            {"key": "port", "label": "Port", "type": "number", "required": True, "default": 993},
+            {"key": "use_ssl", "label": "Use SSL/TLS", "type": "checkbox", "default": True},
+            {"key": "username", "label": "Username", "type": "text", "required": True},
+            {"key": "password", "label": "Password", "type": "password", "required": True, "secret": True},
+            {"key": "mailbox", "label": "Mailbox / Folder", "type": "text", "default": "INBOX"},
+            {"key": "search_criteria", "label": "IMAP Search Criteria", "type": "text", "default": "UNSEEN",
+             "help": "Standard IMAP SEARCH keys — e.g. UNSEEN (default, unread only) or ALL. "
+                     "A schedule's own idempotency ledger still prevents reprocessing regardless of this filter; "
+                     "this only controls which messages are worth listing at all."},
         ],
     },
     "REST": {
@@ -380,7 +408,7 @@ FIELD_SCHEMAS: dict[str, dict] = {
 CATEGORIES = [
     {"key": "DATABASE", "label": "Database", "types": ["SQL_SERVER", "POSTGRESQL", "MYSQL", "ORACLE", "SNOWFLAKE", "SAP", "VERTICA", "FABRIC"]},
     {"key": "APPLICATION", "label": "Application", "types": ["SALESFORCE", "NETSUITE_SUITEQL", "NETSUITE_SOAP", "ORACLE_ERP_CLOUD"]},
-    {"key": "STORAGE", "label": "Storage", "types": ["SFTP", "FTP", "NETWORK_FILE"]},
+    {"key": "STORAGE", "label": "Storage", "types": ["LOCAL_FILE", "SFTP", "FTP", "NETWORK_FILE", "EMAIL_IMAP"]},
     {"key": "API", "label": "API", "types": ["REST", "SOAP"]},
     {"key": "CLOUD", "label": "Cloud", "types": ["AZURE", "AWS", "OTHER"]},
     {"key": "AI_PROVIDER", "label": "AI Agent", "types": ["OPENAI", "ANTHROPIC", "OLLAMA"]},
@@ -394,7 +422,7 @@ _HOST_FIELD = {
     "SNOWFLAKE": "account", "FABRIC": "sql_endpoint",
     "SALESFORCE": "username", "NETSUITE_SUITEQL": "dsn", "NETSUITE_SOAP": "account",
     "ORACLE_ERP_CLOUD": "host",
-    "SFTP": "host", "FTP": "host", "NETWORK_FILE": "unc_path",
+    "LOCAL_FILE": "base_path", "SFTP": "host", "FTP": "host", "NETWORK_FILE": "unc_path", "EMAIL_IMAP": "host",
     "REST": "base_url", "SOAP": "wsdl_url",
     "AZURE": "storage_account", "AWS": "region", "OTHER": "host",
     "OPENAI": "base_url", "ANTHROPIC": "model", "OLLAMA": "base_url",

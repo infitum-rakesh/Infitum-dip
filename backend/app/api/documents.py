@@ -4,9 +4,12 @@ Documents is the repository/management layer; processing calls flow through
 app.services.document_service (DocumentProcessingService), which is the seam
 to the Document Intelligence pipeline. See that module's docstring.
 """
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+import asyncio
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
 from fastapi.responses import Response
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_organization, get_current_user, require_action
@@ -14,6 +17,9 @@ from app.database.tenant_routing import get_tenant_db
 from app.models.document import DocumentStatus
 from app.models.organization import Organization
 from app.models.user import User, UserRole
+from app.ocr import multilingual_ocr_service
+from app.ocr.engine import OcrEngineError, OcrNotApplicableError
+from app.ocr.language_errors import LanguageProcessingError
 from app.schemas.documents import (
     BulkActionRequest,
     DocumentDetailOut,
@@ -26,9 +32,11 @@ from app.schemas.documents import (
     RunExtractionRequest,
     SendToReviewRequest,
 )
+from app.schemas.review_queue import ReviewItemLookupOut
 from app.services import document_service as svc
 from app.services import document_taxonomies
 from app.services import review_queue_service as review_svc
+from app.services import settings_service as settings_svc
 from app.services.document_service import DocumentValidationError, ManualExtractionError
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -86,6 +94,83 @@ async def list_document_types(user: User = Depends(require_action("VIEW"))):
     order — after it, "/document-types" would be swallowed as
     document_id="document-types" and 422 instead of reaching this."""
     return {"document_types": document_taxonomies.available_document_types()}
+
+
+# ── Multilingual OCR diagnostics (Phase 11) ─────────────────────────
+# Declared here, before the generic GET/{document_id} route, for the same
+# route-ordering reason as /document-types above.
+
+@router.get("/ocr-health")
+async def ocr_health(
+    user: User = Depends(require_action("VIEW")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    """Real Tesseract readiness check for Administration > Document
+    Intelligence > Languages — reports, for every language the org has
+    actually opted into (Settings' supported_languages), whether that
+    language's real .traineddata file is installed on THIS server right
+    now (a live subprocess call, not a cached/assumed value — see
+    multilingual_ocr_service.build_health_report's docstring). Lets an
+    admin catch "I turned on Kannada but the server doesn't have the
+    Kannada language pack" before it surfaces as a real document failure."""
+    org_settings = await settings_svc.get_or_create(db, user.organization_id) if user.organization_id else None
+    di_settings = settings_svc.effective_document_intelligence_settings(org_settings)
+    supported_languages = di_settings.get("supported_languages") or ["en"]
+    return multilingual_ocr_service.build_health_report(supported_languages)
+
+
+@router.post("/ocr-test")
+async def ocr_test(
+    file: UploadFile = File(...),
+    supported_languages: str | None = Form(None, description="Comma-separated ISO codes, e.g. \"en,kn\" — defaults to the org's own Settings value"),
+    primary_language: str | None = Form(None, description="Pin one language, or omit/\"auto\" to use the org's own Settings value"),
+    user: User = Depends(require_action("EXECUTE")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    """Admin OCR sandbox — runs the real multilingual Tesseract pipeline
+    (the exact same run_multilingual_ocr() + evaluate_ocr_quality() calls
+    document_service.py's real pipeline uses) against an uploaded file
+    WITHOUT creating a Document row, so an admin can validate a language
+    configuration change against a real sample before rolling it out.
+    Disclosed scope: this only exercises the local Tesseract engine — if
+    the org's OCR Provider setting is a cloud provider (AWS Textract/
+    Google Vision/Azure Form Recognizer), this sandbox does not call that
+    provider; it tests the language config Tesseract would use if the
+    provider setting were Tesseract."""
+    file_bytes = await file.read()
+    doc_type = svc.guess_doc_type(file.filename or "")
+
+    org_settings = await settings_svc.get_or_create(db, user.organization_id) if user.organization_id else None
+    di_settings = settings_svc.effective_document_intelligence_settings(org_settings)
+    langs = (
+        [c.strip() for c in supported_languages.split(",") if c.strip()]
+        if supported_languages else (di_settings.get("supported_languages") or ["en"])
+    )
+    primary = primary_language if primary_language else (di_settings.get("primary_language") or "auto")
+
+    try:
+        ocr_result = await asyncio.to_thread(
+            multilingual_ocr_service.run_multilingual_ocr, file_bytes, doc_type,
+            supported_languages=langs, primary_language=primary,
+        )
+    except (OcrEngineError, OcrNotApplicableError, LanguageProcessingError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+
+    quality_flags = multilingual_ocr_service.evaluate_ocr_quality(
+        ocr_result,
+        ocr_confidence_threshold=di_settings.get("ocr_confidence_threshold", 85),
+        language_mismatch_threshold=di_settings.get("language_mismatch_threshold", 80),
+        supported_languages=langs, primary_language=primary,
+    )
+    return {
+        "filename": file.filename,
+        "doc_type": doc_type.value,
+        "full_text": ocr_result["full_text"],
+        "confidence": ocr_result["confidence"],
+        "page_count": ocr_result.get("page_count"),
+        "language": ocr_result.get("language"),
+        "quality_flags": quality_flags,
+    }
 
 
 # ── List / get ────────────────────────────────────────────────────
@@ -152,6 +237,15 @@ async def upload_document(
         doc, _duplicate_of_id = await svc.save_upload(db, file=file, organization_id=user.organization_id, uploaded_by_id=user.id)
     except DocumentValidationError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    except OperationalError as exc:
+        # save_upload()'s own db.commit() can genuinely collide with another
+        # document's background pipeline holding SQLite's single-writer
+        # lock (found live via /api/invoices/upload — same save_upload()
+        # call). Left uncaught this surfaces as a bare 500 with no
+        # `detail`; give the same honest, retryable message
+        # process_document() itself already gives for the identical
+        # collision — see document_service.friendly_db_error's docstring.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, svc.friendly_db_error(exc))
     out = DocumentDetailOut.model_validate(doc)
     out.uploaded_by_name = user.full_name
     return out
@@ -311,6 +405,23 @@ async def send_to_review(
     out = DocumentDetailOut.model_validate(doc)
     out.uploaded_by_name = name_map.get(doc.uploaded_by_id) if doc.uploaded_by_id else None
     return out
+
+
+@router.get("/{document_id}/review-item", response_model=ReviewItemLookupOut)
+async def get_review_item(
+    document_id: int,
+    user: User = Depends(require_action("VIEW")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    """Real bug found live (user-reported): the Document Details page's
+    "Send to Review"/"Cancel Review" pair had no matching "Review" action
+    — a NEEDS_REVIEW document gave the reviewer no way to actually reach
+    the Review Queue item to correct the data. This is what the new
+    "Review" button (DocumentDetails.jsx) calls to get the review_id it
+    then navigates to (/doc-intel/review/{review_id})."""
+    await _get_or_404(db, document_id, user)  # org-scoped existence/access check, same gate cancel-review uses
+    review_id = await review_svc.get_open_item_id_for_document(db, document_id)
+    return ReviewItemLookupOut(review_id=review_id)
 
 
 @router.post("/{document_id}/cancel-review", response_model=DocumentDetailOut)

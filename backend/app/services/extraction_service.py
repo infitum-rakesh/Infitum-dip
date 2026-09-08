@@ -226,6 +226,15 @@ EXTRACT_SYSTEM = (
     "compute/derive a value from other fields. If a field's value isn't literally stated in the "
     "text as that specific concept, its value is null — do not calculate it from other numbers on "
     "the page. Respond with ONLY a JSON object, no prose, no markdown fences.\n\n"
+    "LANGUAGE — the OCR text below may be in Kannada, Tamil, Hindi, English, or a mix. Copy every "
+    "value EXACTLY as it appears in the source text, in its ORIGINAL script and language — a "
+    "person's name, address, vendor name, item description, or any other text value must never be "
+    "translated, transliterated, or romanized into English, even if English would seem more "
+    "convenient or more accurate to you. A Kannada or Tamil or Hindi field value must appear in the "
+    "JSON response in Kannada, Tamil, or Hindi Unicode characters, unchanged from the OCR text — the "
+    "same rule that already applies to numbers and dates applies here: copy what is literally "
+    "written, do not \"helpfully\" convert it into a different form. This applies to every field and "
+    "every table cell, with no exception.\n\n"
     "For every field whose type is NOT \"table\": its value MUST be an object with exactly three "
     'keys: "value", "confidence", "page" — never a bare string or number. "confidence" is an '
     "integer 0-100: your genuine confidence this value is correctly read from the text (100 = "
@@ -448,16 +457,42 @@ async def extract_fields(
             page = 1
         fields_out.append({"name": name, "type": "scalar", "value": value if value is not None else "", "confidence": round(confidence, 1), "page": page})
 
-    scored = [f for f in fields_out if f.get("type") != "table" or f.get("rows")]
+    # Real bug found live: this used to score EVERY schema field, including
+    # ones the model correctly reported as genuinely absent (value="",
+    # confidence=0 per this function's own prompt instruction above) — so
+    # `overall` was silently "how many of the taxonomy's ~47 canonical
+    # INVOICE fields did this particular invoice happen to populate,"
+    # not "how confident was the model in what it actually found." A real
+    # invoice this build correctly extracted with 95%+ per-field confidence
+    # on every field that exists on the page still scored 42% overall,
+    # purely because ~26 of the 47 canonical fields (order_number, a full
+    # vendor address breakdown, ...) are legitimately optional and simply
+    # don't apply to a typical invoice — dragging every real invoice below
+    # the 90% STRAIGHT_THROUGH_THRESHOLD (invoice_decision_service.py) and
+    # the equivalent NEEDS_REVIEW confidence gate (document_service.py's
+    # process_document(), same default) regardless of extraction accuracy.
+    # Excluding empty scalar fields — exactly the same treatment an empty
+    # TABLE field already got on this line — fixes this the same way
+    # evidence_quality (invoice_decision_service.py) already scores only
+    # non-missing fields: `overall` now reflects confidence in what was
+    # actually extracted, not extraction breadth against a canonical
+    # schema built to be a superset of any one invoice's real fields.
+    scored = [f for f in fields_out if (f.get("type") == "table" and f.get("rows")) or (f.get("type") != "table" and f.get("value") not in (None, ""))]
     overall = round(sum(f["confidence"] for f in scored) / len(scored), 1) if scored else 0.0
     model_name = connector.config.get("model") or connector.connection_type
     return {
         "fields": fields_out,
         "overallConfidence": overall,
         "model": str(model_name),
+        # ensure_ascii=False — real bug found live (Multilingual Document
+        # Processing repo analysis): without it, any Kannada/Tamil/Hindi/
+        # non-ASCII extracted value gets \uXXXX-escaped in this string.
+        # Round-trips fine through json.loads(), but anyone who displays
+        # rawJson as raw text (rather than re-parsing it) would see escape
+        # sequences instead of the original script.
         "rawJson": json.dumps(
             {f["name"]: (f["rows"] if f.get("type") == "table" else f["value"]) for f in fields_out},
-            indent=2, default=str,
+            indent=2, default=str, ensure_ascii=False,
         ),
         # The AI model's own response, verbatim (before this function's type
         # coercion/table-dedup post-processing above) — previously computed

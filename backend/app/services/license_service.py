@@ -38,7 +38,7 @@ PLAN_LABELS = {"trial": "Free Trial", "basic": "Basic", "professional": "Profess
 ALL_MODULES = [
     "DOCUMENT_INTELLIGENCE", "OCR", "AI_EXTRACTION", "TRANSFORMATION", "VALIDATION",
     "RECONCILIATION", "SQL_WORKSPACE", "DATA_CATALOG", "LINEAGE", "PIPELINE_SCHEDULER",
-    "OBSERVABILITY", "INCIDENTS", "ANOMALY_DETECTION", "INVOICE_INTELLIGENCE",
+    "OBSERVABILITY", "INCIDENTS", "ANOMALY_DETECTION", "INVOICE_INTELLIGENCE", "PAYMENT_APPROVAL",
 ]
 
 # module -> which PLAN_LIMITS resource its usage counts against, or None
@@ -62,6 +62,10 @@ MODULE_USAGE_RESOURCE: dict[str, str | None] = {
     # services/invoice/invoice_processing_service.py) rather than
     # inventing a second, overlapping usage metric.
     "INVOICE_INTELLIGENCE": "documents",
+    # Payment Invoice Approval Workflow (2026, Phase 8) — nothing in
+    # PLAN_LIMITS meters approval workflows/steps yet; disclosed, not
+    # fabricated as metered.
+    "PAYMENT_APPROVAL": None,
 }
 
 

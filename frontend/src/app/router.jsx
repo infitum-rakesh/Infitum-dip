@@ -87,6 +87,15 @@ import InvoiceInbox    from '@/pages/invoice-intelligence/InvoiceInbox.jsx';
 import InvoiceDetail   from '@/pages/invoice-intelligence/InvoiceDetail.jsx';
 import InvoiceSettings from '@/pages/invoice-intelligence/InvoiceSettings.jsx';
 
+// Payment Approvals (PAY10) — My Approvals worklist is the landing page.
+// Approval Rules (PAY11) — rule configuration + simulate.
+// Approval Workflows + Detail/Timeline (PAY12) — org-wide workflow
+// visibility and per-workflow drill-down.
+import MyApprovals from '@/pages/payment-approvals/MyApprovals.jsx';
+import ApprovalRules from '@/pages/payment-approvals/ApprovalRules.jsx';
+import ApprovalWorkflows from '@/pages/payment-approvals/ApprovalWorkflows.jsx';
+import ApprovalWorkflowDetail from '@/pages/payment-approvals/ApprovalWorkflowDetail.jsx';
+
 // SQL Workspace (implemented)
 import SqlWorkspace from '@/pages/sql-workspace/SqlWorkspace.jsx';
 
@@ -289,6 +298,13 @@ export const router = createBrowserRouter([
           { path: 'invoice-intel',            element: <InvoiceInbox /> },
           { path: 'invoice-intel/settings',   element: <InvoiceSettings /> },
           { path: 'invoice-intel/:invoiceId', element: <InvoiceDetail /> },
+
+          // Payment Approvals — My Approvals worklist (PAY10). Rule
+          // Configuration and Approval Detail/Timeline pages are later phases.
+          { path: 'payment-approvals',                         element: <MyApprovals /> },
+          { path: 'payment-approvals/rules',                   element: <ApprovalRules /> },
+          { path: 'payment-approvals/workflows',                element: <ApprovalWorkflows /> },
+          { path: 'payment-approvals/workflows/:workflowId',    element: <ApprovalWorkflowDetail /> },
 
           // Observability
           { path: 'lineage',    element: <Lineage /> },

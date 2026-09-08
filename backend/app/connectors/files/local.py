@@ -27,7 +27,21 @@ class LocalFileConnector(FileConnectorBase):
     connection_type = "LOCAL_FILE"
 
     def _base(self) -> Path:
-        raw = self.config.get("base_path") or "."
+        raw = (self.config.get("base_path") or ".").strip()
+        # Found live: pasting a path copied via macOS "Copy as Pathname" /
+        # a shell command's own quoting (common for paths with spaces or
+        # parentheses, e.g. "'/Users/x/Downloads/invoice (2)'") leaves the
+        # literal quote characters in the field. A leading "'" means
+        # Path() no longer sees a string starting with "/", so it's
+        # treated as RELATIVE and silently resolves against the backend
+        # process's own cwd instead of the intended folder — surfaced as a
+        # confusing "Base path does not exist: <cwd>/'<path>'" error.
+        # Stripping one matching pair of surrounding quotes is always safe
+        # to attempt (a real path starting and ending with the same quote
+        # character is not a thing) and fixes this without the user
+        # needing to notice and hand-edit the stray characters themselves.
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
+            raw = raw[1:-1].strip()
         return Path(raw).expanduser().resolve()
 
     def _resolve_path(self, object_name: str) -> str:

@@ -60,6 +60,19 @@
 .stg-checkbox-row input[type="checkbox"] { margin-top: 2px; flex-shrink: 0; }
 .stg-checkbox-label { font-size: var(--fs-sm); font-weight: 600; color: var(--text-primary); }
 .stg-checkbox-desc  { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+.stg-checkbox-row.disabled { cursor: not-allowed; opacity: 0.55; }
+
+/* Multilingual Document Processing, Phase 10 — Languages checkbox grid
+   (Administration -> Document Intelligence -> Languages). */
+.stg-lang-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0 12px; margin-top: 4px; }
+.stg-lang-grid .stg-checkbox-row { padding: 6px 4px; border-bottom: none; }
+
+/* Multilingual Document Processing, Phase 11 — OCR Diagnostics card
+   (Administration -> Document Intelligence -> OCR Diagnostics). */
+.stg-lang-health-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.stg-lang-health-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.stg-test-ocr-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.stg-test-ocr-result { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
 
 /* ── IP restriction tags ───────────────────────────────────── */
 .stg-tag-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }

@@ -22,6 +22,13 @@ class DocumentIntelligenceSettings(BaseModel):
     ocr_provider: str
     default_ocr_language: str
     default_confidence_threshold: float
+    # Multilingual Document Processing, Phase 3 — see models/settings.py's
+    # DEFAULT_SETTINGS comment for what each of these actually does.
+    supported_languages: list[str] = ["en"]
+    primary_language: str = "auto"
+    ocr_confidence_threshold: float = 85
+    language_mismatch_threshold: float = 80
+    translation_enabled: bool = False
 
 
 class AISettings(BaseModel):

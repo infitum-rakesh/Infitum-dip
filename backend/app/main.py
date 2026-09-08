@@ -64,6 +64,7 @@ from app.api.payments.pay import router as payments_pay_router
 from app.api.invoices import router as invoices_router
 from app.api.invoice_mappings import router as invoice_mappings_router
 from app.api.invoice_rules import router as invoice_rules_router
+from app.api.approvals import router as approvals_router
 from app.models.pipeline_source_file import PipelineSourceFile  # noqa: F401 — string FK to pipelines.id needs this imported before init_db()
 from app.models.tenant_database import TenantDatabase  # noqa: F401 — new table, needs registering before init_db()
 from app.models.tenant_migration_job import TenantMigrationJob, TenantMigrationJobLog  # noqa: F401 — new tables, need registering before init_db()
@@ -112,6 +113,21 @@ from app.models.invoice_intelligence.rules import (  # noqa: F401
     ApInvoiceValidationRule, ApInvoiceValidationResult, ApInvoiceErpMapping, ApInvoiceModelVersion,
 )
 from app.models.invoice_intelligence.learning import ApInvoiceLearningRecord, ApInvoiceAuditEvent  # noqa: F401
+# Payment Invoice Approval Workflow (2026, Phase 2) — Approval Rule Engine
+# models, new tables, need registering before init_db() the same way
+# every model above does.
+from app.models.approval.rules import (  # noqa: F401
+    ApprovalRule, ApprovalRuleCondition, ApprovalRuleStep, ApprovalRuleAuditLog,
+)
+# Payment Invoice Approval Workflow (2026, Phase 4) — workflow INSTANCE
+# models (the rule engine's output made durable per-invoice). Approver
+# resolution (Phase 5) needed no new tables — notification lands here.
+from app.models.approval.workflow import (  # noqa: F401
+    ApprovalWorkflow, ApprovalWorkflowStep, PeerReviewStep, ApprovalWorkflowAuditLog,
+)
+# Payment Invoice Approval Workflow (2026, Phase 6) — the real queued/
+# retried email outbox (see services/approval/notification_outbox_service.py).
+from app.models.approval.notification import ApprovalNotificationOutbox  # noqa: F401
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -161,6 +177,8 @@ def _start_billing_scheduler():
     from app.services.billing.billing_scheduler import run_billing_sweep_standalone
     from app.services.billing.expiry_job import run_expiry_sweep_standalone
     from app.services.scheduler_poller import run_poll as run_schedule_poll
+    from app.services.approval.notification_outbox_service import process_pending_standalone as run_approval_notification_outbox
+    from app.services.approval.sla_scheduler_service import run_sla_sweep_standalone as run_approval_sla_sweep
 
     async def _run_expiry_sweep_safely():
         try:
@@ -184,6 +202,22 @@ def _start_billing_scheduler():
         except Exception:
             logger.exception("Schedule poll failed")
 
+    async def _run_approval_notification_outbox_safely():
+        try:
+            stats = await run_approval_notification_outbox()
+            if stats["picked_up"]:
+                logger.info("Approval notification outbox: %s", stats)
+        except Exception:
+            logger.exception("Approval notification outbox worker failed")
+
+    async def _run_approval_sla_sweep_safely():
+        try:
+            stats = await run_approval_sla_sweep()
+            if stats.get("reminders_processed") or stats.get("escalated") or stats.get("escalation_failed"):
+                logger.info("Approval SLA sweep: %s", stats)
+        except Exception:
+            logger.exception("Approval SLA sweep failed")
+
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(_run_expiry_sweep_safely, "interval", hours=1, id="billing_expiry_sweep")
     scheduler.add_job(_run_billing_sweep_safely, "interval", hours=1, id="billing_cycle_sweep")
@@ -192,8 +226,18 @@ def _start_billing_scheduler():
     # than any real schedule frequency (minimum granularity is "Every
     # Hour") would ever need.
     scheduler.add_job(_run_schedule_poll_safely, "interval", seconds=60, id="schedule_poll")
+    # 60s — an approver waiting on an email shouldn't wait minutes for the
+    # first attempt; retries beyond that follow the outbox's own
+    # exponential backoff (notification_outbox_service._BACKOFF_MINUTES),
+    # not this poll interval.
+    scheduler.add_job(_run_approval_notification_outbox_safely, "interval", seconds=60, id="approval_notification_outbox")
+    # 15 minutes — reminder/escalation timing is hour-granularity by
+    # design (reminder_after_hours/escalation_after_hours), so this
+    # doesn't need 60s polling; 15 min keeps a breach from sitting
+    # unnoticed for long without adding meaningful DB load.
+    scheduler.add_job(_run_approval_sla_sweep_safely, "interval", minutes=15, id="approval_sla_sweep")
     scheduler.start()
-    logger.info("Backend scheduler started — billing sweeps hourly, schedule poll every 60s.")
+    logger.info("Backend scheduler started — billing sweeps hourly, schedule poll + approval notification outbox every 60s, approval SLA sweep every 15min.")
     return scheduler
 
 
@@ -346,6 +390,7 @@ app.include_router(payments_pay_router, prefix="/api")
 app.include_router(invoices_router, prefix="/api")
 app.include_router(invoice_mappings_router, prefix="/api")
 app.include_router(invoice_rules_router, prefix="/api")
+app.include_router(approvals_router, prefix="/api")
 
 
 @app.get("/api/health")

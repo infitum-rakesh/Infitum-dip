@@ -1,0 +1,40 @@
+{
+  "_comment": "Hindi (Devanagari) label dictionary for extraction/custom_engine.py. Curated starter set covering the fields most likely to carry a Hindi label on a real invoice — a deliberately smaller set than en.json's, not every canonical field has a settled common Hindi business-invoice equivalent. Intended to be refined against real Hindi invoice samples in the Phase 14 testing pass (per the approved test-fixtures decision), not treated as exhaustive or final.",
+  "field_synonyms": {
+    "invoice_number": ["इनवॉइस संख्या", "इनवॉइस नंबर", "चालान संख्या", "बिल संख्या", "बिल नंबर"],
+    "invoice_date": ["इनवॉइस दिनांक", "बिल तारीख", "बिल दिनांक", "दिनांक"],
+    "due_date": ["देय तिथि", "भुगतान तिथि", "अंतिम तिथि"],
+    "po_number": ["पीओ संख्या", "खरीद आदेश संख्या", "क्रय आदेश संख्या"],
+    "order_number": ["आदेश संख्या", "ऑर्डर संख्या"],
+    "reference_number": ["संदर्भ संख्या"],
+    "vendor_name": ["विक्रेता", "आपूर्तिकर्ता", "बेचने वाला"],
+    "vendor_tax_id": ["जीएसटी संख्या", "जीएसटीआईएन", "कर पहचान संख्या"],
+    "vendor_email": ["ईमेल"],
+    "vendor_phone": ["फोन", "दूरभाष", "संपर्क नंबर"],
+    "bill_to_name": ["बिल प्राप्तकर्ता", "ग्राहक", "खरीदार"],
+    "ship_to_name": ["शिपिंग पता", "डिलीवरी पता", "भेजने का पता"],
+    "currency": ["मुद्रा"],
+    "subtotal": ["उप-योग", "उप योग"],
+    "subtotal_amount": ["उप-योग", "उप योग"],
+    "discount_amount": ["छूट"],
+    "tax_rate": ["कर दर", "जीएसटी दर"],
+    "tax_amount": ["कर", "जीएसटी", "वैट"],
+    "shipping_amount": ["शिपिंग", "ढुलाई"],
+    "total_amount": ["कुल राशि", "कुल योग", "कुल"],
+    "amount_paid": ["भुगतान की गई राशि", "भुगतान"],
+    "balance_due": ["शेष राशि", "बकाया राशि"],
+    "balance_amount": ["शेष राशि", "बकाया राशि"],
+    "payment_terms": ["भुगतान शर्तें"],
+    "payment_method": ["भुगतान का तरीका"],
+    "bank_name": ["बैंक का नाम"],
+    "bank_account_number": ["खाता संख्या"],
+    "notes": ["टिप्पणी", "नोट्स", "टिप्पणियाँ"]
+  },
+  "table_column_synonyms": {
+    "description": ["विवरण", "वस्तु"],
+    "quantity": ["मात्रा"],
+    "unit_price": ["इकाई मूल्य", "दर"],
+    "tax": ["कर", "जीएसटी"],
+    "amount": ["राशि", "कुल"]
+  }
+}

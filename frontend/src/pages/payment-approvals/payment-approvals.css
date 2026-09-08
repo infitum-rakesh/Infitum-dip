@@ -1,0 +1,120 @@
+/* ============================================================
+   Payment Approvals module styles — scoped to .pa-*
+   ============================================================ */
+
+.pa-page { padding-bottom: 24px; }
+
+/* ── Header ────────────────────────────────────────────────── */
+.pa-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px; gap: 16px; flex-wrap: wrap; }
+.pa-title    { font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary); display: flex; align-items: center; gap: 8px; }
+.pa-subtitle { font-size: var(--fs-md);  color: var(--text-muted); margin-top: 3px; }
+.pa-actions  { display: flex; gap: 8px; flex-shrink: 0; align-items: center; }
+
+/* ── Error banner ──────────────────────────────────────────── */
+.pa-banner-error {
+  background: var(--bg-card); color: var(--color-danger-dark);
+  border: 1px solid var(--color-danger); border-radius: var(--radius-lg);
+  padding: 10px 14px; font-size: var(--fs-sm); margin-bottom: 16px;
+}
+
+/* ── Table panel ───────────────────────────────────────────── */
+.pa-table-panel { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); overflow: hidden; }
+.pa-invoice-cell { font-weight: 700; color: var(--text-primary); }
+.pa-amount-cell { font-variant-numeric: tabular-nums; text-align: right; font-weight: 600; display: inline-block; }
+.pa-rule-cell { color: var(--text-muted); font-size: var(--fs-sm); }
+.pa-overdue { color: var(--color-danger-dark); font-weight: 600; }
+.pa-row-actions { display: flex; gap: 6px; }
+
+/* ── Reject/Flag comment modal ─────────────────────────────── */
+.pa-modal-hint { font-size: var(--fs-sm); color: var(--text-muted); margin-bottom: 12px; }
+.pa-comment-input {
+  width: 100%; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); font-family: inherit; padding: 8px 10px; resize: vertical; outline: none;
+}
+.pa-comment-input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+
+/* ============================================================
+   Approval Rules (list + form + simulate) — scoped to .par-*
+   ============================================================ */
+
+.par-name-cell { font-weight: 700; color: var(--text-primary); display: inline-flex; align-items: center; gap: 6px; }
+.par-version-tag {
+  font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted);
+  background: var(--bg-subtle, rgba(0,0,0,0.05)); border-radius: var(--radius-full); padding: 1px 7px;
+}
+.par-row-actions { display: flex; gap: 4px; }
+
+/* ── Form layout ───────────────────────────────────────────── */
+.par-field { margin-bottom: 12px; }
+.par-label { display: block; font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px; }
+.par-required { color: var(--color-danger); }
+.par-hint { font-size: var(--fs-xs); color: var(--text-faint); margin-top: 3px; }
+.par-input, .par-select, .par-textarea {
+  width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); font-family: inherit; background: white; outline: none; transition: var(--transition);
+}
+.par-input:focus, .par-select:focus, .par-textarea:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+.par-input:disabled, .par-select:disabled { background: var(--bg-subtle, #f5f5f5); color: var(--text-faint); }
+.par-textarea { min-height: 60px; resize: vertical; }
+.par-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.par-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; align-items: end; }
+.par-grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.par-checkbox-field { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); font-weight: 600; color: var(--text-primary); padding-bottom: 8px; }
+.par-section-title {
+  font-size: var(--fs-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--text-muted); margin: 18px 0 10px; padding-top: 12px; border-top: 1px solid var(--border);
+}
+.par-form-errors {
+  background: var(--bg-card); color: var(--color-danger-dark); border: 1px solid var(--color-danger);
+  border-radius: var(--radius-lg); padding: 10px 14px; font-size: var(--fs-sm); margin-bottom: 14px;
+}
+.par-form-errors > div { margin-bottom: 2px; }
+
+/* ── Condition rows ────────────────────────────────────────── */
+.par-row-condition { display: grid; grid-template-columns: 1fr 1fr 2fr auto; gap: 8px; margin-bottom: 8px; align-items: center; }
+.par-remove-btn {
+  display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-card); color: var(--color-danger);
+  cursor: pointer; transition: var(--transition);
+}
+.par-remove-btn:hover { background: var(--color-danger); color: white; border-color: var(--color-danger); }
+
+/* ── Step cards ────────────────────────────────────────────── */
+.par-step-card { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 12px 14px; margin-bottom: 12px; background: var(--bg-subtle, #fafafa); }
+.par-step-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: var(--fs-sm); color: var(--text-primary); }
+.par-pool-list { display: flex; flex-wrap: wrap; gap: 10px; max-height: 100px; overflow-y: auto; padding: 6px 0; }
+.par-pool-item { display: flex; align-items: center; gap: 5px; font-size: var(--fs-sm); }
+
+/* ── Simulate result ───────────────────────────────────────── */
+.par-sim-result { margin-top: 4px; }
+.par-sim-winner, .par-sim-conflict, .par-sim-nomatch { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); margin-bottom: 12px; }
+.par-sim-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.par-sim-table th { text-align: left; padding: 6px 8px; color: var(--text-muted); font-size: var(--fs-xs); text-transform: uppercase; border-bottom: 1px solid var(--border); }
+.par-sim-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+
+/* ============================================================
+   Approval Workflow Detail (PAY12) — scoped to .pad-*
+   ============================================================ */
+
+.pad-summary-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 16px 20px; margin-bottom: 20px; }
+.pad-summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+.pad-summary-full { grid-column: 1 / -1; }
+.pad-field-label { font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 3px; }
+.pad-field-value { font-size: var(--fs-md); color: var(--text-primary); font-weight: 600; }
+
+.pad-section { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 16px 20px; margin-bottom: 20px; }
+.pad-steps-table { overflow-x: auto; display: block; }
+
+.pad-timeline { display: flex; flex-direction: column; gap: 0; }
+.pad-timeline-item { display: flex; gap: 12px; padding: 10px 0; border-left: 2px solid var(--border); margin-left: 5px; padding-left: 16px; position: relative; }
+.pad-timeline-item:last-child { border-left-color: transparent; }
+.pad-timeline-dot { position: absolute; left: -6px; top: 14px; width: 10px; height: 10px; border-radius: 50%; background: var(--color-primary); border: 2px solid var(--bg-card); }
+.pad-timeline-body { flex: 1; }
+.pad-timeline-header { display: flex; align-items: center; gap: 10px; }
+.pad-timeline-time { font-size: var(--fs-xs); color: var(--text-faint); }
+.pad-timeline-message { font-size: var(--fs-sm); color: var(--text-primary); margin-top: 4px; }
+.pad-timeline-actor { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; }
+
+@media (max-width: 1100px) {
+  .pad-summary-grid { grid-template-columns: repeat(2, 1fr); }
+}

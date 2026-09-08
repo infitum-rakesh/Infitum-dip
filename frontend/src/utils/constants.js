@@ -43,6 +43,7 @@ export const MODULES = {
   INCIDENTS:             'INCIDENTS',
   ANOMALY_DETECTION:     'ANOMALY_DETECTION',
   INVOICE_INTELLIGENCE:  'INVOICE_INTELLIGENCE',
+  PAYMENT_APPROVAL:      'PAYMENT_APPROVAL',
 };
 
 /** License status */
@@ -309,6 +310,24 @@ export const INVOICE_PERMISSIONS = {
   INVOICE_CREATE: { module: MODULES.INVOICE_INTELLIGENCE, action: ACTIONS.CREATE }, // Upload invoice
   INVOICE_EDIT:   { module: MODULES.INVOICE_INTELLIGENCE, action: ACTIONS.EDIT },   // Corrections + learning-record approval
   INVOICE_RUN:    { module: MODULES.INVOICE_INTELLIGENCE, action: ACTIONS.EXECUTE }, // Reprocess/revalidate/ERP post/cancel/reconcile
+};
+
+/**
+ * Payment Approvals — centralized permission map, same shape as
+ * INVOICE_PERMISSIONS above. Mirrored server-side 1:1 by
+ * require_action(action, module="PAYMENT_APPROVAL") in api/approvals.py:
+ * VIEW (rule/workflow reads + My Approvals), CREATE (publish a rule
+ * version, create a workflow), EDIT (activate/deactivate a rule),
+ * EXECUTE (simulate), APPROVE (approve/reject a step, review/flag a
+ * peer-review step — all four act-on-a-step routes use the same
+ * APPROVE action, matching the backend exactly).
+ */
+export const PAYMENT_APPROVAL_PERMISSIONS = {
+  APPROVAL_VIEW:      { module: MODULES.PAYMENT_APPROVAL, action: ACTIONS.VIEW },
+  APPROVAL_RULE_EDIT: { module: MODULES.PAYMENT_APPROVAL, action: ACTIONS.CREATE }, // publish a new rule version
+  APPROVAL_RULE_STATUS: { module: MODULES.PAYMENT_APPROVAL, action: ACTIONS.EDIT }, // activate/deactivate
+  APPROVAL_SIMULATE:  { module: MODULES.PAYMENT_APPROVAL, action: ACTIONS.EXECUTE },
+  APPROVAL_ACT:       { module: MODULES.PAYMENT_APPROVAL, action: ACTIONS.APPROVE }, // approve/reject/review/flag a step
 };
 
 /**

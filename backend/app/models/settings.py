@@ -40,8 +40,36 @@ DEFAULT_SETTINGS = {
         # rather than silently falling back to Tesseract (see
         # services/document_service.py's _run_ocr()/_pick_ocr_connection()).
         "ocr_provider": "tesseract",
+        # default_ocr_language/default_confidence_threshold predate the
+        # Multilingual Document Processing feature and are kept for
+        # backward compatibility (a real repo-analysis finding: this field
+        # was never actually read anywhere in the OCR path before Phase 3
+        # — see ocr/language_config.py's own docstring). The fields below
+        # are the real, wired multilingual configuration surface
+        # (Phase 3) — see ocr/language_config.py for the language-code
+        # vocabulary (ISO 639-1: "en"/"hi"/"kn"/"ta"/...).
         "default_ocr_language": "en",
         "default_confidence_threshold": 85,
+        # Languages this org has explicitly opted into for OCR/extraction
+        # — an org must add a language here before documents in it are
+        # processed with anything beyond English + script-detection.
+        # "en" ships enabled by default so existing orgs' behavior is
+        # unchanged until they explicitly opt into more.
+        "supported_languages": ["en"],
+        # "auto" = real hybrid language detection (ocr/language_detection/)
+        # picks the OCR language per page; any other value pins every
+        # document to that one language, skipping detection entirely.
+        "primary_language": "auto",
+        "ocr_confidence_threshold": 85,
+        # Below this, script-block detection disagreeing with the
+        # configured/expected language is flagged OCR_LANGUAGE_MISMATCH
+        # (ocr/language_errors.py) rather than silently accepted.
+        "language_mismatch_threshold": 80,
+        # Optional and OFF by default (spec requirement: the platform must
+        # work completely without translation) — no translation capability
+        # exists yet as of Phase 3; this is the switch a later phase's
+        # real implementation will read.
+        "translation_enabled": False,
     },
     "ai": {
         "ai_provider": "openai",

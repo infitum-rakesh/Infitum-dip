@@ -65,7 +65,7 @@ _DB_TYPES = {
     ConnectionType.SNOWFLAKE, ConnectionType.SAP, ConnectionType.FABRIC, ConnectionType.VERTICA,
     ConnectionType.SALESFORCE, ConnectionType.NETSUITE_SUITEQL, ConnectionType.NETSUITE_SOAP,
 }
-_FILE_TYPES = {ConnectionType.SFTP, ConnectionType.FTP, ConnectionType.LOCAL_FILE, ConnectionType.NETWORK_FILE}
+_FILE_TYPES = {ConnectionType.SFTP, ConnectionType.FTP, ConnectionType.LOCAL_FILE, ConnectionType.NETWORK_FILE, ConnectionType.EMAIL_IMAP}
 _API_TYPES = {ConnectionType.REST, ConnectionType.SOAP}
 _CLOUD_TYPES = {ConnectionType.AZURE, ConnectionType.AWS}
 

@@ -187,6 +187,15 @@ export const documentApi = {
   /** Withdraws an open review request — only valid while status is NEEDS_REVIEW. */
   cancelReview: (id) => apiClient.post(`/documents/${id}/cancel-review`).then((r) => r.data),
 
+  /**
+   * Real bug found live (user-reported): a NEEDS_REVIEW document had a
+   * "Cancel Review" button but nothing to actually reach the Review
+   * Queue item — this backs the new "Review" button, returning
+   * { review_id } (null if the review was already resolved/cancelled
+   * elsewhere since the page loaded).
+   */
+  getReviewItem: (id) => apiClient.get(`/documents/${id}/review-item`).then((r) => r.data),
+
   /** Canonical document types available for the Run AI Extraction picker (e.g. ["INVOICE"]). */
   getDocumentTypes: () => apiClient.get('/documents/document-types').then((r) => r.data.document_types),
 
@@ -248,6 +257,30 @@ export const documentApi = {
     apiClient
       .post('/documents/bulk', { document_ids: documentIds, action, reviewer_id: reviewerId ?? null, note: note ?? null })
       .then((r) => r.data),
+
+  /**
+   * Multilingual Document Processing, Phase 11 — real Tesseract readiness
+   * check for Administration > Document Intelligence > Languages: for
+   * every language the org has opted into, whether its traineddata file
+   * is actually installed on the server right now.
+   */
+  getOcrHealth: () => apiClient.get('/documents/ocr-health').then((r) => r.data),
+
+  /**
+   * Admin OCR sandbox — runs the real Tesseract pipeline against an
+   * uploaded file without creating a Document row, so a language
+   * configuration can be validated against a real sample before saving.
+   * Scoped to the local Tesseract engine only (see backend docstring).
+   */
+  testOcr: (file, { supportedLanguages, primaryLanguage } = {}) => {
+    const form = new FormData();
+    form.append('file', file);
+    if (supportedLanguages && supportedLanguages.length) form.append('supported_languages', supportedLanguages.join(','));
+    if (primaryLanguage) form.append('primary_language', primaryLanguage);
+    return apiClient
+      .post('/documents/ocr-test', form, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 60 * 1000 })
+      .then((r) => r.data);
+  },
 };
 
 /** Strips undefined/''/'All' values so they don't pollute the query string */

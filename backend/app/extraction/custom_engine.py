@@ -24,6 +24,20 @@ real connection. See extraction_service.py's detect_schema()/
 extract_fields() and document_service.py's _run_ai_extraction()/
 run_manual_ai_extraction() for the wiring.
 
+MULTILINGUAL LABELS (Multilingual Document Processing, Phase 3): label
+matching no longer hardcodes English-only synonyms. Field/table-column
+labels are loaded from app/extraction/label_dictionaries/*.json — one
+file per language, external and configurable per the approved decision
+("do not hard-code language-specific business logic into the core
+extraction engine"). extract_fields()'s optional `languages` parameter
+(a list of ISO codes, e.g. ["kn"] for a Kannada document) widens the
+label candidates this engine searches each row for; English is always
+included alongside whatever else is passed, since mixed-language
+invoices commonly carry English field labels ("Invoice Number") even
+when the surrounding content is in another script. `languages=None`
+(the default) reproduces this engine's exact pre-Phase-3 English-only
+behavior — nothing here changes for a caller that doesn't pass it.
+
 HOW IT WORKS
   1. Schema detection reuses document_taxonomies.build_seed_schema() —
      the same comprehensive, hand-built canonical field lists the real
@@ -68,6 +82,7 @@ from __future__ import annotations
 import json
 import re
 
+from app.extraction.label_dictionaries.loader import get_label_dictionary
 from app.models.document import Document
 from app.services import document_taxonomies, evidence_service
 
@@ -89,62 +104,28 @@ def detect_schema(document_type: str | None, extra_field_names: set[str] | None 
     return schema or document_taxonomies.build_seed_schema("GENERIC", extra_field_names)
 
 
-# ── Label synonyms (curated, real-world label phrasing) ─────────────
-
-FIELD_SYNONYMS: dict[str, list[str]] = {
-    "invoice_number": ["invoice number", "invoice no", "invoice #", "inv no", "bill number", "bill no"],
-    "invoice_date": ["invoice date", "date of invoice", "bill date", "issue date", "date issued"],
-    "due_date": ["due date", "payment due", "due by", "payment due date"],
-    "po_number": ["po number", "po no", "purchase order", "p.o. number", "p.o. no"],
-    "order_number": ["order number", "order no", "so number", "sales order"],
-    "reference_number": ["reference number", "ref no", "reference", "ref #"],
-    "document_number": ["document number", "document no", "doc no", "id number"],
-    "document_date": ["date", "document date", "dated"],
-    "vendor_name": ["vendor", "seller", "billed by", "sold by", "supplier", "from"],
-    "vendor_tax_id": ["tax id", "vat no", "vat number", "gstin", "gst no", "gst number", "ein", "tin"],
-    "vendor_email": ["email"],
-    "vendor_phone": ["phone", "tel", "telephone", "contact no"],
-    "vendor_website": ["website", "web"],
-    "bill_to_name": ["bill to", "billed to", "customer", "buyer", "invoice to"],
-    "ship_to_name": ["ship to", "shipped to", "deliver to", "delivery address"],
-    "party_1_name": ["from", "issued by", "seller", "first party"],
-    "party_1_id_number": ["id number", "registration number", "tax id", "reg no"],
-    "party_1_email": ["email"],
-    "party_1_phone": ["phone", "tel", "telephone"],
-    "party_2_name": ["to", "recipient", "second party", "buyer"],
-    "party_2_id_number": ["id number", "registration number", "tax id", "reg no"],
-    "party_2_email": ["email"],
-    "party_2_phone": ["phone", "tel", "telephone"],
-    "currency": ["currency"],
-    "subtotal": ["subtotal", "sub total", "sub-total"],
-    "subtotal_amount": ["subtotal", "sub total", "sub-total"],
-    "discount_amount": ["discount", "less discount"],
-    "tax_rate": ["tax rate", "gst rate", "vat rate"],
-    "tax_amount": ["tax", "gst", "vat", "sales tax"],
-    "shipping_amount": ["shipping", "freight", "delivery charge", "shipping charge"],
-    "total_amount": ["total amount", "grand total", "total due", "amount due", "invoice total", "total"],
-    "amount_paid": ["amount paid", "paid"],
-    "balance_due": ["balance due", "amount due", "balance"],
-    "balance_amount": ["balance due", "amount due", "balance"],
-    "payment_terms": ["payment terms", "terms"],
-    "payment_method": ["payment method", "paid via", "method of payment"],
-    "bank_name": ["bank name", "bank"],
-    "bank_account_number": ["account number", "account no", "a/c no", "a/c number"],
-    "bank_routing_number": ["routing number", "ifsc", "swift", "routing no", "sort code"],
-    "status": ["status"],
-    "terms": ["terms", "conditions", "terms and conditions"],
-    "signature_name": ["signature", "signed by", "authorized signatory"],
-    "notes": ["notes", "remarks", "special instructions", "comments"],
-}
-
+# ── Label synonyms (external, per-language — app/extraction/label_dictionaries/*.json) ──
 
 def _humanize(name: str) -> str:
     return name.replace("_", " ").strip().lower()
 
 
-def _label_candidates(field: dict) -> list[str]:
+def _effective_languages(languages: list[str] | None) -> list[str]:
+    """"en" is always searched, in addition to whatever `languages` names
+    — a mixed-language invoice commonly carries English field labels even
+    when its content is in another script (see module docstring), and
+    languages=None (extract_fields()'s default) must reproduce this
+    engine's exact pre-Phase-3 English-only behavior."""
+    return list(dict.fromkeys(["en", *(languages or [])]))
+
+
+def _label_candidates(field: dict, languages: list[str] | None = None) -> list[str]:
     name_lower = field["name"].lower()
-    cands = {_humanize(field["name"])} | set(FIELD_SYNONYMS.get(name_lower, []))
+    cands = {_humanize(field["name"])}
+    for lang in _effective_languages(languages):
+        dictionary = get_label_dictionary(lang)
+        if dictionary:
+            cands |= set(dictionary.field_synonyms.get(name_lower, []))
     # Longest/most specific phrases first, so e.g. "grand total" is tried
     # before the far more collision-prone bare "total".
     return sorted(cands, key=len, reverse=True)
@@ -294,7 +275,7 @@ def _value_from_row(row: dict, ftype: str):
     return _clean_value(_row_text(row), ftype)
 
 
-def _find_label_value(field: dict, rows: list[dict]) -> tuple | None:
+def _find_label_value(field: dict, rows: list[dict], languages: list[str] | None = None) -> tuple | None:
     """Scans rows in reading order for one of this field's label
     candidates. A label with real text after it on the same row uses
     that remainder as the value; a label alone on its row falls through
@@ -306,7 +287,7 @@ def _find_label_value(field: dict, rows: list[dict]) -> tuple | None:
     found anywhere."""
     ftype = field.get("type", "string")
     prefer_last = field["name"].lower() in PREFER_LAST_FIELDS
-    candidates = _label_candidates(field)
+    candidates = _label_candidates(field, languages)
     found: list[tuple] = []
 
     for ri, row in enumerate(rows):
@@ -380,13 +361,13 @@ def _type_fallback(field: dict, full_text: str) -> tuple | None:
     return None
 
 
-def _extract_scalar(field: dict, rows: list[dict], full_text: str) -> dict:
+def _extract_scalar(field: dict, rows: list[dict], full_text: str, languages: list[str] | None = None) -> dict:
     # _find_label_value() found the value via a real, matched OCR row —
     # carries a genuine bbox. _type_fallback() finds a value via a
     # regex over the whole page's concatenated text with no single
     # originating region to point at — honestly bbox=None rather than
     # guessing one (see its own docstring).
-    found = _find_label_value(field, rows)
+    found = _find_label_value(field, rows, languages)
     if found is not None:
         value, conf, page, bbox = found
     else:
@@ -400,26 +381,31 @@ def _extract_scalar(field: dict, rows: list[dict], full_text: str) -> dict:
 
 # ── Table extraction ─────────────────────────────────────────────────
 
-TABLE_COLUMN_SYNONYMS: dict[str, list[str]] = {
-    "description": ["description", "item", "particulars", "product", "details"],
-    "sku": ["sku", "code", "item code", "item no", "part no"],
-    "quantity": ["qty", "quantity", "units"],
-    "unit_price": ["unit price", "rate", "price", "unit cost"],
-    "tax": ["tax", "gst", "vat"],
-    "amount": ["amount", "total", "line total", "net amount"],
-}
 STOP_KEYWORDS = [
     "subtotal", "sub total", "sub-total", "grand total", "total due", "balance due",
     "amount due", "tax", "terms", "notes", "thank you", "signature", "page ",
 ]
 
 
-def _find_header_row(columns: list[dict], rows: list[dict]) -> int | None:
+def _table_column_synonyms(col: dict, languages: list[str] | None = None) -> list[str]:
+    """Same external, per-language dictionary lookup _label_candidates()
+    uses for scalar fields (see that function + module docstring) —
+    table_column_synonyms is the JSON dictionary's other top-level key."""
+    name_lower = col["name"].lower()
+    syns = {_humanize(col["name"])}
+    for lang in _effective_languages(languages):
+        dictionary = get_label_dictionary(lang)
+        if dictionary:
+            syns |= set(dictionary.table_column_synonyms.get(name_lower, []))
+    return sorted(syns, key=len, reverse=True)
+
+
+def _find_header_row(columns: list[dict], rows: list[dict], languages: list[str] | None = None) -> int | None:
     for idx, row in enumerate(rows):
         text = _row_text(row).lower()
         hits = 0
         for col in columns:
-            syns = TABLE_COLUMN_SYNONYMS.get(col["name"].lower(), [_humanize(col["name"])])
+            syns = _table_column_synonyms(col, languages)
             if any(re.search(rf"(?<![a-z0-9]){re.escape(s)}(?![a-z0-9])", text) for s in syns):
                 hits += 1
         if hits >= 2:
@@ -462,10 +448,10 @@ def _split_row(row: dict, columns: list[dict]) -> dict | None:
     return row_dict
 
 
-def _extract_table(field: dict, rows: list[dict]) -> dict:
+def _extract_table(field: dict, rows: list[dict], languages: list[str] | None = None) -> dict:
     columns = field.get("columns") or []
     col_names = [c["name"] for c in columns]
-    header_idx = _find_header_row(columns, rows) if columns else None
+    header_idx = _find_header_row(columns, rows, languages) if columns else None
     if header_idx is None:
         # No recognizable header row -> honestly report "found nothing"
         # rather than guessing at row boundaries with no anchor at all.
@@ -488,9 +474,18 @@ def _extract_table(field: dict, rows: list[dict]) -> dict:
 
 # ── Entry point ───────────────────────────────────────────────────────
 
-def extract_fields(doc: Document, schema: list[dict]) -> dict:
+def extract_fields(doc: Document, schema: list[dict], languages: list[str] | None = None) -> dict:
     """Same output contract as extraction_service.extract_fields():
-    {"fields": [...], "overallConfidence": float, "model": str, "rawJson": str}."""
+    {"fields": [...], "overallConfidence": float, "model": str, "rawJson": str}.
+
+    `languages` (Multilingual Document Processing, Phase 3) — a list of
+    ISO codes (e.g. ["kn"], or ["kn", "en"] for a mixed document) widening
+    which per-language label dictionaries (app/extraction/
+    label_dictionaries/*.json) get searched for each field's label,
+    alongside English which is always included (see module docstring).
+    None (the default) reproduces this engine's pre-Phase-3 English-only
+    behavior exactly — not wired to real detected document language yet
+    (that's Phase 5's job); a caller can already pass it explicitly today."""
     if not schema:
         raise CustomEngineError("No fields to extract.")
     ocr = doc.ocr_result or {}
@@ -503,9 +498,9 @@ def extract_fields(doc: Document, schema: list[dict]) -> dict:
     fields_out = []
     for f in schema:
         if f.get("type") == "table":
-            fields_out.append(_extract_table(f, rows))
+            fields_out.append(_extract_table(f, rows, languages))
         else:
-            fields_out.append(_extract_scalar(f, rows, full_text))
+            fields_out.append(_extract_scalar(f, rows, full_text, languages))
 
     scored = [f for f in fields_out if f.get("type") != "table" or f.get("rows")]
     overall = round(sum(f["confidence"] for f in scored) / len(scored), 1) if scored else 0.0
@@ -513,8 +508,11 @@ def extract_fields(doc: Document, schema: list[dict]) -> dict:
         "fields": fields_out,
         "overallConfidence": overall,
         "model": MODEL_LABEL,
+        # ensure_ascii=False — real bug found live (Multilingual Document
+        # Processing repo analysis): see extraction_service.py's identical
+        # fix for why this must stay real UTF-8, not \uXXXX escapes.
         "rawJson": json.dumps(
             {f["name"]: (f["rows"] if f.get("type") == "table" else f["value"]) for f in fields_out},
-            indent=2, default=str,
+            indent=2, default=str, ensure_ascii=False,
         ),
     }

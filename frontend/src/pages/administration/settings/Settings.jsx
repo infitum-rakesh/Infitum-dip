@@ -20,14 +20,16 @@ import {
   Workflow, Save, Plus, X, Lock, RefreshCcw, Fingerprint, Copy, Check,
   CheckCircle2, ExternalLink, Server,
 } from 'lucide-react';
-import { Button, PermissionGate, FullPageSpinner, EmptyState } from '@/components/common/index.js';
+import { Button, PermissionGate, FullPageSpinner, EmptyState, StatusBadge } from '@/components/common/index.js';
 import { SETTINGS_PERMISSIONS, SSO_PERMISSIONS, DATABASE_PERMISSIONS } from '@/utils/constants.js';
 import { formatDateTime } from '@/utils/formatters.js';
 import { settingsApi } from '@/services/api/settingsApi.js';
 import { ssoApi } from '@/services/api/ssoApi.js';
 import { tenantDatabaseApi } from '@/services/api/tenantDatabaseApi.js';
 import { tenantMigrationApi } from '@/services/api/tenantMigrationApi.js';
+import { documentApi } from '@/services/api/documentApi.js';
 import { TenantDatabaseTab } from '@/components/settings/TenantDatabaseTab.jsx';
+import { LANGUAGE_NAMES, languageName } from '@/utils/languageNames.js';
 import './settings.css';
 
 const TABS = [
@@ -62,6 +64,12 @@ const VISIBILITIES = ['PRIVATE', 'TEAM', 'ORG'];
 // matching type is configured on the Connections page — see the note
 // rendered below the dropdown.
 const OCR_PROVIDERS = ['tesseract', 'aws-textract', 'google-vision', 'azure-form-recognizer'];
+// Multilingual Document Processing, Phase 10 — same 13 languages as the
+// backend's real source of truth (ocr/language_config.py's LANGUAGE_CONFIG),
+// "en" always first since it's always implicitly available regardless of
+// what an org opts into (see extraction/custom_engine.py's
+// _effective_languages() / multilingual_ocr_service.py's same convention).
+const MULTILINGUAL_LANGUAGE_CODES = ['en', 'hi', 'kn', 'ta', 'te', 'ml', 'mr', 'bn', 'gu', 'pa', 'or', 'as', 'ur'];
 const AI_PROVIDERS = ['openai', 'anthropic', 'azure-openai', 'google-vertex'];
 const MFA_OPTIONS = ['OFF', 'OPTIONAL', 'REQUIRED'];
 const AUDIT_LEVELS = ['MINIMAL', 'STANDARD', 'VERBOSE'];
@@ -160,10 +168,10 @@ function Select({ options, ...props }) {
     </select>
   );
 }
-function CheckboxRow({ label, checked, onChange, description }) {
+function CheckboxRow({ label, checked, onChange, description, disabled = false }) {
   return (
-    <label className="stg-checkbox-row">
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+    <label className={`stg-checkbox-row ${disabled ? 'disabled' : ''}`}>
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
       <div>
         <div className="stg-checkbox-label">{label}</div>
         {description && <div className="stg-checkbox-desc">{description}</div>}
@@ -307,27 +315,201 @@ function DocumentIntelligenceTab({ settings, onSave }) {
     finally { setSaving(false); }
   };
 
+  const toggleLanguage = (code) => {
+    if (code === 'en') return; // always implicitly included — see hint below
+    const current = draft.supported_languages ?? ['en'];
+    set('supported_languages')(current.includes(code) ? current.filter((c) => c !== code) : [...current, code]);
+  };
+
+  return (
+    <>
+      <div className="stg-card">
+        <div className="stg-card-title">Document Intelligence</div>
+        <p className="stg-secret-note"><Lock size={12} /> Provider credentials are configured in Connections → Manage Secret and are never stored or shown here.</p>
+        <div className="stg-grid">
+          <Field
+            label="OCR Provider"
+            hint={draft.ocr_provider === 'tesseract' || !draft.ocr_provider
+              ? 'Tesseract is the built-in local engine — no connection needed.'
+              : 'Requires an active OCR Provider connection of this type on the Connections page, or documents will fail OCR with a clear error.'}
+          >
+            <Select options={OCR_PROVIDERS} value={draft.ocr_provider} onChange={(e) => set('ocr_provider')(e.target.value)} />
+          </Field>
+          <Field label="Default OCR Language" hint="Legacy field, kept for backward compatibility — not read by the real multilingual pipeline below.">
+            <Select options={LANGUAGES} value={draft.default_ocr_language} onChange={(e) => set('default_ocr_language')(e.target.value)} />
+          </Field>
+          <Field label="Default Confidence Threshold" hint="Percent (0–100). Generic extraction-confidence gate — see OCR Confidence Threshold below for the OCR-specific one.">
+            <NumberInput min={0} max={100} value={draft.default_confidence_threshold} onChange={(e) => set('default_confidence_threshold')(Number(e.target.value))} />
+          </Field>
+        </div>
+        <SaveBar permission={SETTINGS_PERMISSIONS.SETTINGS_EDIT} dirty={dirty} saving={saving} error={error} onSave={handleSave} onReset={reset} />
+      </div>
+
+      <div className="stg-card">
+        <div className="stg-card-title">Languages</div>
+        <p className="stg-field-hint" style={{ marginBottom: 14 }}>
+          Real multilingual OCR + AI extraction — script-block/hybrid language detection, per-page Tesseract
+          language selection, and quality validation all read these values directly (see Document Intelligence's
+          real pipeline). Original document text is never translated; these settings only control which languages
+          get real OCR recognition and how strictly results are validated.
+        </p>
+        <div className="stg-grid">
+          <Field label="Supported Languages" hint="English is always available regardless of selection — mixed-language documents commonly carry English labels/boilerplate.">
+            <div className="stg-lang-grid">
+              {MULTILINGUAL_LANGUAGE_CODES.map((code) => (
+                <CheckboxRow
+                  key={code}
+                  label={LANGUAGE_NAMES[code]}
+                  checked={code === 'en' || (draft.supported_languages ?? ['en']).includes(code)}
+                  onChange={() => toggleLanguage(code)}
+                />
+              ))}
+            </div>
+          </Field>
+          <Field
+            label="Primary Language"
+            hint={draft.primary_language === 'auto' || !draft.primary_language
+              ? 'Auto — real per-page hybrid language detection picks the OCR language for each page.'
+              : `Pinned to ${LANGUAGE_NAMES[draft.primary_language] ?? draft.primary_language} — every page OCRs in this language (+ English); detection is skipped.`}
+          >
+            <Select
+              options={[{ value: 'auto', label: 'Auto (detect per page)' }, ...MULTILINGUAL_LANGUAGE_CODES.map((c) => ({ value: c, label: LANGUAGE_NAMES[c] }))]}
+              value={draft.primary_language ?? 'auto'}
+              onChange={(e) => set('primary_language')(e.target.value)}
+            />
+          </Field>
+          <Field label="OCR Confidence Threshold" hint="Percent (0–100). Below this, a document is flagged OCR_LOW_CONFIDENCE and routed to Review Queue.">
+            <NumberInput min={0} max={100} value={draft.ocr_confidence_threshold ?? 85} onChange={(e) => set('ocr_confidence_threshold')(Number(e.target.value))} />
+          </Field>
+          <Field label="Language Mismatch Threshold" hint="Percent (0–100). Below this, language detection is treated as ambiguous (OCR_LANGUAGE_MISMATCH) rather than accepted.">
+            <NumberInput min={0} max={100} value={draft.language_mismatch_threshold ?? 80} onChange={(e) => set('language_mismatch_threshold')(Number(e.target.value))} />
+          </Field>
+        </div>
+        <div style={{ marginTop: 4 }}>
+          <CheckboxRow
+            label="Enable translation"
+            checked={false}
+            onChange={() => {}}
+            disabled
+            description="Not implemented yet — reserved for a future phase. Original OCR text is never translated regardless of this setting."
+          />
+        </div>
+        <SaveBar permission={SETTINGS_PERMISSIONS.SETTINGS_EDIT} dirty={dirty} saving={saving} error={error} onSave={handleSave} onReset={reset} />
+      </div>
+
+      <OcrDiagnosticsCard supportedLanguages={draft.supported_languages ?? ['en']} primaryLanguage={draft.primary_language ?? 'auto'} />
+    </>
+  );
+}
+
+// Multilingual Document Processing, Phase 11 — real Tesseract readiness
+// check + admin OCR sandbox. Pure diagnostics: reads the org's current
+// (in-memory draft, not-yet-saved) language selection so an admin can
+// check pack availability / test a sample before hitting Save above.
+function OcrDiagnosticsCard({ supportedLanguages, primaryLanguage }) {
+  const [health, setHealth] = useState(null);
+  const [healthError, setHealthError] = useState('');
+  const [healthLoading, setHealthLoading] = useState(true);
+
+  const [testFile, setTestFile] = useState(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const [testError, setTestError] = useState('');
+
+  const loadHealth = useCallback(() => {
+    setHealthLoading(true); setHealthError('');
+    documentApi.getOcrHealth()
+      .then(setHealth)
+      .catch((err) => setHealthError(err?.message ?? 'Could not check OCR readiness.'))
+      .finally(() => setHealthLoading(false));
+  }, []);
+
+  useEffect(() => { loadHealth(); }, [loadHealth]);
+
+  const runTest = async () => {
+    if (!testFile) return;
+    setTesting(true); setTestError(''); setTestResult(null);
+    try {
+      const result = await documentApi.testOcr(testFile, { supportedLanguages, primaryLanguage });
+      setTestResult(result);
+    } catch (err) {
+      setTestError(err?.response?.data?.detail ?? err?.message ?? 'OCR test failed.');
+    } finally {
+      setTesting(false);
+    }
+  };
+
   return (
     <div className="stg-card">
-      <div className="stg-card-title">Document Intelligence</div>
-      <p className="stg-secret-note"><Lock size={12} /> Provider credentials are configured in Connections → Manage Secret and are never stored or shown here.</p>
-      <div className="stg-grid">
-        <Field
-          label="OCR Provider"
-          hint={draft.ocr_provider === 'tesseract' || !draft.ocr_provider
-            ? 'Tesseract is the built-in local engine — no connection needed.'
-            : 'Requires an active OCR Provider connection of this type on the Connections page, or documents will fail OCR with a clear error.'}
-        >
-          <Select options={OCR_PROVIDERS} value={draft.ocr_provider} onChange={(e) => set('ocr_provider')(e.target.value)} />
-        </Field>
-        <Field label="Default OCR Language">
-          <Select options={LANGUAGES} value={draft.default_ocr_language} onChange={(e) => set('default_ocr_language')(e.target.value)} />
-        </Field>
-        <Field label="Default Confidence Threshold" hint="Percent (0–100).">
-          <NumberInput min={0} max={100} value={draft.default_confidence_threshold} onChange={(e) => set('default_confidence_threshold')(Number(e.target.value))} />
-        </Field>
+      <div className="stg-card-title">OCR Diagnostics</div>
+      <p className="stg-field-hint" style={{ marginBottom: 14 }}>
+        Real checks against the local Tesseract engine on this server — not a simulation. Cloud OCR providers
+        (AWS Textract / Google Vision / Azure Form Recognizer) aren't exercised here even if selected above.
+      </p>
+
+      <div className="stg-subsection-title" style={{ marginTop: 0, paddingTop: 0, borderTop: 'none' }}>Language Pack Status</div>
+      {healthLoading ? (
+        <p className="text-muted text-sm">Checking…</p>
+      ) : healthError ? (
+        <p className="stg-form-error">{healthError}</p>
+      ) : health ? (
+        <>
+          <div className="stg-lang-health-row">
+            <StatusBadge variant={health.tesseract_available ? 'success' : 'danger'} dot>
+              {health.tesseract_available ? 'Tesseract available' : 'Tesseract not available'}
+            </StatusBadge>
+            {health.tesseract_available && (
+              <StatusBadge variant={health.all_configured_languages_ready ? 'success' : 'warning'} dot>
+                {health.all_configured_languages_ready ? 'All configured languages ready' : 'Some languages missing'}
+              </StatusBadge>
+            )}
+            <Button variant="secondary" size="sm" icon={<RefreshCcw size={13} />} onClick={loadHealth}>Recheck</Button>
+          </div>
+          {health.tesseract_error && <p className="stg-form-error" style={{ marginTop: 8 }}>{health.tesseract_error}</p>}
+          <div className="stg-lang-health-grid">
+            {health.languages.map((l) => (
+              <span key={l.code} className="stg-lang-health-pill" title={l.reason ?? undefined}>
+                <StatusBadge variant={l.installed ? 'success' : 'danger'} size="sm" dot>{l.name}</StatusBadge>
+              </span>
+            ))}
+          </div>
+        </>
+      ) : null}
+
+      <div className="stg-subsection-title">Test OCR</div>
+      <p className="stg-field-hint" style={{ marginBottom: 10 }}>
+        Upload a sample image or PDF to run it through the real OCR pipeline using the Supported Languages /
+        Primary Language selection above (including any unsaved changes) — no document is created.
+      </p>
+      <div className="stg-test-ocr-row">
+        <input
+          type="file"
+          accept="image/*,.pdf"
+          onChange={(e) => { setTestFile(e.target.files?.[0] ?? null); setTestResult(null); setTestError(''); }}
+        />
+        <Button variant="primary" size="sm" disabled={!testFile} loading={testing} onClick={runTest}>Run Test OCR</Button>
       </div>
-      <SaveBar permission={SETTINGS_PERMISSIONS.SETTINGS_EDIT} dirty={dirty} saving={saving} error={error} onSave={handleSave} onReset={reset} />
+      {testError && <p className="stg-form-error" style={{ marginTop: 10 }}>{testError}</p>}
+      {testResult && (
+        <div className="stg-test-ocr-result">
+          <div className="stg-lang-health-row">
+            <span className="text-muted text-sm">Confidence: <strong>{testResult.confidence}%</strong></span>
+            {testResult.language && (
+              <StatusBadge variant="info" dot>
+                {languageName(testResult.language.primary_language)} · {testResult.language.language_detection_confidence?.toFixed(0)}% · {testResult.language.language_detection_method}
+              </StatusBadge>
+            )}
+          </div>
+          {testResult.quality_flags?.length > 0 && (
+            <div className="stg-lang-health-row" style={{ marginTop: 6 }}>
+              {testResult.quality_flags.map((f) => (
+                <span key={f.code} title={f.message}><StatusBadge variant="warning">{f.code.replace(/_/g, ' ')}</StatusBadge></span>
+              ))}
+            </div>
+          )}
+          <pre className="docd-ocr-text" style={{ marginTop: 10, maxHeight: 200 }}>{testResult.full_text || '(no text recognized)'}</pre>
+        </div>
+      )}
     </div>
   );
 }

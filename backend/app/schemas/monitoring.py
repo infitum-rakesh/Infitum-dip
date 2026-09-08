@@ -153,6 +153,14 @@ class DataQualityOut(BaseModel):
 
 # ── Invoice Processing (INV21) ──
 
+class InvoiceAnomalyFindingOut(BaseModel):
+    invoice_id: int
+    invoice_number: str | None
+    downgraded_to_review: bool
+    created_at: datetime
+    findings: list[dict[str, Any]]
+
+
 class InvoiceProcessingOut(BaseModel):
     decided_total: int
     straight_through_count: int
@@ -170,6 +178,11 @@ class InvoiceProcessingOut(BaseModel):
     avg_decision_to_erp_submit_seconds: float | None
     avg_erp_submit_to_succeeded_seconds: float | None
     avg_succeeded_to_reconciled_seconds: float | None
+    anomaly_checks_run: int
+    anomaly_findings_total: int
+    anomaly_critical_count: int
+    anomaly_downgraded_count: int
+    recent_anomaly_findings: list[InvoiceAnomalyFindingOut]
     window_days: int
 
 

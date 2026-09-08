@@ -64,6 +64,7 @@ MODULE_CATALOG: dict[str, dict] = {
     "OBSERVABILITY":        {"label": "Observability",         "category": "GOVERNANCE"},
     "ANOMALY_DETECTION":    {"label": "Anomaly Detection",     "category": "QUALITY"},
     "INVOICE_INTELLIGENCE":{"label": "Invoice Intelligence",  "category": "DOCUMENT INTELLIGENCE"},
+    "PAYMENT_APPROVAL":     {"label": "Payment Approvals",      "category": "OPERATIONS"},
 }
 CATALOG_VERSION = "1.0.0"  # matches main.py's FastAPI(version=...) — one platform release, no per-module versioning exists
 
@@ -80,6 +81,10 @@ MODULE_DEPENDENCIES: dict[str, list[str]] = {
     # docstrings) — an org with no Document Intelligence has nothing for
     # it to process.
     "INVOICE_INTELLIGENCE": ["DOCUMENT_INTELLIGENCE"],
+    # The approval rule engine matches on invoice fields (amount/currency/
+    # vendor/...) — an org with no Invoice Intelligence has no invoices
+    # for an approval rule to ever evaluate against.
+    "PAYMENT_APPROVAL": ["INVOICE_INTELLIGENCE"],
 }
 
 

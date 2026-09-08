@@ -21,6 +21,22 @@ const STAT_TILES = [
   { key: 'unsupported', label: 'Unsupported' },
 ];
 
+// PAY17 — approval-outcome counters, populated only for document_type=
+// "INVOICE" schedules (schedule_service._classify_invoice_approval_
+// outcome(), spec §120's "job metrics show workflow creation counts").
+// Every OTHER document schedule also carries these keys at 0 (the
+// backend's stats dict always includes them), so this tile row is only
+// rendered when the caller tells us this run's schedule is actually
+// invoice-typed — a row of permanent zeros on a scanned-receipts
+// schedule would just be noise.
+const APPROVAL_STAT_TILES = [
+  { key: 'auto_approved', label: 'Auto-Approved', tone: 'success' },
+  { key: 'workflows_created', label: 'Workflows Created', tone: 'info' },
+  { key: 'already_in_workflow', label: 'Already In Workflow' },
+  { key: 'rule_conflicts', label: 'Rule Conflicts', tone: 'warning' },
+  { key: 'approver_not_found', label: 'Approver Not Found', tone: 'danger' },
+];
+
 /** DocumentRunProgress — the Scheduled Document Intelligence Workflow's
  * run-detail progress view (spec section 15/16): a progress bar, per-
  * outcome stat tiles, current file/stage while RUNNING, Cancel, and a
@@ -28,7 +44,7 @@ const STAT_TILES = [
  * parent (ScheduleHistoryModal) owns the ~3s poll that keeps `run` fresh
  * while RUNNING; this component just renders whatever it's given and
  * fetches its own (much less frequently changing) per-file table. */
-export function DocumentRunProgress({ scheduleId, run, onCancel, cancelling }) {
+export function DocumentRunProgress({ scheduleId, run, onCancel, cancelling, isInvoiceSchedule }) {
   const [rows, setRows] = useState([]);
   const [loadingRows, setLoadingRows] = useState(true);
 
@@ -93,6 +109,20 @@ export function DocumentRunProgress({ scheduleId, run, onCancel, cancelling }) {
           </div>
         ))}
       </div>
+
+      {isInvoiceSchedule && (
+        <>
+          <div className="card-title" style={{ marginTop: 16, marginBottom: 8 }}>Approval Outcomes</div>
+          <div className="sched-doc-stat-tiles">
+            {APPROVAL_STAT_TILES.map((t) => (
+              <div key={t.key} className={`sched-doc-stat-tile${t.tone ? ` sched-doc-stat-tile--${t.tone}` : ''}`}>
+                <div className="sched-doc-stat-value">{stats[t.key] ?? 0}</div>
+                <div className="sched-doc-stat-label">{t.label}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       <div className="card-title" style={{ marginTop: 16, marginBottom: 8 }}>Files</div>
       <DataTable columns={columns} data={rows} loading={loadingRows} />

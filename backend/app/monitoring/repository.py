@@ -350,6 +350,54 @@ async def invoice_processing_overview(db: AsyncSession, organization_id: int | N
     avg_erp_submit_to_succeeded_seconds = _avg_delta("ERP_SUBMITTED", "ERP_SUCCEEDED")
     avg_succeeded_to_reconciled_seconds = _avg_delta("ERP_SUCCEEDED", "RECONCILIATION_RUN")
 
+    # ── Anomaly findings — invoice_anomaly_service.evaluate_invoice_
+    # anomalies() (INV23) runs the real Anomaly Detection engine (same
+    # Z-SCORE detector the standalone module uses) but is fully ephemeral
+    # w.r.t. that module's own tables: it never writes an AnomalyJob/
+    # AnomalyExecution row (those are job/dataset-scoped, not per-record),
+    # so this ANOMALY_DETECTED audit event is the ONLY place any of this
+    # is visible anywhere in Monitoring. Read straight from what decide()
+    # already records — no new persistence added for this rollup.
+    anomaly_events_stmt = select(
+        ApInvoiceAuditEvent.invoice_id, ApInvoiceAuditEvent.details,
+        ApInvoiceAuditEvent.message, ApInvoiceAuditEvent.created_at,
+    ).where(
+        ApInvoiceAuditEvent.event_type == ApInvoiceAuditEventType.ANOMALY_DETECTED,
+        ApInvoiceAuditEvent.created_at >= since,
+    )
+    if organization_id is not None:
+        anomaly_events_stmt = anomaly_events_stmt.where(ApInvoiceAuditEvent.organization_id == organization_id)
+    anomaly_events_stmt = anomaly_events_stmt.order_by(ApInvoiceAuditEvent.created_at.desc())
+    anomaly_event_rows = (await db.execute(anomaly_events_stmt)).all()
+
+    anomaly_checks_run = len(anomaly_event_rows)
+    anomaly_findings_total = 0
+    anomaly_critical_count = 0
+    anomaly_downgraded_count = 0
+    recent_anomaly_findings: list[dict] = []
+
+    lookup_ids = {row[0] for row in anomaly_event_rows}
+    invoice_number_map: dict[int, str | None] = {}
+    if lookup_ids:
+        inv_rows = (await db.execute(select(ApInvoice.id, ApInvoice.invoice_number).where(ApInvoice.id.in_(lookup_ids)))).all()
+        invoice_number_map = {iid: num for iid, num in inv_rows}
+
+    for invoice_id, details, message, created_at in anomaly_event_rows:
+        findings = (details or {}).get("findings") or []
+        anomaly_findings_total += len(findings)
+        downgraded = "downgraded" in (message or "")
+        if downgraded:
+            anomaly_downgraded_count += 1
+        anomaly_critical_count += sum(1 for f in findings if f.get("severity") == "CRITICAL")
+        if findings and len(recent_anomaly_findings) < 20:
+            recent_anomaly_findings.append({
+                "invoice_id": invoice_id,
+                "invoice_number": invoice_number_map.get(invoice_id),
+                "downgraded_to_review": downgraded,
+                "created_at": created_at,
+                "findings": findings,
+            })
+
     return {
         "decided_total": decided_total,
         "straight_through_count": decision_counts["STRAIGHT_THROUGH"],
@@ -363,6 +411,11 @@ async def invoice_processing_overview(db: AsyncSession, organization_id: int | N
         "avg_decision_to_erp_submit_seconds": avg_decision_to_erp_submit_seconds,
         "avg_erp_submit_to_succeeded_seconds": avg_erp_submit_to_succeeded_seconds,
         "avg_succeeded_to_reconciled_seconds": avg_succeeded_to_reconciled_seconds,
+        "anomaly_checks_run": anomaly_checks_run,
+        "anomaly_findings_total": anomaly_findings_total,
+        "anomaly_critical_count": anomaly_critical_count,
+        "anomaly_downgraded_count": anomaly_downgraded_count,
+        "recent_anomaly_findings": recent_anomaly_findings,
     }
 
 

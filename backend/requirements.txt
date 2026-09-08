@@ -87,6 +87,16 @@ boto3==1.43.72              # AWS (S3, and Textract — connectors/ocr/aws_textr
 google-cloud-vision==3.10.2            # Google Cloud Vision (connectors/ocr/google_vision.py)
 azure-ai-documentintelligence==1.0.2   # Azure Document Intelligence / Form Recognizer (connectors/ocr/azure_document_intelligence.py)
 
+# Multilingual Document Processing — FastText language identification,
+# the secondary/optional layer of the hybrid language detector (see
+# ocr/language_detection/fasttext_detector.py's own docstring). The
+# package alone is not sufficient — it also needs a real pretrained
+# lid.176 model file (not pip-installable; download Facebook's public
+# lid.176.ftz and point the FASTTEXT_LID_MODEL_PATH env var at it).
+# Script-block detection (this feature's deterministic first layer)
+# works fully without this package or model present.
+fasttext-wheel==0.9.2
+
 # Single Sign-On — real SAML 2.0 (services/saml_service.py). Needs the
 # libxmlsec1 native library on the host (macOS: `brew install libxmlsec1`;
 # Debian/Ubuntu: `apt-get install libxmlsec1-dev`) for the `xmlsec` wheel's

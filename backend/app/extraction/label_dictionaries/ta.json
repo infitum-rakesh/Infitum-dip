@@ -1,0 +1,40 @@
+{
+  "_comment": "Tamil label dictionary for extraction/custom_engine.py. Same curated-starter-set disclosure as hi.json/kn.json — refine against real Tamil invoice samples in Phase 14 testing.",
+  "field_synonyms": {
+    "invoice_number": ["விலைப்பட்டியல் எண்", "இன்வாய்ஸ் எண்", "பில் எண்"],
+    "invoice_date": ["விலைப்பட்டியல் தேதி", "பில் தேதி"],
+    "due_date": ["செலுத்த வேண்டிய தேதி", "கடைசி தேதி"],
+    "po_number": ["கொள்முதல் ஆணை எண்", "பிஓ எண்"],
+    "order_number": ["ஆணை எண்", "ஆர்டர் எண்"],
+    "reference_number": ["குறிப்பு எண்"],
+    "vendor_name": ["விற்பனையாளர்", "சப்ளையர்", "வழங்குநர்"],
+    "vendor_tax_id": ["ஜிஎஸ்டி எண்", "ஜிஎஸ்டிஐஎன்", "வரி அடையாள எண்"],
+    "vendor_email": ["மின்னஞ்சல்"],
+    "vendor_phone": ["தொலைபேசி", "போன்"],
+    "bill_to_name": ["வாடிக்கையாளர்", "வாங்குபவர்", "பில் பெறுநர்"],
+    "ship_to_name": ["விநியோக முகவரி", "அனுப்பும் முகவரி"],
+    "currency": ["நாணயம்"],
+    "subtotal": ["துணை மொத்தம்"],
+    "subtotal_amount": ["துணை மொத்தம்"],
+    "discount_amount": ["தள்ளுபடி"],
+    "tax_rate": ["வரி விகிதம்", "ஜிஎஸ்டி விகிதம்"],
+    "tax_amount": ["வரி", "ஜிஎஸ்டி"],
+    "shipping_amount": ["அனுப்புகை கட்டணம்", "ஷிப்பிங்"],
+    "total_amount": ["மொத்த தொகை", "மொத்தம்"],
+    "amount_paid": ["செலுத்தப்பட்ட தொகை"],
+    "balance_due": ["நிலுவைத் தொகை", "செலுத்த வேண்டிய தொகை"],
+    "balance_amount": ["நிலுவைத் தொகை"],
+    "payment_terms": ["கட்டண விதிமுறைகள்"],
+    "payment_method": ["கட்டண முறை"],
+    "bank_name": ["வங்கியின் பெயர்"],
+    "bank_account_number": ["கணக்கு எண்"],
+    "notes": ["குறிப்புகள்"]
+  },
+  "table_column_synonyms": {
+    "description": ["விளக்கம்"],
+    "quantity": ["அளவு"],
+    "unit_price": ["அலகு விலை", "விகிதம்"],
+    "tax": ["வரி"],
+    "amount": ["தொகை"]
+  }
+}

@@ -52,6 +52,7 @@ CATEGORY_MODULE_MAP: dict[str, str | None] = {
     "Audit Logs": None,
     "Settings": None,
     "Invoice Intelligence": "INVOICE_INTELLIGENCE",
+    "Payment Approvals": "PAYMENT_APPROVAL",
 }
 
 # Every category offers the same generic 6-action set EXCEPT "SQL

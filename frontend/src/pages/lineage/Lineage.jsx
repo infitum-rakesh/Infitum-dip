@@ -32,8 +32,20 @@ export default function Lineage() {
   const [jobId, setJobId] = useState(searchParams.get('jobId') ? Number(searchParams.get('jobId')) : null);
   const [invoiceId, setInvoiceId] = useState(searchParams.get('invoiceId') ? Number(searchParams.get('invoiceId')) : null);
 
+  // Real bug fix: this used to only push the id into the URL's query
+  // string (setSearchParams) without ever updating the actual pipelineId/
+  // jobId/invoiceId state those tabs render from. useSearchParams() does
+  // NOT re-derive component state on its own — a tab's own "select an
+  // invoice/pipeline" dropdown called this and the URL bar updated, but
+  // the tab kept rendering its old (usually null) id forever. Only the
+  // one call site that happened to ALSO call the real setState directly
+  // (Overview's onOpenPipeline) ever worked. Now selectTab is the single
+  // place that keeps both the URL and the real state in sync.
   const selectTab = (id, extra = {}) => {
     setActiveTab(id);
+    if ('pipelineId' in extra) setPipelineId(extra.pipelineId ?? null);
+    if ('jobId' in extra) setJobId(extra.jobId ?? null);
+    if ('invoiceId' in extra) setInvoiceId(extra.invoiceId ?? null);
     const params = { tab: id, ...extra };
     Object.keys(params).forEach((k) => params[k] == null && delete params[k]);
     setSearchParams(params, { replace: true });

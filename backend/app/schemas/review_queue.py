@@ -39,6 +39,17 @@ class ReviewQueueCountOut(BaseModel):
     pending: int
 
 
+class ReviewItemLookupOut(BaseModel):
+    """Backs the Document Details page's "Review" button (real bug found
+    live, user-reported: that page showed 'Cancel Review' on a
+    NEEDS_REVIEW document but had no way to actually GET to the review
+    item — nothing pointed the reviewer at the Review Queue's own detail
+    page). None when the document has no open item — a real, honest
+    state (e.g. it was just cancelled/resolved in another tab), not an
+    error; the frontend falls back to the Review Queue list in that case."""
+    review_id: int | None
+
+
 class ReviewQueueFacetsOut(BaseModel):
     assignees: list[dict[str, Any]]  # [{id, full_name}]
 

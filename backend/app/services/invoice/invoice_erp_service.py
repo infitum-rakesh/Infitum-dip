@@ -178,6 +178,55 @@ async def post_invoice(db: AsyncSession, invoice: ApInvoice, *, erp_connection_i
         raise InvoiceErpError("This invoice has already been posted to the ERP successfully — post again only after a genuine correction.")
     if invoice.final_decision == ApInvoiceDecision.REJECT:
         raise InvoiceErpError("This invoice was rejected by validation (e.g. a blocked duplicate) — it cannot be posted to the ERP.")
+
+    # Real bug found live (user-reported architecture gap, PAY9's own
+    # gate broadening for low_confidence_review made this concretely
+    # reachable): this function never actually checked invoice.status
+    # itself — only final_decision==REJECT and an open/rejected Payment
+    # Approval workflow (below). A REVIEW_REQUIRED invoice with NO
+    # matching ApprovalRule (the common case for a small-amount invoice —
+    # see rule_engine_service's min_amount/max_amount gating) gets a
+    # terminal AUTO_APPROVED workflow from create_workflow() (PAY22) —
+    # "no rule needed to gate it" — which is NOT in the PENDING/
+    # IN_PROGRESS/REJECTED set the check below blocks on, so this route
+    # would happily accept the post even though invoice_decision_service
+    # deliberately left invoice.status at REVIEW_REQUIRED (see that
+    # module's own PAY9 comment) because low confidence alone never
+    # promotes an invoice to READY_TO_POST. Confirmed live: invoice #16
+    # (extractor_confidence 12.8%, no EXCEPTION-severity validation
+    # failure, no rule matched) posted to the Mock Oracle ERP connection
+    # with a 201 before this check existed. REVIEW_REQUIRED is the one
+    # status that always means "a human still needs to look at this
+    # invoice's data or its business validation" regardless of how it
+    # got there (a genuine rule FAIL, or just low extraction confidence)
+    # — every other status either already passed that bar (READY_TO_POST,
+    # POSTING, POSTED, RECONCILED) or is a legitimate retry-after-failure
+    # state (EXCEPTION) this route must keep allowing.
+    if invoice.status == ApInvoiceStatus.REVIEW_REQUIRED:
+        raise InvoiceErpError("This invoice still needs human review (see its Review Queue item, or its Payment Approval workflow if one exists) — it cannot be posted to the ERP until that review clears it.")
+
+    # PAY9 — the approval-gate this module's own docstring never claimed
+    # to close (INV9 predates the Payment Approval feature entirely): a
+    # STRAIGHT_THROUGH invoice that a Payment Approval rule claimed for a
+    # real workflow (invoice_decision_service.decide(), status APPROVING)
+    # must not reach the ERP until that workflow's own human sign-off
+    # says so. Queries the latest ApprovalWorkflow row for this invoice
+    # directly rather than trusting invoice.status alone — status is kept
+    # in sync by approval_workflow_engine_service's own APPROVED/REJECTED
+    # transitions, but this is the one place an actual ERP call is about
+    # to fire, so it re-checks the source of truth rather than a mirror
+    # of it. No workflow at all (the common case — no matching rule, or
+    # PAYMENT_APPROVAL isn't licensed for this org) changes nothing.
+    from app.models.approval.workflow import ApprovalWorkflow, ApprovalWorkflowStatus
+    latest_approval = (await db.execute(
+        select(ApprovalWorkflow).where(ApprovalWorkflow.invoice_id == invoice.id).order_by(ApprovalWorkflow.id.desc()).limit(1)
+    )).scalar_one_or_none()
+    if latest_approval is not None:
+        if latest_approval.status in (ApprovalWorkflowStatus.PENDING, ApprovalWorkflowStatus.IN_PROGRESS):
+            raise InvoiceErpError("This invoice is awaiting Payment Approval sign-off — it cannot be posted to the ERP until that workflow completes.")
+        if latest_approval.status == ApprovalWorkflowStatus.REJECTED:
+            raise InvoiceErpError("This invoice's Payment Approval workflow was rejected — it cannot be posted to the ERP.")
+
     if invoice.erp_status in (ApInvoiceErpStatus.PENDING, ApInvoiceErpStatus.RETRYING):
         # INV18 hardening — found live while adding the Idempotency-Key
         # preview: without this guard, two near-simultaneous POST .../erp/post

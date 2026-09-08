@@ -125,13 +125,22 @@
 
 .rqd-ocr-panel { border-top: 1px solid var(--border); padding: 14px 16px; }
 
+/* Multilingual Document Processing, Phase 9 — detected-language + OCR
+   quality-flag display inside the OCR panel. */
+.rqd-lang-info { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 4px; }
+.rqd-lang-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.rqd-lang-pages { display: flex; flex-wrap: wrap; gap: 4px; }
+
 /* ── Field review pane ─────────────────────────────────────── */
 .rqd-field-pane { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 16px; max-height: 900px; overflow-y: auto; }
 
 .rqd-primary-card { background: var(--color-primary-light); border: 1px solid var(--color-primary-mid); border-radius: var(--radius-lg); padding: 14px; }
 .rqd-primary-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .rqd-primary-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.rqd-primary-value { font-size: var(--fs-md); font-weight: 700; color: var(--text-primary); margin-top: 3px; font-family: var(--font-mono); }
+/* font-sans, not font-mono — extracted field values may be in any of the
+   13 supported languages/scripts (Multilingual Document Processing, Phase
+   10); see documents.css's .docd-ocr-text comment for why. */
+.rqd-primary-value { font-size: var(--fs-md); font-weight: 700; color: var(--text-primary); margin-top: 3px; font-family: var(--font-sans); }
 
 .rqd-field-list { display: flex; flex-direction: column; gap: 8px; }
 .rqd-field-row { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 10px 12px; cursor: pointer; transition: var(--transition); }
@@ -141,7 +150,7 @@
 .rqd-field-name { font-weight: 600; font-size: var(--fs-sm); color: var(--text-primary); }
 .rqd-field-row-meta { display: flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--text-muted); margin-bottom: 8px; flex-wrap: wrap; }
 .rqd-field-row-value { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.rqd-field-ai-value { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-secondary); flex-shrink: 0; min-width: 90px; }
+.rqd-field-ai-value { font-family: var(--font-sans); font-size: var(--fs-sm); color: var(--text-secondary); flex-shrink: 0; min-width: 90px; }
 .rqd-field-input { flex: 1; min-width: 120px; }
 
 .rqd-audit { margin-top: 8px; }

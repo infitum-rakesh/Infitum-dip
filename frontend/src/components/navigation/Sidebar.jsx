@@ -6,6 +6,7 @@ import {
   AlertTriangle, PlayCircle, Clock, Users, Shield, Building2, Key,
   ScrollText, Settings, ChevronRight, LogOut, BarChart3, ArrowLeftRight,
   CreditCard, Puzzle, Gauge, UserCog, Monitor, DollarSign, Receipt, Zap, Lock,
+  BadgeCheck, History,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth.js';
 import { usePermission } from '@/hooks/usePermission.js';
@@ -46,6 +47,17 @@ const NAV = [
     items: [
       { to: '/app/invoice-intel', label: 'Invoice Inbox', icon: Receipt },
       { to: '/app/invoice-intel/settings', label: 'Rules & Analytics', icon: Settings },
+    ],
+  },
+  {
+    // PAY10 — My Approvals is the landing page. PAY11 adds Approval
+    // Rules configuration. PAY12 adds org-wide Workflows visibility.
+    section: 'PAYMENT APPROVALS',
+    module: MODULES.PAYMENT_APPROVAL,
+    items: [
+      { to: '/app/payment-approvals', label: 'My Approvals', icon: BadgeCheck },
+      { to: '/app/payment-approvals/workflows', label: 'Workflows', icon: History },
+      { to: '/app/payment-approvals/rules', label: 'Approval Rules', icon: Settings },
     ],
   },
   {

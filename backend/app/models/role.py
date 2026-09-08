@@ -53,7 +53,7 @@ PERMISSION_CATEGORIES = [
     "Dashboard", "Data Catalog", "Connections", "Documents", "Document Intelligence",
     "Review Queue", "Transformation", "Validation", "Reconciliation", "Anomaly Detection", "Pipeline",
     "SQL Workspace", "Schedules", "Incidents", "Monitoring", "Lineage", "Users",
-    "Roles", "Licenses", "Audit Logs", "Settings", "Invoice Intelligence",
+    "Roles", "Licenses", "Audit Logs", "Settings", "Invoice Intelligence", "Payment Approvals",
 ]
 
 

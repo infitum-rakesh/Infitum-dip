@@ -13,6 +13,7 @@ import {
 import { Button, StatusBadge, DataTable, EmptyState, Modal, PermissionGate, FullPageSpinner } from '@/components/common/index.js';
 import { REVIEW_QUEUE_PERMISSIONS } from '@/utils/constants.js';
 import { formatDateTime } from '@/utils/formatters.js';
+import { languageName } from '@/utils/languageNames.js';
 import { reviewQueueApi } from '@/services/api/reviewQueueApi.js';
 import { documentApi } from '@/services/api/documentApi.js';
 import { RunExtractionControl } from '../documents/RunExtractionControl.jsx';
@@ -284,7 +285,46 @@ function DocumentPane({ documentId, previewAvailable, selectedField }) {
       {showOcr && (
         <div className="rqd-ocr-panel">
           <div className="card-title">OCR Text {ocr?.confidence != null && <span className="text-muted text-sm">({ocr.confidence}% confidence)</span>}</div>
+          <LanguageInfo language={ocr?.language} qualityFlags={ocr?.quality_flags} />
           <pre className="docd-ocr-text">{ocr?.full_text ?? 'Loading OCR text…'}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Multilingual Document Processing, Phase 9 — real detected-language +
+// OCR-quality display, straight from doc.ocr_result (Phases 4/6 already
+// populate "language"/"quality_flags" there; GET /documents/{id}/ocr
+// already returns them verbatim, so this is pure display, no new API).
+function LanguageInfo({ language, qualityFlags }) {
+  if (!language && !(qualityFlags && qualityFlags.length)) return null;
+  return (
+    <div className="rqd-lang-info">
+      {language && (
+        <div className="rqd-lang-row">
+          <StatusBadge variant="info" dot>{languageName(language.primary_language)}</StatusBadge>
+          {language.language_detection_confidence != null && (
+            <span className="text-muted text-sm">{language.language_detection_confidence.toFixed(0)}% confidence · {language.language_detection_method}</span>
+          )}
+          {language.is_multilingual && (
+            <span className="rqd-lang-pages">
+              {(language.pages || []).map((p) => (
+                <StatusBadge key={p.page_number} variant="gray" size="sm">
+                  p{p.page_number}: {p.languages.map((c) => `${languageName(c.language)} ${c.confidence.toFixed(0)}%`).join(' + ')}
+                </StatusBadge>
+              ))}
+            </span>
+          )}
+        </div>
+      )}
+      {qualityFlags && qualityFlags.length > 0 && (
+        <div className="rqd-lang-row">
+          {qualityFlags.map((f) => (
+            <span key={f.code} title={f.message}>
+              <StatusBadge variant="warning">{f.code.replace(/_/g, ' ')}</StatusBadge>
+            </span>
+          ))}
         </div>
       )}
     </div>

@@ -27,8 +27,12 @@ from PIL import Image
 import pytesseract
 
 from app.models.document import DocumentType
+from app.ocr.language_errors import LanguageErrorCode, LanguageProcessingError
 
 RENDER_DPI = 220  # good balance of OCR accuracy vs. memory/time for A4-ish pages
+
+DEFAULT_LANG = "eng"  # pre-Multilingual-Phase-4 behavior — every existing caller that
+# doesn't pass lang= gets byte-identical output to before this parameter existed.
 
 
 class OcrEngineError(Exception):
@@ -53,6 +57,44 @@ def _check_tesseract_available() -> None:
             "The tesseract OCR binary is not available on this server "
             "(install it, e.g. `brew install tesseract` on macOS, and ensure it's on PATH)."
         ) from exc
+
+
+def get_installed_languages() -> set[str]:
+    """Real Tesseract language packs actually installed on this server
+    (reads the tessdata directory via `tesseract --list-langs` under the
+    hood — pytesseract.get_languages()). Not cached: this is one cheap
+    subprocess call, and a server could have a language pack installed
+    or removed between calls (e.g. an admin running `brew install
+    tesseract-lang` without restarting) — caching a stale "missing"
+    result would be exactly the kind of silent wrong-state this feature
+    is required to avoid."""
+    try:
+        return set(pytesseract.get_languages(config=""))
+    except Exception as exc:  # pragma: no cover - environment issue, not a code bug
+        raise OcrEngineError(f"Could not list installed Tesseract language packs: {exc}") from exc
+
+
+def verify_language_available(lang: str) -> None:
+    """Real Tesseract language-model-availability verification (Multilingual
+    Document Processing, Phase 4/5) — `lang` is a Tesseract lang string like
+    "kan+eng"; each '+'-joined code must have a real .traineddata file
+    installed. Per the user's explicit requirement: a missing model raises
+    a real LanguageProcessingError(OCR_LANGUAGE_MODEL_MISSING) — this
+    function NEVER silently drops the missing code and falls back to
+    whatever else is installed."""
+    requested = [code for code in lang.split("+") if code]
+    installed = get_installed_languages()
+    missing = [code for code in requested if code not in installed]
+    if missing:
+        raise LanguageProcessingError(
+            LanguageErrorCode.OCR_LANGUAGE_MODEL_MISSING,
+            f"Tesseract language model(s) not installed on this server: {', '.join(missing)} "
+            f"(requested OCR lang=\"{lang}\"). Install the missing traineddata file(s) — e.g. "
+            f"`brew install tesseract-lang` on macOS installs all packs, or download the specific "
+            f".traineddata file(s) from https://github.com/tesseract-ocr/tessdata_fast into your "
+            f"TESSDATA_PREFIX directory — then retry.",
+            requested=requested, missing=missing, installed=sorted(installed),
+        )
 
 
 def _load_page_images(file_bytes: bytes, doc_type: DocumentType) -> list[_PageImage]:
@@ -91,11 +133,17 @@ def _load_page_images(file_bytes: bytes, doc_type: DocumentType) -> list[_PageIm
     )
 
 
-def _extract_page(page: _PageImage) -> dict:
+def _extract_page(page: _PageImage, lang: str = DEFAULT_LANG) -> dict:
     """Runs Tesseract on one page image. Returns word-level data grouped
     into lines (block_num/par_num/line_num), since one region per single
-    word would be too noisy for a bounding-box UI overlay."""
-    data = pytesseract.image_to_data(page.image, output_type=pytesseract.Output.DICT)
+    word would be too noisy for a bounding-box UI overlay.
+
+    `lang` is a real Tesseract lang string (e.g. "eng", "kan+eng") —
+    Multilingual Document Processing, Phase 4/5. Callers must have already
+    verified every code in it is installed (verify_language_available());
+    this function does not re-check, so it stays a pure, cheap Tesseract
+    call usable from a tight per-page loop."""
+    data = pytesseract.image_to_data(page.image, lang=lang, output_type=pytesseract.Output.DICT)
     n = len(data["text"])
 
     lines: dict[tuple, dict] = {}
@@ -157,28 +205,29 @@ def render_pages_as_png(file_bytes: bytes, doc_type: DocumentType) -> list[tuple
     return out
 
 
-def run_ocr(file_bytes: bytes, doc_type: DocumentType) -> dict:
-    """
-    Real, synchronous OCR — call via asyncio.to_thread() from async code
-    (Tesseract is a blocking subprocess call under the hood).
+def load_pages(file_bytes: bytes, doc_type: DocumentType) -> list[_PageImage]:
+    """Public wrapper around _load_page_images() — lets a multi-pass caller
+    (app/ocr/multilingual_ocr_service.py's real "detect, then re-OCR the
+    pages that need a different language model" flow) rasterize a PDF /
+    open an image exactly once and run Tesseract against the same
+    in-memory pages more than once, instead of re-rendering the whole
+    file per pass."""
+    return _load_page_images(file_bytes, doc_type)
 
-    Returns: {
-      "full_text": str, "confidence": float | None,
-      "regions": [{"page", "text", "bbox": [x,y,w,h], "confidence"}],
-      "pages": [{"page", "width", "height"}],
-      "page_count": int,
-    }
-    Raises OcrEngineError / OcrNotApplicableError on failure.
-    """
-    _check_tesseract_available()
-    pages = _load_page_images(file_bytes, doc_type)
 
+def extract_pages(pages: list[_PageImage], lang: str = DEFAULT_LANG) -> dict:
+    """Runs Tesseract (with the given lang string) over already-loaded
+    pages and aggregates the result into the same shape run_ocr() returns.
+    Does NOT verify the language model is installed — callers doing
+    multi-pass/per-page language selection call verify_language_available()
+    themselves once per distinct lang string they use, rather than paying
+    for the check again on every page."""
     all_regions = []
     all_texts = []
     all_confs = []
     page_dims = []
     for page in pages:
-        result = _extract_page(page)
+        result = _extract_page(page, lang=lang)
         all_regions.extend(result["regions"])
         if result["full_text"]:
             all_texts.append(result["full_text"])
@@ -193,3 +242,40 @@ def run_ocr(file_bytes: bytes, doc_type: DocumentType) -> dict:
         "pages": page_dims,
         "page_count": len(pages),
     }
+
+
+def extract_one_page(page: _PageImage, lang: str = DEFAULT_LANG) -> dict:
+    """Re-runs Tesseract on a single already-loaded page with a different
+    lang string — the real per-page "re-OCR with the detected language"
+    step (Multilingual Document Processing, Phase 4/5). Returns the same
+    per-page shape _extract_page() does: {"regions", "full_text", "width",
+    "height"}."""
+    return _extract_page(page, lang=lang)
+
+
+def run_ocr(file_bytes: bytes, doc_type: DocumentType, lang: str = DEFAULT_LANG) -> dict:
+    """
+    Real, synchronous OCR — call via asyncio.to_thread() from async code
+    (Tesseract is a blocking subprocess call under the hood).
+
+    `lang` is a real Tesseract lang string (default "eng" — pre-Multilingual
+    -Phase-4 behavior, unchanged for every caller that doesn't pass one).
+    Multi-language/multi-page selection lives in
+    app/ocr/multilingual_ocr_service.py, which calls load_pages() +
+    extract_pages()/extract_one_page() directly instead of this
+    single-pass entry point — this function stays the simple "OCR this
+    whole file in one language" building block it always was.
+
+    Returns: {
+      "full_text": str, "confidence": float | None,
+      "regions": [{"page", "text", "bbox": [x,y,w,h], "confidence"}],
+      "pages": [{"page", "width", "height"}],
+      "page_count": int,
+    }
+    Raises OcrEngineError / OcrNotApplicableError / LanguageProcessingError
+    (OCR_LANGUAGE_MODEL_MISSING) on failure.
+    """
+    _check_tesseract_available()
+    verify_language_available(lang)
+    pages = _load_page_images(file_bytes, doc_type)
+    return extract_pages(pages, lang=lang)

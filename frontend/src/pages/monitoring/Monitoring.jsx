@@ -201,6 +201,41 @@ function InvoiceProcessingTab() {
           </tbody>
         </table>
       </div>
+
+      <div className="mon-card">
+        <div className="mon-card-title">Anomaly Findings</div>
+        <p className="mon-muted" style={{ margin: '0 0 10px' }}>
+          Real-time statistical check (same Z-SCORE detector the standalone Anomaly Detection module uses) run
+          against this org's own invoice history, right before an otherwise-STRAIGHT_THROUGH invoice would auto-post.
+          It never creates an Anomaly Job/Execution row on that module's own screen — a per-invoice check has no
+          dataset to attach a job to — so this table is the only place its findings surface.
+        </p>
+        <div className="mon-kpi-grid" style={{ marginBottom: 12 }}>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Checks Run (7d)</span><span className="mon-kpi-value">{data.anomaly_checks_run}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Findings</span><span className="mon-kpi-value">{data.anomaly_findings_total}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Critical</span><span className={`mon-kpi-value ${data.anomaly_critical_count ? 'danger' : ''}`}>{data.anomaly_critical_count}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Downgraded to Review</span><span className={`mon-kpi-value ${data.anomaly_downgraded_count ? 'warning' : ''}`}>{data.anomaly_downgraded_count}</span></div>
+        </div>
+        {data.recent_anomaly_findings.length === 0 ? (
+          <p className="mon-muted" style={{ margin: 0 }}>No anomaly findings in the last 7 days.</p>
+        ) : (
+          <table className="data-table" style={{ width: '100%' }}>
+            <thead><tr><th>Invoice</th><th>Check</th><th>Severity</th><th>Message</th><th>Outcome</th><th>When</th></tr></thead>
+            <tbody>
+              {data.recent_anomaly_findings.flatMap((event) => event.findings.map((f, idx) => (
+                <tr key={`${event.invoice_id}-${idx}`}>
+                  {idx === 0 && <td rowSpan={event.findings.length}>{event.invoice_number ?? `#${event.invoice_id}`}</td>}
+                  <td>{f.check}</td>
+                  <td><StatusBadge variant={f.severity === 'CRITICAL' ? 'danger' : f.severity === 'HIGH' ? 'warning' : 'gray'}>{f.severity}</StatusBadge></td>
+                  <td style={{ maxWidth: 360 }}>{f.message}</td>
+                  {idx === 0 && <td rowSpan={event.findings.length}>{event.downgraded_to_review ? <StatusBadge variant="warning">Downgraded to Review</StatusBadge> : <span className="mon-muted">Logged only</span>}</td>}
+                  {idx === 0 && <td rowSpan={event.findings.length}>{fmtDate(event.created_at)}</td>}
+                </tr>
+              )))}
+            </tbody>
+          </table>
+        )}
+      </div>
     </div>
   );
 }

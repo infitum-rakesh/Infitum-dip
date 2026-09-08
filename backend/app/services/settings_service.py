@@ -67,6 +67,20 @@ def _effective_values(row: OrganizationSettings) -> dict:
     return _deep_merge(DEFAULT_SETTINGS, row.values or {})
 
 
+def effective_document_intelligence_settings(row: OrganizationSettings | None) -> dict:
+    """Public accessor for document_service.py's real OCR pipeline
+    (Multilingual Document Processing, Phase 4) — same deep-merge
+    guarantee _effective_values() gives every other reader, so an org
+    whose settings row predates supported_languages/primary_language
+    still gets the real DEFAULT_SETTINGS values for them rather than a
+    KeyError or a silently-empty dict. Returns DEFAULT_SETTINGS's
+    document_intelligence block verbatim when there's no row at all
+    (org_id is None — e.g. a structured/non-tenant source)."""
+    if row is None:
+        return copy.deepcopy(DEFAULT_SETTINGS["document_intelligence"])
+    return _effective_values(row)["document_intelligence"]
+
+
 async def to_out(db: AsyncSession, org: Organization, row: OrganizationSettings) -> dict:
     values = _effective_values(row)
     updated_by_name = None

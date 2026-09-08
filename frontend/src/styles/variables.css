@@ -55,7 +55,15 @@
   --color-info-dark:    #1D4ED8;
 
   /* ── Typography ─────────────────────────────────────────── */
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  /* Multilingual Document Processing, Phase 10 — Noto Sans fallbacks
+     appended after Inter for the 13 languages in ocr/language_config.py's
+     LANGUAGE_CONFIG. Inter has no Indic/Arabic glyphs, so without these the
+     browser falls back to whatever font happens to be installed on the
+     viewer's OS (inconsistent, sometimes missing entirely); listing them
+     here guarantees correct, consistent rendering everywhere --font-sans is
+     used (tables, badges, inputs) — CSS font-family fallback is per
+     character, so Latin/ASCII text still renders in Inter unaffected. */
+  --font-sans: 'Inter', 'Noto Sans Devanagari', 'Noto Sans Kannada', 'Noto Sans Tamil', 'Noto Sans Telugu', 'Noto Sans Malayalam', 'Noto Sans Bengali', 'Noto Sans Gujarati', 'Noto Sans Gurmukhi', 'Noto Sans Oriya', 'Noto Nastaliq Urdu', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono', Consolas, 'Courier New', monospace;
 
   --fs-xs:  11px;

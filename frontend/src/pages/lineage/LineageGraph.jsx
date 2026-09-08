@@ -33,12 +33,31 @@ function layoutGraph(nodes, edges) {
   const layer = new Map();
   const queue = nodes.filter((n) => (inDegree.get(n.id) || 0) === 0 && n.type !== 'PIPELINE').map((n) => n.id);
   queue.forEach((id) => layer.set(id, 0));
+  // Real bug fix: this is a Bellman-Ford-style longest-path relaxation,
+  // which only terminates on a DAG. A pipeline whose source and target
+  // read/write the SAME connection — an ordinary, common shape, not a
+  // contrived edge case — puts a real cycle in the FLOW/CONTAINS/
+  // TRANSFORMATION edges (e.g. connection -> source table -> source
+  // dataset -> transform -> target dataset -> target table -> back to
+  // the same connection). Without a bound, that cycle relaxes the same
+  // nodes' layer forever, pushing onto `queue` until it exceeds JS's
+  // max array length and crashes the whole app (RangeError: Invalid
+  // array length). Cap each node's re-queue count at nodes.length + 1 —
+  // the same bound Bellman-Ford uses to detect it has hit a cycle — so
+  // a cyclic graph just stops refining that node's layer (keeps
+  // whatever it last settled on) instead of looping forever. A real
+  // DAG never gets close to this bound, so normal graphs are unaffected.
+  const relaxCount = new Map();
+  const maxRelax = nodes.length + 1;
   let qi = 0;
   while (qi < queue.length) {
     const id = queue[qi++];
     const d = layer.get(id);
     for (const next of outAdj.get(id) || []) {
       if (!layer.has(next) || layer.get(next) < d + 1) {
+        const seen = (relaxCount.get(next) || 0) + 1;
+        if (seen > maxRelax) continue;
+        relaxCount.set(next, seen);
         layer.set(next, d + 1);
         queue.push(next);
       }

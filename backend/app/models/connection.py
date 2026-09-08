@@ -57,6 +57,12 @@ class ConnectionType(str, enum.Enum):
     FTP = "FTP"
     LOCAL_FILE = "LOCAL_FILE"
     NETWORK_FILE = "NETWORK_FILE"
+    # Email inbox intake (PAY19) — real IMAP client (stdlib imaplib/email,
+    # no new dependency). Implements the same FileConnectorBase contract
+    # as SFTP/FTP/NETWORK_FILE: each matching attachment across the
+    # mailbox's messages is one "file" (list_files/open_read_stream/
+    # move_file/file_checksum) — see connectors/email/imap_client.py.
+    EMAIL_IMAP = "EMAIL_IMAP"
     # API
     REST = "REST"
     SOAP = "SOAP"

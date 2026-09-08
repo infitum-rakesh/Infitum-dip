@@ -36,6 +36,16 @@ class ApInvoiceStatus(str, enum.Enum):
     NORMALIZED = "NORMALIZED"
     VALIDATING = "VALIDATING"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    # PAY9 — a STRAIGHT_THROUGH invoice that a Payment Approval rule
+    # (services/approval/) claimed for a real human approval/peer-review
+    # workflow. Distinct from REVIEW_REQUIRED: that state means the
+    # EXTRACTED DATA needs a human look (Review Queue); APPROVING means
+    # the data is fine but the BUSINESS decision to pay still needs
+    # sign-off. Column is VARCHAR(15) (sized off this enum's original
+    # longest member, REVIEW_REQUIRED) — kept to 9 chars so no migration
+    # is needed here or on a BYO-Database Postgres/MySQL tenant where
+    # column width is actually enforced.
+    APPROVING = "APPROVING"
     READY_TO_POST = "READY_TO_POST"
     POSTING = "POSTING"
     POSTED = "POSTED"

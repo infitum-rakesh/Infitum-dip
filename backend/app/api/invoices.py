@@ -8,6 +8,7 @@ layer (app.services.invoice.*). Nothing here re-implements OCR,
 extraction, or Review Queue.
 """
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_action
@@ -210,11 +211,21 @@ async def upload_invoice(
     pipeline pinned to the INVOICE taxonomy from the first run (see
     document_service.start_processing()'s document_type param, INV8).
     Materialization into an ApInvoice happens at the end of that pipeline
-    (INV5/INV7 wiring) — poll GET /by-document/{document_id} until it 200s."""
+    (INV5/INV7 wiring) — poll GET /by-document/{document_id} until it 200s.
+
+    save_upload()'s own db.commit() can genuinely collide with another
+    document's background pipeline holding SQLite's single-writer lock
+    (found live — see document_service.friendly_db_error's docstring);
+    left uncaught this surfaces as a bare 500 with no `detail`, which the
+    frontend can only render as "An unexpected error occurred." Catch it
+    here and give the same honest, retryable message process_document()
+    itself already gives when the identical collision hits ITS commit."""
     try:
         doc, duplicate_of_id = await doc_svc.save_upload(db, file=file, organization_id=user.organization_id, uploaded_by_id=user.id)
     except DocumentValidationError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    except OperationalError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, doc_svc.friendly_db_error(exc))
     doc = await doc_svc.start_processing(db, doc, reprocess=False, document_type="INVOICE")
     return ApInvoiceUploadOut(document_id=doc.id, filename=doc.filename, status=doc.status.value, duplicate_of_id=duplicate_of_id)
 

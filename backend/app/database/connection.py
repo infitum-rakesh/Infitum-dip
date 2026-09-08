@@ -1,3 +1,5 @@
+import json
+
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
@@ -6,10 +8,31 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
+# Multilingual Document Processing — real bug found live during repository
+# analysis (Phase 1/2 of the multilingual build): SQLAlchemy's JSON column
+# type falls back to plain json.dumps() when no json_serializer is given
+# to create_async_engine(), and json.dumps()'s own default is
+# ensure_ascii=True — so every JSON-typed column in this app (Document.
+# ocr_result/extraction_result/timeline/ai_raw_response, ApInvoice.
+# decision_reasons/ai_raw_response, ApInvoiceLine.evidence, etc.) was
+# writing Kannada/Tamil/Hindi (or any non-ASCII) text as \uXXXX escape
+# sequences instead of real UTF-8 glyphs. This never corrupted data (it
+# round-trips correctly through json.loads()/the ORM), but it broke any
+# raw-SQL/LIKE/full-text read of those columns, and would have shown
+# escape sequences instead of glyphs anywhere a JSON column's raw text
+# got displayed without being re-parsed first. SQLite itself is UTF-8
+# native (confirmed live via `PRAGMA encoding` + a real Kannada round-
+# trip through the sqlite3 CLI) — this was purely an unconfigured
+# application-layer default, not a database limitation.
+def json_serializer(obj) -> str:
+    return json.dumps(obj, ensure_ascii=False)
+
+
 engine = create_async_engine(
     settings.database_url,
     echo=settings.app_debug,
     future=True,
+    json_serializer=json_serializer,
 )
 
 # WAL mode lets readers and a writer proceed concurrently instead of

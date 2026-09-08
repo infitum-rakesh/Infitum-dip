@@ -6,7 +6,11 @@ Owns exactly the two document-schedule-specific concerns:
      (connectors/files/base.py's FileConnectorBase: list_files/
      open_read_stream/move_file/file_checksum) uniformly across every
      storage type already built here (LOCAL_FILE/SFTP/FTP/NETWORK_FILE/
-     AZURE/AWS). No new connector code.
+     AZURE/AWS/EMAIL_IMAP). No new connector code for FILE-kind. Two
+     further source kinds (PAY18 DATABASE, PAY20 API) reuse a different
+     existing connector capability each (preview_sql()/fetch_api()) the
+     same way — see discover_database_records()/discover_api_records()
+     below.
   2. Idempotency — the durable DocumentSourceRegistry ledger (spec
      section 7/8): never reprocess a file whose (connection, path,
      filename, content_hash) identity is already PROCESSED.
@@ -18,13 +22,15 @@ document_service.save_from_source() + start_processing()/process_document(),
 the exact same pipeline manual scan and bulk upload already use.
 """
 import asyncio
+import hashlib
+import json
 from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.connectors.base import ConnectorError, FileInfo
+from app.connectors.base import ConnectorError, ConnectorValidationError, FileInfo
 from app.models.connection import Connection
 from app.models.document_schedule import ALLOWED_TRANSITIONS, DocumentScheduleConfig, DocumentSourceRegistry, DocumentSourceStatus
 from app.services.connection_service import build_connector
@@ -66,6 +72,211 @@ async def discover_files(connection: Connection, config: DocumentScheduleConfig)
         return await asyncio.to_thread(connector.list_files, pattern=config.file_pattern, recursive=config.recursive_scan)
     except ConnectorError:
         raise  # let the caller attribute this to SOURCE_CONNECTION_FAILED / SOURCE_PATH_NOT_FOUND
+
+
+# ── DATABASE intake (PAY18 — non-file invoice intake sources) ─────────
+# Discovery for a DocumentScheduleConfig.source_kind == "DATABASE"
+# schedule: no filesystem/connector "list files" concept applies, so this
+# runs config.source_query through the connection's own preview_sql()
+# (the same real, dialect-agnostic SQLAlchemy execution SQL Workspace's
+# preview surface already uses — read-only, SELECT/WITH only, enforced by
+# preview_sql() itself) and hands back one dict per row. Bounded by
+# batch_size the same way a file schedule's discover_files() result is
+# sliced by the caller — this function itself returns everything the
+# query matches up to that cap, never silently truncating below it.
+
+async def discover_database_records(connection: Connection, config: DocumentScheduleConfig) -> list[dict]:
+    """Real query execution via the connection's own connector — never a
+    fake/simulated row set. preview_sql() itself rejects anything but a
+    SELECT/WITH statement (ConnectorValidationError, a ConnectorError
+    subclass — the caller's existing `except ConnectorError` handling
+    already covers it) and runs off the event loop the same way every
+    other blocking-driver connector call in this codebase does."""
+    if not (config.source_query or "").strip():
+        raise ConnectorValidationError("This schedule has no source query configured.")
+    connector = build_connector(connection)
+    limit = max(1, config.batch_size)
+
+    def _run() -> list[dict]:
+        result = connector.preview_sql(config.source_query, {}, limit)
+        return [dict(zip(result.columns, row)) for row in result.rows]
+
+    return await asyncio.to_thread(_run)
+
+
+# ── API intake (PAY20 — the remaining non-file invoice intake source) ─
+# Discovery for a DocumentScheduleConfig.source_kind == "API" schedule:
+# no filesystem/connector "list files" concept applies here either (same
+# as DATABASE above), so this runs the schedule's source_api_* fields
+# through the connection's own fetch_api() — the same real, paginated
+# HTTP fetch (offset/page/cursor/token styles, auth, retry) the SQL
+# Workspace/Source Dataset "preview-api" surface already uses — and hands
+# back one dict per decoded record. Bounded by batch_size the same way
+# discover_database_records()/a file schedule's discover_files() result
+# is sliced by the caller.
+
+async def discover_api_records(connection: Connection, config: DocumentScheduleConfig) -> list[dict]:
+    """Real HTTP fetch via the connection's own connector — never a fake/
+    simulated response. fetch_api() itself owns pagination/auth/retry;
+    this function's only job is reshaping its PreviewResult (columns +
+    rows) into the same list[dict] shape discover_database_records()
+    already returns, so every downstream function (record_content_hash,
+    record_identity, build_fields_from_record) is source-kind-agnostic."""
+    if not (config.source_api_endpoint or "").strip():
+        raise ConnectorValidationError("This schedule has no source API endpoint configured.")
+    connector = build_connector(connection)
+    limit = max(1, config.batch_size)
+
+    def _run() -> list[dict]:
+        result = connector.fetch_api(
+            endpoint=config.source_api_endpoint, method=config.source_api_method or "GET",
+            query_params=config.source_api_query_params or None,
+            json_path=config.source_api_json_path or None,
+            pagination=config.source_api_pagination or None,
+            limit=limit,
+        )
+        return [dict(zip(result.columns, row)) for row in result.rows]
+
+    return await asyncio.to_thread(_run)
+
+
+# ── ERP intake (PAY21 — the remaining non-file invoice intake source) ─
+# Discovery for a DocumentScheduleConfig.source_kind == "ERP" schedule:
+# reuses connectors/application/oracle_erp.py's list_invoices() (real GET
+# against Oracle Fusion ERP Cloud's documented Invoices collection
+# resource, with `expand=invoiceLines` so line items come back in the
+# same call) rather than the generic fetch_api() DATABASE/API-kind use,
+# since the Oracle ERP connector is its own connector class with its own
+# auth/pagination handling, not a RestApiConnector. Unlike DATABASE/API-
+# kind, the source's field NAMES aren't something the org gets to choose
+# (a SQL alias or a JSON API's own response shape) — Oracle's AP Invoice
+# REST resource ships one fixed, documented set of header/line field
+# names — so this module owns one small, honestly-disclosed fixed mapping
+# from those Oracle field names onto document_taxonomies' canonical
+# INVOICE field names, rather than reusing invoice_erp_mapping_service's
+# versioned OUTBOUND mapping (INV9): that mapping's canonical side targets
+# ApInvoice ORM column names (e.g. "total", "purchase_order"), which
+# differ from the taxonomy names build_fields_from_record() understands
+# (e.g. "total_amount", "po_number") — reversing it would produce a
+# second, inconsistent field-naming scheme for the same data rather than
+# reusing anything real. Same "only one ERP connector type ships today"
+# disclosure invoice_erp_mapping_service's own default mapping already
+# makes for the outbound direction.
+_ERP_HEADER_FIELD_MAP = {
+    "InvoiceNumber": "invoice_number",
+    "InvoiceDate": "invoice_date",
+    "InvoiceCurrency": "currency",
+    "InvoiceAmount": "total_amount",
+    "VendorNum": "vendor_name",
+    "VendorSiteCode": "vendor_tax_id",
+    "Description": "notes",
+    "PaymentTerms": "payment_terms",
+}
+_ERP_LINE_FIELD_MAP = {
+    "Description": "description",
+    "LineAmount": "amount",
+}
+
+
+def _map_erp_invoice_record(raw: dict) -> dict:
+    """One Oracle AP Invoice REST item (header fields + an inlined
+    `invoiceLines` array, from list_invoices()'s `expand=invoiceLines`) ->
+    one canonical-field dict, in the exact list[dict]-of-canonical-fields
+    shape discover_database_records()/discover_api_records() already
+    return — so build_fields_from_record() needs no ERP-specific
+    branch at all, same reuse discover_api_records() already gets from
+    that function's normalize-by-column-name design."""
+    mapped: dict = {}
+    for erp_field, canonical in _ERP_HEADER_FIELD_MAP.items():
+        if erp_field in raw:
+            mapped[canonical] = raw.get(erp_field)
+    mapped["erp_invoice_id"] = raw.get("InvoiceId")  # kept as an extra (non-taxonomy) field — real audit trail of which ERP row this came from, never dropped
+    lines = []
+    for raw_line in (raw.get("invoiceLines") or []):
+        if not isinstance(raw_line, dict):
+            continue
+        line: dict = {}
+        for erp_field, canonical in _ERP_LINE_FIELD_MAP.items():
+            if erp_field in raw_line:
+                line[canonical] = raw_line.get(erp_field)
+        if line:
+            lines.append(line)
+    if lines:
+        mapped["line_items"] = lines
+    return mapped
+
+
+async def discover_erp_records(connection: Connection, config: DocumentScheduleConfig) -> list[dict]:
+    """Real HTTP fetch via the connection's own OracleErpConnector — never
+    a fake/simulated invoice list. list_invoices() owns Oracle's own
+    documented limit/offset/hasMore pagination; this function loops it
+    until either batch_size rows are collected or the ERP reports no more
+    pages, mapping each raw item through _map_erp_invoice_record() so the
+    returned shape matches discover_database_records()/discover_api_records()
+    exactly."""
+    connector = build_connector(connection)
+    target = max(1, config.batch_size)
+    page_size = min(target, 100)  # Oracle ADF/REST BC collection resources commonly cap a single page around this size — a real, conservative per-call limit, not this schedule's own batch_size verbatim
+    q = (config.source_erp_query or "").strip() or None
+
+    def _run() -> list[dict]:
+        records: list[dict] = []
+        offset = 0
+        while len(records) < target:
+            page = connector.list_invoices(limit=min(page_size, target - len(records)), offset=offset, q=q)
+            items = page.get("items") or []
+            records.extend(_map_erp_invoice_record(item) for item in items)
+            if not page.get("hasMore") or not items:
+                break
+            offset += len(items)
+        return records
+
+    return await asyncio.to_thread(_run)
+
+
+def record_content_hash(row: dict) -> str:
+    """Stable identity for a DATABASE-sourced row — the DocumentSourceRegistry
+    dedup key's content_hash column, playing the exact same role a file's
+    real SHA-256 does for a FILE-kind schedule (spec section 7: same
+    content already PROCESSED -> skip). `default=str` handles whatever a
+    given driver hands back for DATE/DECIMAL/etc columns (datetime,
+    Decimal, ...) without needing per-dialect type-mapping here — this
+    hash only needs to change when the row's own content changes, not to
+    round-trip perfectly."""
+    canonical = json.dumps(row, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def record_identity(config: DocumentScheduleConfig, row: dict, content_hash: str) -> tuple[str, str, str]:
+    """Builds the (source_path, file_name, record_key) identity a DATABASE-
+    or API-sourced (PAY20) row is registered/processed under —
+    DocumentSourceRegistry itself is unchanged (source_path/file_name are
+    already free-text columns), so either non-file kind slots into the
+    exact same idempotency ledger a file-sourced schedule uses. source_path
+    is the same for every row from one schedule (identifies "which query"
+    or "which API call"); file_name identifies one row within it — from
+    config.source_record_key_column when the row actually has that column
+    and a non-empty value, else falls back to a short prefix of this row's
+    own content hash (a source with no natural key still gets a
+    stable-per-content identity, it just can't tell "this row's key is
+    unchanged but content changed" apart from "this is a different row" as
+    precisely — documented in the model's own docstring)."""
+    if config.source_kind == "API":
+        identity_seed = json.dumps(
+            {"endpoint": config.source_api_endpoint, "method": config.source_api_method,
+             "query_params": config.source_api_query_params, "pagination": config.source_api_pagination},
+            sort_keys=True, default=str,
+        )
+        source_path = f"api:{hashlib.sha256(identity_seed.encode('utf-8')).hexdigest()[:16]}"
+    elif config.source_kind == "ERP":
+        source_path = f"erp:{hashlib.sha256((config.source_erp_query or '').encode('utf-8')).hexdigest()[:16]}"
+    else:  # DATABASE
+        source_path = f"query:{hashlib.sha256((config.source_query or '').encode('utf-8')).hexdigest()[:16]}"
+    key_col = config.source_record_key_column
+    raw_key = row.get(key_col) if key_col else None
+    record_key = str(raw_key).strip() if raw_key not in (None, "") else content_hash[:16]
+    file_name = f"row_{record_key}"
+    return source_path, file_name, record_key
 
 
 async def compute_file_hash(connection: Connection, file_path: str) -> str:

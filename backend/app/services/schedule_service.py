@@ -35,6 +35,7 @@ Every other schedule type (still pipeline_id-keyed, no second engine to
 call) keeps simulating, completely unchanged.
 """
 import asyncio
+import json
 import random
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -46,7 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.connection import AsyncSessionLocal
 from app.database import tenant_engine_registry
 
-from app.connectors.base import ConnectorError
+from app.connectors.base import ConnectorError, FileInfo
 from app.core.config import get_settings
 from app.models.connection import Connection
 from app.models.document import DocumentStatus
@@ -202,6 +203,23 @@ async def _validate_and_apply_document_config(db: AsyncSession, schedule: Schedu
     conn = await db.get(Connection, config_in.source_connection_id)
     if conn is None or (schedule.organization_id is not None and conn.organization_id != schedule.organization_id):
         raise ScheduleValidationError(f"Connection {config_in.source_connection_id} was not found.")
+    # PAY18 — a DATABASE-kind schedule's source_connection_id must
+    # actually be a DATABASE-category connection (Postgres/MySQL/SQL
+    # Server/...): picking a STORAGE/API/etc connection by mistake would
+    # otherwise fail loudly but late, deep inside a background schedule
+    # run's preview_sql() call instead of at save time — same principle
+    # as the ERP-connection-type check below.
+    if config_in.source_kind == "DATABASE" and conn.category.value != "DATABASE":
+        raise ScheduleValidationError(f"Connection {config_in.source_connection_id} is not a database connection.")
+    # PAY20 — same cross-cutting check for an API-kind schedule.
+    if config_in.source_kind == "API" and conn.category.value != "API":
+        raise ScheduleValidationError(f"Connection {config_in.source_connection_id} is not an API connection.")
+    # PAY21 — same cross-cutting check for an ERP-kind schedule: must
+    # actually be the one ERP connector type this build ships (same
+    # connection_type check INV11's invoice_auto_post ERP connection
+    # already applies below).
+    if config_in.source_kind == "ERP" and conn.connection_type.value != "ORACLE_ERP_CLOUD":
+        raise ScheduleValidationError(f"Connection {config_in.source_connection_id} is not an ERP connection.")
     if config_in.archive_after_success and not config_in.archive_path:
         raise ScheduleValidationError("Archive path is required when 'Archive after success' is enabled.")
 
@@ -717,11 +735,69 @@ _STATS_DEFAULTS = {
     "discovered": 0, "queued": 0, "processed": 0, "success": 0, "review": 0,
     "failed": 0, "skipped": 0, "unsupported": 0,
     "current_file": None, "current_stage": None,
+    # PAY17 — approval-outcome counters for document_type="INVOICE"
+    # schedules (INV11/PAY9's own scheduler integration). Zero for every
+    # non-invoice schedule (the classifier below is only ever called
+    # when config.document_type == "INVOICE", and these keys just stay
+    # at their default otherwise) — never fabricated for a run that
+    # never touched the approval engine.
+    "auto_approved": 0, "workflows_created": 0, "already_in_workflow": 0,
+    "rule_conflicts": 0, "approver_not_found": 0,
 }
 
 
 def _stats_defaults() -> dict:
     return dict(_STATS_DEFAULTS)
+
+
+async def _classify_invoice_approval_outcome(db: AsyncSession, document_id: int) -> dict:
+    """PAY17 — after process_document() has already run one INVOICE-typed
+    document all the way through materialize/validate/decide (and, via
+    decide()'s own PAY9 wiring, possibly create_workflow()), classifies
+    what happened to it by reading its real, already-persisted state —
+    never a special-cased return value threaded up through
+    process_document(), which stays a generic "process this document"
+    call with no approval-specific knowledge of its own (the spec's own
+    "the scheduler is a trigger, not the owner of approval business
+    logic" principle — this classifier reads outcomes, it doesn't decide
+    them). Returns a dict of stat-key -> increment (usually one key), or
+    {} when this document never became an invoice at all (extraction/
+    materialization failed before that point).
+
+    A document schedule run materializes a brand-new ApInvoice per file
+    (materialize_invoice() is idempotent by document_id — a fresh
+    document_id here always means a fresh invoice row), so every
+    ApprovalWorkflowAuditLog row tied to that invoice's id was
+    necessarily written during THIS file's own processing — no
+    run-window timestamp filtering needed to avoid attributing an
+    unrelated invoice's history here, even though multiple files process
+    concurrently within one run."""
+    from app.models.approval.workflow import ApprovalWorkflowAuditEventType, ApprovalWorkflowAuditLog
+    from app.models.invoice_intelligence.core import ApInvoice, ApInvoiceDecision, ApInvoiceStatus
+
+    invoice = (await db.execute(select(ApInvoice).where(ApInvoice.document_id == document_id))).scalar_one_or_none()
+    if invoice is None:
+        return {}
+
+    if any((r or {}).get("category") == "APPROVAL_RULE_CONFLICT" for r in (invoice.decision_reasons or [])):
+        return {"rule_conflicts": 1}
+
+    events = (await db.execute(
+        select(ApprovalWorkflowAuditLog.event_type).where(ApprovalWorkflowAuditLog.invoice_id == invoice.id)
+    )).scalars().all()
+
+    increments: dict = {}
+    if ApprovalWorkflowAuditEventType.CREATED in events:
+        increments["workflows_created"] = 1
+    elif ApprovalWorkflowAuditEventType.DUPLICATE_SUPPRESSED in events:
+        increments["already_in_workflow"] = 1
+    elif invoice.final_decision == ApInvoiceDecision.STRAIGHT_THROUGH and invoice.status == ApInvoiceStatus.READY_TO_POST:
+        increments["auto_approved"] = 1
+
+    approver_not_found = sum(1 for e in events if e == ApprovalWorkflowAuditEventType.RESOLUTION_FAILED)
+    if approver_not_found:
+        increments["approver_not_found"] = approver_not_found
+    return increments
 
 
 async def _download_with_retry(connection: Connection, file_path: str, *, retry_count: int, retry_interval: int) -> bytes:
@@ -769,6 +845,7 @@ async def _process_one_file(
     "review" / "failed") for the caller's own bookkeeping if it wants it;
     stats is already updated by the time this returns."""
     outcome = "failed"
+    approval_increments: dict = {}
     async with sessionmaker() as db:
         registry = await db.get(DocumentSourceRegistry, registry_id)
         try:
@@ -798,6 +875,14 @@ async def _process_one_file(
                 document_type=config.document_type,
                 invoice_auto_post=config.invoice_auto_post, invoice_erp_connection_id=config.invoice_erp_connection_id,
             )
+
+            # PAY17 — read the real approval outcome for THIS document's
+            # invoice (if any) off already-persisted state, independent
+            # of the doc.status/outcome bucket below (an invoice can end
+            # up needing approval, or hit a rule conflict, regardless of
+            # whether the extraction itself needed Review Queue).
+            if config.document_type == "INVOICE":
+                approval_increments = await _classify_invoice_approval_outcome(db, doc.id)
 
             if doc.status == DocumentStatus.NEEDS_REVIEW:
                 await review_svc.create_from_document(db, doc)
@@ -836,6 +921,90 @@ async def _process_one_file(
         async with stats_lock:
             stats["processed"] += 1
             stats[outcome] = stats.get(outcome, 0) + 1
+            for key, amount in approval_increments.items():
+                stats[key] = stats.get(key, 0) + amount
+            stats["current_file"] = None
+            stats["current_stage"] = None
+            await _persist_stats(db, run_id, stats)
+
+    return outcome
+
+
+async def _process_one_record(
+    *, organization_id: int | None, schedule_id: int, connection: Connection, config: DocumentScheduleConfig,
+    row: dict, record_key: str, registry_id: int, run_id: int, stats: dict, stats_lock: asyncio.Lock, sessionmaker,
+) -> str:
+    """PAY18/PAY20 — DATABASE- and API-kind document schedules' shared
+    counterpart to _process_one_file() above: one structured record
+    (a query result row, or a decoded API response record), start to
+    finish, in its own DB session. Nothing in this function is aware of
+    which of the two it's handling — that distinction lives entirely
+    upstream in discovery (discover_database_records() vs
+    discover_api_records()) and in record_identity(); by the time a row
+    reaches here it's just a dict. There is no download/archive step (no
+    file exists to download or move) and no OCR/AI Extraction stage (see
+    document_service.build_fields_from_record()/process_document()'s
+    preextracted_fields branch) — everything else (registry transitions,
+    Review Queue routing, PAY17 approval-outcome classification, stats
+    bookkeeping) is identical to the file path, on purpose: a
+    non-file-sourced invoice should behave exactly like a file-sourced
+    one from the point its Document row exists onward."""
+    outcome = "failed"
+    approval_increments: dict = {}
+    async with sessionmaker() as db:
+        registry = await db.get(DocumentSourceRegistry, registry_id)
+        try:
+            await doc_sched_svc.transition(db, registry, DocumentSourceStatus.PROCESSING)
+            async with stats_lock:
+                stats["current_file"] = registry.file_name
+                stats["current_stage"] = "MAPPING FIELDS"
+                await _persist_stats(db, run_id, stats)
+
+            doc = await document_service.save_database_record(
+                db, row=row, organization_id=organization_id,
+                source_connection_id=connection.id, source_path=config.source_path,
+                file_name=f"row_{record_key}", source_schedule_id=schedule_id,
+            )
+            registry.document_id = doc.id
+            await db.commit()
+
+            async with stats_lock:
+                stats["current_stage"] = "VALIDATING"
+                await _persist_stats(db, run_id, stats)
+
+            fields = document_service.build_fields_from_record(row, config.document_type)
+            doc = await document_service.process_document(
+                db, doc, confidence_threshold=config.confidence_threshold, accuracy_threshold=config.accuracy_threshold,
+                document_type=config.document_type,
+                invoice_auto_post=config.invoice_auto_post, invoice_erp_connection_id=config.invoice_erp_connection_id,
+                preextracted_fields=fields,
+            )
+
+            if config.document_type == "INVOICE":
+                approval_increments = await _classify_invoice_approval_outcome(db, doc.id)
+
+            if doc.status == DocumentStatus.NEEDS_REVIEW:
+                await review_svc.create_from_document(db, doc)
+                await doc_sched_svc.transition(db, registry, DocumentSourceStatus.REVIEW_REQUIRED)
+                outcome = "review"
+            elif doc.status == DocumentStatus.FAILED:
+                await doc_sched_svc.transition(db, registry, DocumentSourceStatus.FAILED, error=doc.error_message)
+                outcome = "failed"
+            else:
+                await doc_sched_svc.transition(db, registry, DocumentSourceStatus.PROCESSED)
+                outcome = "success"
+        except Exception as exc:  # noqa: BLE001 - a single record's failure must never sink the whole batch (spec section 28)
+            registry.processing_attempts += 1
+            registry.status = DocumentSourceStatus.FAILED
+            registry.last_error = str(exc)[:2000]
+            await db.commit()
+            outcome = "failed"
+
+        async with stats_lock:
+            stats["processed"] += 1
+            stats[outcome] = stats.get(outcome, 0) + 1
+            for key, amount in approval_increments.items():
+                stats[key] = stats.get(key, 0) + amount
             stats["current_file"] = None
             stats["current_stage"] = None
             await _persist_stats(db, run_id, stats)
@@ -884,63 +1053,117 @@ async def _run_document_schedule_background(schedule_id: int, run_id: int, organ
             await _fail_run(f"SOURCE_CONNECTION_FAILED: connection #{config.source_connection_id} no longer exists.")
             return
 
-        try:
-            files = await doc_sched_svc.discover_files(connection, config)
-        except ConnectorError as exc:
-            await _fail_run(f"SOURCE_CONNECTION_FAILED: {exc}")
-            return
-        except Exception as exc:  # noqa: BLE001 - never leave a run stuck RUNNING over an unanticipated discovery error
-            await _fail_run(f"SOURCE_PATH_NOT_FOUND: {exc}")
-            return
+        is_record_source = config.source_kind in ("DATABASE", "API", "ERP")
 
-        # batch_size caps how many files ONE run takes on (spec section
-        # 5/31) — anything beyond it is simply picked up by the next run,
-        # not lost (still DISCOVERED, still in the source).
-        files = files[: max(1, config.batch_size)]
-        stats["discovered"] = len(files)
-        await _persist_stats(db, run_id, stats)
-
-        to_process: list[tuple[object, int]] = []
-        for file_info in files:
+        if is_record_source:
             try:
-                content_hash = await doc_sched_svc.compute_file_hash(connection, file_info.path)
-            except ConnectorError:
-                continue  # couldn't even hash it (blip while scanning) — one bad file, not a run failure (section 28)
+                if config.source_kind == "DATABASE":
+                    records = await doc_sched_svc.discover_database_records(connection, config)
+                elif config.source_kind == "API":  # PAY20
+                    records = await doc_sched_svc.discover_api_records(connection, config)
+                else:  # ERP (PAY21)
+                    records = await doc_sched_svc.discover_erp_records(connection, config)
+            except ConnectorError as exc:
+                await _fail_run(f"SOURCE_CONNECTION_FAILED: {exc}")
+                return
+            except Exception as exc:  # noqa: BLE001 - never leave a run stuck RUNNING over an unanticipated query/fetch error
+                await _fail_run(f"SOURCE_QUERY_FAILED: {exc}")
+                return
+            # batch_size caps how many rows ONE run takes on, same
+            # section 5/31 principle a FILE schedule's discovery already
+            # follows — discover_database_records()/discover_api_records()
+            # themselves already bound their result to this same limit, so
+            # this slice is a no-op today; kept for symmetry and as a
+            # genuine backstop if that changes.
+            records = records[: max(1, config.batch_size)]
+            stats["discovered"] = len(records)
+            await _persist_stats(db, run_id, stats)
 
-            registry = await doc_sched_svc.upsert_registry_entry(
-                db, organization_id=organization_id, schedule_id=schedule_id, connection=connection,
-                source_path=config.source_path, file_info=file_info, content_hash=content_hash, run_id=run_id,
-            )
-            if not doc_sched_svc.needs_processing(registry):
-                continue  # already PROCESSED with this exact content — spec section 7
+            to_process: list[tuple[object, ...]] = []
+            for row in records:
+                content_hash = doc_sched_svc.record_content_hash(row)
+                source_path, file_name, record_key = doc_sched_svc.record_identity(config, row, content_hash)
+                file_info = FileInfo(name=file_name, path=source_path, size=len(json.dumps(row, default=str)))
 
-            # This run is about to act on the file (queue/skip/fail/mark
-            # unsupported) — that's what processing_run_id records ("the
-            # run that acted on this file"), so stamp it here rather than
-            # unconditionally in upsert_registry_entry(). See that
-            # function's docstring for the bug this fixes.
-            registry.processing_run_id = run_id
+                registry = await doc_sched_svc.upsert_registry_entry(
+                    db, organization_id=organization_id, schedule_id=schedule_id, connection=connection,
+                    source_path=source_path, file_info=file_info, content_hash=content_hash, run_id=run_id,
+                )
+                if not doc_sched_svc.needs_processing(registry):
+                    continue  # already PROCESSED with this exact content — spec section 7, same rule as a file
 
-            if not doc_sched_svc.is_supported_file(file_info.name):
-                await doc_sched_svc.transition(db, registry, DocumentSourceStatus.UNSUPPORTED)
-                stats["unsupported"] += 1
-                continue
-            if file_info.size > config.max_file_size_mb * 1024 * 1024:
-                await doc_sched_svc.transition(db, registry, DocumentSourceStatus.FAILED, error="FILE_SIZE_EXCEEDED")
-                stats["failed"] += 1
-                continue
-            if config.duplicate_content_behavior == "SKIP_DUPLICATE":
-                dup = await doc_sched_svc.find_duplicate_content(db, organization_id=organization_id, content_hash=content_hash, exclude_id=registry.id)
-                if dup is not None:
-                    await doc_sched_svc.transition(db, registry, DocumentSourceStatus.SKIPPED, error=f"Duplicate content of '{dup.file_name}' (already processed as registry #{dup.id}).")
-                    stats["skipped"] += 1
+                registry.processing_run_id = run_id
+
+                if config.duplicate_content_behavior == "SKIP_DUPLICATE":
+                    dup = await doc_sched_svc.find_duplicate_content(db, organization_id=organization_id, content_hash=content_hash, exclude_id=registry.id)
+                    if dup is not None:
+                        await doc_sched_svc.transition(db, registry, DocumentSourceStatus.SKIPPED, error=f"Duplicate content of '{dup.file_name}' (already processed as registry #{dup.id}).")
+                        stats["skipped"] += 1
+                        continue
+
+                await doc_sched_svc.transition(db, registry, DocumentSourceStatus.QUEUED)
+                to_process.append((row, record_key, registry.id))
+
+            stats["queued"] = len(to_process)
+            await _persist_stats(db, run_id, stats)
+        else:
+            try:
+                files = await doc_sched_svc.discover_files(connection, config)
+            except ConnectorError as exc:
+                await _fail_run(f"SOURCE_CONNECTION_FAILED: {exc}")
+                return
+            except Exception as exc:  # noqa: BLE001 - never leave a run stuck RUNNING over an unanticipated discovery error
+                await _fail_run(f"SOURCE_PATH_NOT_FOUND: {exc}")
+                return
+
+            # batch_size caps how many files ONE run takes on (spec section
+            # 5/31) — anything beyond it is simply picked up by the next run,
+            # not lost (still DISCOVERED, still in the source).
+            files = files[: max(1, config.batch_size)]
+            stats["discovered"] = len(files)
+            await _persist_stats(db, run_id, stats)
+
+            to_process: list[tuple[object, ...]] = []
+            for file_info in files:
+                try:
+                    content_hash = await doc_sched_svc.compute_file_hash(connection, file_info.path)
+                except ConnectorError:
+                    continue  # couldn't even hash it (blip while scanning) — one bad file, not a run failure (section 28)
+
+                registry = await doc_sched_svc.upsert_registry_entry(
+                    db, organization_id=organization_id, schedule_id=schedule_id, connection=connection,
+                    source_path=config.source_path, file_info=file_info, content_hash=content_hash, run_id=run_id,
+                )
+                if not doc_sched_svc.needs_processing(registry):
+                    continue  # already PROCESSED with this exact content — spec section 7
+
+                # This run is about to act on the file (queue/skip/fail/mark
+                # unsupported) — that's what processing_run_id records ("the
+                # run that acted on this file"), so stamp it here rather than
+                # unconditionally in upsert_registry_entry(). See that
+                # function's docstring for the bug this fixes.
+                registry.processing_run_id = run_id
+
+                if not doc_sched_svc.is_supported_file(file_info.name):
+                    await doc_sched_svc.transition(db, registry, DocumentSourceStatus.UNSUPPORTED)
+                    stats["unsupported"] += 1
                     continue
+                if file_info.size > config.max_file_size_mb * 1024 * 1024:
+                    await doc_sched_svc.transition(db, registry, DocumentSourceStatus.FAILED, error="FILE_SIZE_EXCEEDED")
+                    stats["failed"] += 1
+                    continue
+                if config.duplicate_content_behavior == "SKIP_DUPLICATE":
+                    dup = await doc_sched_svc.find_duplicate_content(db, organization_id=organization_id, content_hash=content_hash, exclude_id=registry.id)
+                    if dup is not None:
+                        await doc_sched_svc.transition(db, registry, DocumentSourceStatus.SKIPPED, error=f"Duplicate content of '{dup.file_name}' (already processed as registry #{dup.id}).")
+                        stats["skipped"] += 1
+                        continue
 
-            await doc_sched_svc.transition(db, registry, DocumentSourceStatus.QUEUED)
-            to_process.append((file_info, registry.id))
+                await doc_sched_svc.transition(db, registry, DocumentSourceStatus.QUEUED)
+                to_process.append((file_info, registry.id))
 
-        stats["queued"] = len(to_process)
-        await _persist_stats(db, run_id, stats)
+            stats["queued"] = len(to_process)
+            await _persist_stats(db, run_id, stats)
 
         if not to_process:
             run = await db.get(ScheduleRun, run_id)
@@ -954,11 +1177,12 @@ async def _run_document_schedule_background(schedule_id: int, run_id: int, organ
             await db.commit()
             return
 
-    # Concurrent per-file processing (spec section 10/30) — bounded by
-    # this schedule's own max_concurrency, each file in its own session.
+    # Concurrent per-item processing (spec section 10/30) — bounded by
+    # this schedule's own max_concurrency, each file/record in its own
+    # session.
     semaphore = asyncio.Semaphore(max(1, config.max_concurrency))
 
-    async def _bounded(file_info, registry_id: int) -> None:
+    async def _bounded(item: tuple, registry_id: int) -> None:
         async with semaphore:
             async with sessionmaker() as check_db:
                 fresh_run = await check_db.get(ScheduleRun, run_id)
@@ -967,13 +1191,25 @@ async def _run_document_schedule_background(schedule_id: int, run_id: int, organ
                     if fresh_registry is not None and fresh_registry.status == DocumentSourceStatus.QUEUED:
                         await doc_sched_svc.transition(check_db, fresh_registry, DocumentSourceStatus.SKIPPED, error="Run cancelled before this file started.")
                     return  # cooperative cancellation checkpoint (section 81) — between files only, never mid-file
-            await _process_one_file(
-                organization_id=organization_id, schedule_id=schedule_id, connection=connection, config=config,
-                file_info=file_info, registry_id=registry_id, run_id=run_id, stats=stats, stats_lock=stats_lock,
-                sessionmaker=sessionmaker, schedule_retry_count=schedule.retry_count, schedule_retry_interval=schedule.retry_interval_seconds,
-            )
+            if is_record_source:
+                row, record_key = item
+                await _process_one_record(
+                    organization_id=organization_id, schedule_id=schedule_id, connection=connection, config=config,
+                    row=row, record_key=record_key, registry_id=registry_id, run_id=run_id, stats=stats, stats_lock=stats_lock,
+                    sessionmaker=sessionmaker,
+                )
+            else:
+                (file_info,) = item
+                await _process_one_file(
+                    organization_id=organization_id, schedule_id=schedule_id, connection=connection, config=config,
+                    file_info=file_info, registry_id=registry_id, run_id=run_id, stats=stats, stats_lock=stats_lock,
+                    sessionmaker=sessionmaker, schedule_retry_count=schedule.retry_count, schedule_retry_interval=schedule.retry_interval_seconds,
+                )
 
-    await asyncio.gather(*(_bounded(f, rid) for f, rid in to_process))
+    if is_record_source:
+        await asyncio.gather(*((_bounded((row, record_key), rid)) for row, record_key, rid in to_process))
+    else:
+        await asyncio.gather(*((_bounded((file_info,), rid)) for file_info, rid in to_process))
 
     async with sessionmaker() as db:
         run = await db.get(ScheduleRun, run_id)
@@ -982,18 +1218,19 @@ async def _run_document_schedule_background(schedule_id: int, run_id: int, organ
         run.duration_seconds = round((run.ended_at - started_at).total_seconds(), 1)
         run.records_processed = stats["success"]
         run.records_failed = stats["failed"]
+        unit = "record(s)" if is_record_source else "file(s)"
         if run.cancel_requested:
             run.status = RunStatus.CANCELLED
-            run.error_message = f"Cancelled after processing {stats['processed']} of {stats['queued']} queued file(s)."
+            run.error_message = f"Cancelled after processing {stats['processed']} of {stats['queued']} queued {unit}."
         elif stats["failed"] == 0:
             run.status = RunStatus.SUCCESS
             run.error_message = None
         elif stats["success"] or stats["review"]:
             run.status = RunStatus.COMPLETED_WITH_ERRORS
-            run.error_message = f"{stats['failed']} of {stats['queued']} file(s) failed — see Document Processing History for details."
+            run.error_message = f"{stats['failed']} of {stats['queued']} {unit} failed — see Document Processing History for details."
         else:
             run.status = RunStatus.FAILED
-            run.error_message = f"All {stats['failed']} queued file(s) failed."
+            run.error_message = f"All {stats['failed']} queued {unit} failed."
         _finalize_schedule(schedule, run)
         await db.commit()
 

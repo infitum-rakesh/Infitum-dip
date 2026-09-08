@@ -1,0 +1,40 @@
+{
+  "_comment": "Kannada label dictionary for extraction/custom_engine.py. Same curated-starter-set disclosure as hi.json/ta.json — refine against real Kannada invoice samples in Phase 14 testing.",
+  "field_synonyms": {
+    "invoice_number": ["ಇನ್ವಾಯ್ಸ್ ಸಂಖ್ಯೆ", "ಸರಕುಪಟ್ಟಿ ಸಂಖ್ಯೆ", "ಬಿಲ್ ಸಂಖ್ಯೆ"],
+    "invoice_date": ["ಇನ್ವಾಯ್ಸ್ ದಿನಾಂಕ", "ಸರಕುಪಟ್ಟಿ ದಿನಾಂಕ", "ಬಿಲ್ ದಿನಾಂಕ"],
+    "due_date": ["ಪಾವತಿ ದಿನಾಂಕ", "ಬಾಕಿ ದಿನಾಂಕ", "ಕೊನೆಯ ದಿನಾಂಕ"],
+    "po_number": ["ಖರೀದಿ ಆದೇಶ ಸಂಖ್ಯೆ", "ಪಿಒ ಸಂಖ್ಯೆ"],
+    "order_number": ["ಆದೇಶ ಸಂಖ್ಯೆ"],
+    "reference_number": ["ಉಲ್ಲೇಖ ಸಂಖ್ಯೆ"],
+    "vendor_name": ["ಮಾರಾಟಗಾರ", "ಪೂರೈಕೆದಾರ", "ವ್ಯಾಪಾರಿ"],
+    "vendor_tax_id": ["ಜಿಎಸ್‌ಟಿ ಸಂಖ್ಯೆ", "ಜಿಎಸ್‌ಟಿಐಎನ್", "ತೆರಿಗೆ ಗುರುತಿನ ಸಂಖ್ಯೆ"],
+    "vendor_email": ["ಇಮೇಲ್"],
+    "vendor_phone": ["ದೂರವಾಣಿ", "ಫೋನ್"],
+    "bill_to_name": ["ಗ್ರಾಹಕ", "ಖರೀದಿದಾರ", "ಬಿಲ್ ಸ್ವೀಕರಿಸುವವರು"],
+    "ship_to_name": ["ವಿತರಣಾ ವಿಳಾಸ", "ರವಾನೆ ವಿಳಾಸ"],
+    "currency": ["ಕರೆನ್ಸಿ"],
+    "subtotal": ["ಉಪ ಮೊತ್ತ"],
+    "subtotal_amount": ["ಉಪ ಮೊತ್ತ"],
+    "discount_amount": ["ರಿಯಾಯಿತಿ"],
+    "tax_rate": ["ತೆರಿಗೆ ದರ", "ಜಿಎಸ್‌ಟಿ ದರ"],
+    "tax_amount": ["ತೆರಿಗೆ", "ಜಿಎಸ್‌ಟಿ"],
+    "shipping_amount": ["ಸಾಗಣೆ", "ಶಿಪ್ಪಿಂಗ್"],
+    "total_amount": ["ಒಟ್ಟು ಮೊತ್ತ", "ಒಟ್ಟು"],
+    "amount_paid": ["ಪಾವತಿಸಿದ ಮೊತ್ತ"],
+    "balance_due": ["ಬಾಕಿ ಮೊತ್ತ", "ಬಾಕಿ ಇರುವ ಮೊತ್ತ"],
+    "balance_amount": ["ಬಾಕಿ ಮೊತ್ತ"],
+    "payment_terms": ["ಪಾವತಿ ನಿಯಮಗಳು"],
+    "payment_method": ["ಪಾವತಿ ವಿಧಾನ"],
+    "bank_name": ["ಬ್ಯಾಂಕ್ ಹೆಸರು"],
+    "bank_account_number": ["ಖಾತೆ ಸಂಖ್ಯೆ"],
+    "notes": ["ಟಿಪ್ಪಣಿಗಳು", "ಸೂಚನೆಗಳು"]
+  },
+  "table_column_synonyms": {
+    "description": ["ವಿವರಣೆ"],
+    "quantity": ["ಪ್ರಮಾಣ"],
+    "unit_price": ["ಘಟಕ ಬೆಲೆ", "ದರ"],
+    "tax": ["ತೆರಿಗೆ"],
+    "amount": ["ಮೊತ್ತ"]
+  }
+}

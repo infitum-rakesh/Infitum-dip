@@ -14,6 +14,7 @@ import { MODULES, ACTIONS, DOCUMENT_PERMISSIONS } from '@/utils/constants.js';
 import { formatFileSize, formatDateTime, formatDuration } from '@/utils/formatters.js';
 import { documentApi } from '@/services/api/documentApi.js';
 import { reviewQueueApi } from '@/services/api/reviewQueueApi.js';
+import { languageName } from '@/utils/languageNames.js';
 import { SendToReviewModal } from './SendToReviewModal.jsx';
 import { ManualStructuringPanel } from './ManualStructuringPanel.jsx';
 import { RunExtractionControl } from './RunExtractionControl.jsx';
@@ -77,6 +78,18 @@ export default function DocumentDetails() {
     load();
   };
   const runCancelReview = async () => { setBusy(true); try { await documentApi.cancelReview(documentId); load(); } finally { setBusy(false); } };
+  // Real bug found live (user-reported): NEEDS_REVIEW showed "Cancel
+  // Review" with no way to actually reach the review item — this is the
+  // new "Review" button's handler, looking up the open item's id and
+  // navigating straight to its Review Queue detail page.
+  const runGoToReview = async () => {
+    setBusy(true);
+    try {
+      const { review_id } = await documentApi.getReviewItem(documentId);
+      if (review_id) navigate(`/app/doc-intel/review/${review_id}`);
+      else { window.alert('This document no longer has an open review item — it may have already been resolved elsewhere.'); load(); }
+    } finally { setBusy(false); }
+  };
   const runDelete = async () => {
     if (!window.confirm(`Delete "${doc.filename}"? This cannot be undone.`)) return;
     await documentApi.deleteDocument(documentId);
@@ -146,7 +159,10 @@ export default function DocumentDetails() {
                 </PermissionGate>
                 <PermissionGate {...DOCUMENT_PERMISSIONS.DOCUMENT_REVIEW} fallback={null}>
                   {isInReview(doc.status) ? (
-                    <Button variant="danger" size="sm" icon={<XCircle size={13} />} loading={busy} onClick={runCancelReview}>Cancel Review</Button>
+                    <>
+                      <Button variant="primary" size="sm" icon={<FileSearch size={13} />} loading={busy} onClick={runGoToReview}>Review</Button>
+                      <Button variant="danger" size="sm" icon={<XCircle size={13} />} loading={busy} onClick={runCancelReview}>Cancel Review</Button>
+                    </>
                   ) : (
                     <Button variant="secondary" size="sm" icon={<CheckSquare size={13} />} onClick={() => setSendReviewModal(true)}>Send to Review</Button>
                   )}
@@ -367,6 +383,7 @@ function OcrTab({ documentId }) {
       <div className="docd-ocr-hero">
         <div className="card-title">OCR Confidence</div>
         <div className="docd-ocr-conf">{ocr.confidence != null ? `${ocr.confidence}%` : '—'}</div>
+        <LanguageInfo language={ocr.language} qualityFlags={ocr.quality_flags} />
       </div>
       <div className="docd-ocr-grid">
         <div className="docd-profile-card">
@@ -387,6 +404,46 @@ function OcrTab({ documentId }) {
           <pre className="docd-ocr-text">{ocr.full_text}</pre>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Multilingual Document Processing, Phase 10 — real detected-language +
+// OCR-quality display, straight from doc.ocr_result (Phases 4/6 already
+// populate "language"/"quality_flags" there; GET /documents/{id}/ocr
+// already returns them verbatim, so this is pure display, no new API).
+// Mirrors ReviewQueueDetail.jsx's LanguageInfo (Phase 9), namespaced to
+// docd-lang-* since this page uses the docd- prefix, not rqd-.
+function LanguageInfo({ language, qualityFlags }) {
+  if (!language && !(qualityFlags && qualityFlags.length)) return null;
+  return (
+    <div className="docd-lang-info">
+      {language && (
+        <div className="docd-lang-row">
+          <StatusBadge variant="info" dot>{languageName(language.primary_language)}</StatusBadge>
+          {language.language_detection_confidence != null && (
+            <span className="text-muted text-sm">{language.language_detection_confidence.toFixed(0)}% confidence · {language.language_detection_method}</span>
+          )}
+          {language.is_multilingual && (
+            <span className="docd-lang-pages">
+              {(language.pages || []).map((p) => (
+                <StatusBadge key={p.page_number} variant="gray" size="sm">
+                  p{p.page_number}: {p.languages.map((c) => `${languageName(c.language)} ${c.confidence.toFixed(0)}%`).join(' + ')}
+                </StatusBadge>
+              ))}
+            </span>
+          )}
+        </div>
+      )}
+      {qualityFlags && qualityFlags.length > 0 && (
+        <div className="docd-lang-row">
+          {qualityFlags.map((f) => (
+            <span key={f.code} title={f.message}>
+              <StatusBadge variant="warning">{f.code.replace(/_/g, ' ')}</StatusBadge>
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

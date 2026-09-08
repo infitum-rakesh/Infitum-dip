@@ -230,6 +230,67 @@ async def create_from_anomaly(db: AsyncSession, doc: Document, issue: str) -> Re
     return item
 
 
+async def create_from_invoice_validation(db: AsyncSession, doc: Document, issue: str) -> ReviewQueueItem | None:
+    """Real-bug fix — invoice_decision_service.decide() calls this as a
+    fallback when create_from_document() finds nothing to flag.
+    create_from_document() only sees _pick_primary_issue()'s view of
+    doc.extraction_result (missing/low-confidence fields, or the
+    business-rule-total flag). But an invoice can reach REVIEW_REQUIRED
+    for reasons _pick_primary_issue() has no visibility into at all: an
+    invoice-level validation-rule FAIL (ARITHMETIC/REFERENCE/PO/POLICY)
+    or a below-threshold confidence score derived from those rules — the
+    underlying extracted fields can be perfectly clean (nothing missing,
+    nothing low-confidence) while the invoice's own numbers or references
+    still fail business validation. Before this fix, that combination
+    left create_from_document() returning None and the invoice silently
+    had no Review Queue entry at all despite status=REVIEW_REQUIRED.
+    Same BUSINESS_RULE-direct-build + idempotent-ish open-item guard as
+    create_from_anomaly()."""
+    if await _open_item_for_document(db, doc.id):
+        return None
+    picked = {
+        "review_type": ReviewType.BUSINESS_RULE, "issue": issue, "field_name": None,
+        "extracted_value": None, "expected_value": None, "confidence": doc.confidence, "validation_status": None,
+    }
+    item = _build_item(doc, picked)
+    db.add(item)
+    await db.flush()
+    await _log(db, item.id, None, "Flagged for Review", new_value=issue, reason="Auto-flagged by Invoice Validation/Decision Engine")
+    await db.commit()
+    await db.refresh(item)
+    return item
+
+
+async def create_from_ocr_quality(db: AsyncSession, doc: Document, flags: list[dict]) -> ReviewQueueItem | None:
+    """Multilingual Document Processing, Phase 6 — same fallback pattern as
+    create_from_invoice_validation() above: _pick_primary_issue() only sees
+    doc.extraction_result's fields, so a document whose real problem is the
+    OCR stage itself (low OCR confidence, an unsupported/mismatched
+    detected language, empty or unicode-corrupt text — see
+    multilingual_ocr_service.evaluate_ocr_quality()) can have every
+    extracted field look superficially "valid" (the AI/Custom Engine did
+    its best with garbled input) while create_from_document() finds
+    nothing to flag and returns None. Called as the fallback right after
+    that happens, so a genuine OCR-quality problem always gets a real,
+    visible Review Queue entry instead of silently disappearing. Uses
+    ReviewType.OCR — the type this model already had, unused until now."""
+    if await _open_item_for_document(db, doc.id):
+        return None
+    issue = flags[0]["message"] if flags else "OCR quality issue detected"
+    picked = {
+        "review_type": ReviewType.OCR, "issue": issue, "field_name": None,
+        "extracted_value": None, "expected_value": None, "confidence": doc.ocr_percent, "validation_status": None,
+    }
+    item = _build_item(doc, picked)
+    db.add(item)
+    await db.flush()
+    codes = ", ".join(f["code"] for f in flags)
+    await _log(db, item.id, None, "Flagged for Review", new_value=issue, reason=f"Auto-flagged by OCR Quality Validation ({codes})")
+    await db.commit()
+    await db.refresh(item)
+    return item
+
+
 _MANUAL_ISSUE = {
     "review_type": ReviewType.VALIDATION,
     "issue": "Manually sent for review",
@@ -607,6 +668,20 @@ async def reject(db: AsyncSession, item: ReviewQueueItem, reason: str, actor: Us
     await db.commit()
     await db.refresh(item)
     return item
+
+
+async def get_open_item_id_for_document(db: AsyncSession, document_id: int) -> int | None:
+    """Real bug found live (user-reported): the Document Details page
+    showed a NEEDS_REVIEW document with a "Cancel Review" button but no
+    way to actually GET to the review item — nothing on that page had
+    the review_id needed to link to /doc-intel/review/{reviewId}.
+    Thin public wrapper around _open_item_for_document() (unchanged, and
+    still used internally by cancel_for_document() below) — the caller
+    (api/documents.py's own /{document_id}/review-item route) already
+    org-scopes document_id via its own _get_or_404() the same way
+    cancel-review does, so no separate check needed here."""
+    item = await _open_item_for_document(db, document_id)
+    return item.id if item else None
 
 
 async def cancel_for_document(db: AsyncSession, document_id: int, actor: User, reason: str | None = None) -> ReviewQueueItem | None:

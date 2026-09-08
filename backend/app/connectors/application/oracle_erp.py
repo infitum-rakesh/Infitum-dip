@@ -162,6 +162,41 @@ class OracleErpConnector(BaseConnector):
             latency_ms, server_version=self._api_version(),
         )
 
+    def list_invoices(self, *, limit: int = 25, offset: int = 0, q: str | None = None) -> dict:
+        """PAY21 — scheduled ERP-sourced intake (the inbound counterpart of
+        submit_invoice()'s outbound posting): a real GET against the same
+        documented Invoices collection resource, using Oracle's own
+        documented collection-query params (`limit`/`offset` paging,
+        `hasMore` in the response telling the caller whether to fetch
+        another page — the standard shape every Oracle ADF/REST BC
+        collection resource returns, not something specific to this one
+        resource) plus `expand=invoiceLines` (Oracle's documented
+        child-resource inlining convention) so each returned invoice
+        already carries its line items in one round trip rather than a
+        second call per invoice. `q` is Oracle's own documented REST
+        query-language filter string (e.g. "ValidationStatus='NEEDS_REVALIDATION'"),
+        passed through unmodified when the caller supplies one — this
+        method builds no filter of its own.
+
+        Returns the decoded JSON response verbatim (`items`/`count`/
+        `hasMore`/...) — reshaping into this build's own record shape is
+        document_schedule_service.discover_erp_records()'s job, the same
+        division of labor fetch_api()/discover_api_records() already use."""
+        params = {"limit": limit, "offset": offset, "onlyData": "true", "expand": "invoiceLines"}
+        if q:
+            params["q"] = q
+        try:
+            with httpx.Client(timeout=DEFAULT_TIMEOUT, auth=self._client_auth()) as client:
+                resp = client.get(self._invoices_url(), headers=self._auth_headers(), params=params)
+        except httpx.RequestError as exc:
+            raise ConnectorError(self._scrub(f"Could not reach Oracle ERP Cloud to list invoices: {exc}")) from exc
+        if resp.status_code >= 400:
+            raise ConnectorError(self._scrub(f"Oracle ERP Cloud invoice listing failed: HTTP {resp.status_code} {resp.text[:400]}"))
+        try:
+            return resp.json()
+        except ValueError as exc:
+            raise ConnectorError(f"Oracle ERP Cloud's invoice listing response was not valid JSON: {exc}") from exc
+
     def submit_invoice(self, payload: dict, *, idempotency_key: str | None = None) -> dict:
         headers = {**self._auth_headers(), "Content-Type": "application/vnd.oracle.adf.resourceitem+json"}
         if idempotency_key:

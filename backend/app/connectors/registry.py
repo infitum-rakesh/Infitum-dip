@@ -24,8 +24,8 @@ connection_service.py's test_connection() for how the API surfaces this
 
 Current coverage by category (see CATEGORIES in connection_service.py):
 DATABASE (Postgres/MySQL/SQL Server/Oracle live-verified; Snowflake/SAP/
-Fabric real-but-unverified), STORAGE (SFTP/FTP/Local File/Network File,
-all live-verified), API (REST/SOAP, both live-verified against a real
+Fabric real-but-unverified), STORAGE (SFTP/FTP/Local File/Network File/
+Email Inbox (IMAP), all live-verified), API (REST/SOAP, both live-verified against a real
 local test server), APPLICATION (NetSuite SuiteQL+SOAP real-but-
 unverified against a live NetSuite account; Salesforce real-but-
 unverified against a live org; Oracle ERP Cloud real-but-unverified
@@ -60,6 +60,7 @@ from app.connectors.database.sap import SapConnector
 from app.connectors.database.snowflake import SnowflakeConnector
 from app.connectors.database.sqlserver import SqlServerConnector
 from app.connectors.database.vertica import VerticaConnector
+from app.connectors.email.imap_client import ImapConnector
 from app.connectors.files.local import LocalFileConnector
 from app.connectors.ftp.client import FtpConnector
 from app.connectors.sftp.client import SftpConnector
@@ -86,6 +87,12 @@ CONNECTOR_REGISTRY: dict[str, type[BaseConnector]] = {
     # found and fixed during that verification).
     "NETWORK_FILE": NetworkFileConnector,
     "LOCAL_FILE": LocalFileConnector,
+    # EMAIL_IMAP — real, stdlib imaplib/email-based (PAY19), live-verified
+    # against a Docker greenmail-standalone instance (real SMTP send + IMAP
+    # discovery/download/archive) — see connectors/email/imap_client.py's
+    # docstring for the file/attachment identity model and a disclosed
+    # per-message (not per-attachment) archiving limitation.
+    "EMAIL_IMAP": ImapConnector,
     "REST": RestApiConnector,
     # SOAP — real, zeep-based generic WSDL client, live-verified against a
     # hand-written but protocol-valid local WSDL 1.1/SOAP 1.1 mock service

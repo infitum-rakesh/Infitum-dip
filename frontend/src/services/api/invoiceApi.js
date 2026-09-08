@@ -18,13 +18,38 @@ function cleanParams(params = {}) {
   );
 }
 
-/** Invoice status values (ApInvoice.status — mirrors Document.status
- * through the pipeline: SCANNING/OCR_PROCESSING/AI_EXTRACTION happen
- * before an ApInvoice row even exists) plus the decision-engine outcomes
- * (ApInvoiceDecision) and ERP/reconciliation lifecycle states — kept here
- * so every page in this module (Inbox, Detail, Analytics) reads off one
- * shared source of labels/colors instead of re-declaring its own. */
-export const INVOICE_STATUSES = ['NEEDS_REVIEW', 'COMPLETED', 'REJECTED', 'FAILED'];
+/** Invoice status values — the REAL ApInvoiceStatus enum
+ * (backend/app/models/invoice_intelligence/core.py), not a guessed
+ * subset. Found live: this used to list ['NEEDS_REVIEW', 'COMPLETED',
+ * 'REJECTED', 'FAILED'] — values that don't exist on the model at all
+ * (except REJECTED) — so 3 of 4 status-filter options 400'd
+ * ("Unknown status '…'") and the STATUS column's real values (e.g.
+ * EXCEPTION, READY_TO_POST) had no color mapping. Kept here, with a
+ * shared variant/label map, so every page in this module (Inbox, Detail,
+ * Analytics) reads off one correct source instead of re-declaring its
+ * own (now-corrected) copy. */
+export const INVOICE_STATUSES = [
+  'RECEIVED', 'PROCESSING', 'NORMALIZED', 'VALIDATING', 'REVIEW_REQUIRED',
+  'APPROVING', 'READY_TO_POST', 'POSTING', 'POSTED', 'RECONCILED', 'REJECTED', 'EXCEPTION',
+];
+export const INVOICE_STATUS_LABEL = {
+  RECEIVED: 'Received', PROCESSING: 'Processing', NORMALIZED: 'Normalized', VALIDATING: 'Validating',
+  REVIEW_REQUIRED: 'Review Required', APPROVING: 'Approving', READY_TO_POST: 'Ready to Post',
+  POSTING: 'Posting', POSTED: 'Posted', RECONCILED: 'Reconciled', REJECTED: 'Rejected', EXCEPTION: 'Exception',
+};
+export const INVOICE_STATUS_VARIANT = {
+  RECEIVED: 'gray', PROCESSING: 'info', NORMALIZED: 'info', VALIDATING: 'info',
+  REVIEW_REQUIRED: 'warning', APPROVING: 'warning', READY_TO_POST: 'info', POSTING: 'info',
+  POSTED: 'success', RECONCILED: 'success', REJECTED: 'danger', EXCEPTION: 'danger',
+  // Document-pipeline stages a document passes through BEFORE an
+  // ApInvoice row exists at all (Document.status, not ApInvoice.status —
+  // see documentApi.pollUntilDone()'s PROCESSING set). The Invoice Inbox
+  // shows these as synthetic "in flight" rows while OCR/AI Extraction run
+  // in the background; sharing this one map keeps their color consistent
+  // with the real post-materialization states above.
+  SCANNING: 'info', OCR_PROCESSING: 'info', AI_EXTRACTION: 'info', UPLOADED: 'gray',
+  NEEDS_REVIEW: 'warning', COMPLETED: 'success', FAILED: 'danger',
+};
 export const INVOICE_DECISIONS = ['STRAIGHT_THROUGH', 'REVIEW_REQUIRED', 'REJECT', 'RETRY'];
 export const ERP_STATUSES = ['NOT_SUBMITTED', 'PENDING', 'RETRYING', 'SUCCEEDED', 'FAILED', 'DEAD_LETTER', 'CANCELLED'];
 export const RECONCILIATION_STATUSES = ['NOT_STARTED', 'RECONCILED', 'MISMATCH', 'FAILED'];
@@ -64,7 +89,17 @@ export const invoiceApi = {
   /** Polls GET /by-document/{id} until the background pipeline has
    * actually materialized an ApInvoice row (or times out) — same
    * "poll a cheap GET instead of one long request" pattern
-   * documentApi.pollUntilDone() uses, sized for OCR+AI Extraction. */
+   * documentApi.pollUntilDone() uses, sized for OCR+AI Extraction.
+   *
+   * apiClient's response interceptor (see apiClient.js's normaliseError())
+   * already flattens every rejected error to a plain {status, message,
+   * data} object — never a raw axios error with `.response.status`. This
+   * used to check `err?.response?.status`, which is always undefined on
+   * that flattened shape, so it re-threw on the very FIRST 404 (i.e.
+   * almost always, since materialization takes at least a few seconds)
+   * instead of ever retrying — found live via the Invoice Inbox upload
+   * modal, surfacing "No invoice has been materialized for this document
+   * yet." immediately after a perfectly successful upload. */
   async pollForInvoice(documentId, { intervalMs = 1500, timeoutMs = 5 * 60 * 1000, onTick } = {}) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -73,7 +108,7 @@ export const invoiceApi = {
         onTick?.(invoice);
         return invoice;
       } catch (err) {
-        if (err?.response?.status !== 404) throw err;
+        if (err?.status !== 404) throw err;
         onTick?.(null);
         await delay(intervalMs);
       }

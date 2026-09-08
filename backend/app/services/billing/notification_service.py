@@ -36,7 +36,16 @@ async def _recipient_email(db: AsyncSession, *, organization_id: int, user_id: i
 async def create_notification(
     db: AsyncSession, *, organization_id: int, type: str, title: str, body: str,
     user_id: int | None = None, related_object_type: str | None = None, related_object_id: int | None = None,
+    send_email: bool = True,
 ) -> Notification:
+    """send_email=False (Payment Invoice Approval Workflow, Phase 6):
+    write the Bell row only, skip the inline SMTP send below. Approval
+    assignment emails go through the new, real queued/retried
+    services/approval/notification_outbox_service.py instead of this
+    fire-and-forget inline send (see that module's docstring for why —
+    an approver must eventually be emailed even through a transient SMTP
+    failure, which this inline call can't offer). Every other existing
+    caller is unaffected — the default stays True, identical behavior."""
     notification = Notification(
         organization_id=organization_id, user_id=user_id, type=type, title=title, body=body,
         related_object_type=related_object_type, related_object_id=related_object_id,
@@ -45,9 +54,10 @@ async def create_notification(
     await db.commit()
     await db.refresh(notification)
 
-    recipient = await _recipient_email(db, organization_id=organization_id, user_id=user_id)
-    if recipient:
-        await email_service.send_email(db, to=recipient, subject=title, body=body)
+    if send_email:
+        recipient = await _recipient_email(db, organization_id=organization_id, user_id=user_id)
+        if recipient:
+            await email_service.send_email(db, to=recipient, subject=title, body=body)
     return notification
 
 

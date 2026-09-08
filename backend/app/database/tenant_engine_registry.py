@@ -48,7 +48,7 @@ from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from app.core import crypto
-from app.database.connection import AsyncSessionLocal
+from app.database.connection import AsyncSessionLocal, json_serializer
 from app.services import tenant_database_service
 
 _PLATFORM_KEY = None  # organization_id is already None for the Seller row — no separate sentinel needed
@@ -85,9 +85,17 @@ def _build_url(connection_type: str, config: dict, secrets: dict) -> URL:
             query={"ssl": "true"} if ssl_mode not in ("disable",) else {},
         )
     if connection_type == "MYSQL":
+        # Multilingual Document Processing — real bug found live: aiomysql/
+        # PyMySQL defaults to latin1 unless charset is explicitly set, unlike
+        # SQLite (already UTF-8) and Postgres (needs no charset flag) — a
+        # BYO-MySQL tenant would silently mangle Kannada/Tamil/Hindi document
+        # text without this. utf8mb4 (not plain "utf8", MySQL's historical
+        # 3-byte alias) is required for full Unicode, including characters
+        # outside the BMP.
         return URL.create(
             "mysql+aiomysql", username=config.get("username"), password=secrets.get("password"),
             host=config.get("host"), port=port, database=config.get("database"),
+            query={"charset": "utf8mb4"},
         )
     raise TenantRoutingUnsupportedError(
         f"Live tenant routing for '{connection_type}' isn't supported yet — only PostgreSQL and MySQL have a "
@@ -111,7 +119,12 @@ async def build_engine_and_sessionmaker(row) -> tuple[AsyncEngine, async_session
         for key, token in (row.encrypted_secrets or {}).items()
     }
     url = _build_url(row.connection_type, row.config, secret_values)
-    engine = create_async_engine(url, pool_size=5, max_overflow=5, pool_pre_ping=True, pool_recycle=1800)
+    # Same json_serializer fix as the platform engine (connection.py) — a
+    # BYO-Database org's JSON columns must preserve Unicode too, not just
+    # the shared platform database's.
+    engine = create_async_engine(
+        url, pool_size=5, max_overflow=5, pool_pre_ping=True, pool_recycle=1800, json_serializer=json_serializer,
+    )
     return engine, async_sessionmaker(engine, expire_on_commit=False)
 
 

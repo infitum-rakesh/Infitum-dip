@@ -81,31 +81,265 @@ Migration: `backend/scripts/migrate_document_schedules.py` (idempotent
 SQLite, then restart the backend). `create_all()` picks up the two new
 tables automatically.
 
+## 2a. DATABASE source kind (PAY18)
+
+Everything above describes the original **FILE**-kind schedule. PAY18 added
+a second source kind, `DocumentScheduleConfig.source_kind = "DATABASE"`,
+for intake that already lives as structured rows in a database rather than
+as scanned documents:
+
+```
+DocumentScheduleConfig (additive columns)
+      source_kind: "FILE" | "DATABASE"           (default "FILE")
+      source_query: str | None                    (DATABASE only — a SELECT/WITH statement)
+      source_record_key_column: str | None         (DATABASE only — optional business key column)
+```
+
+For a DATABASE-kind schedule:
+
+1. `source_connection_id` must point at a DATABASE-category `Connection`
+   (Postgres/MySQL/SQL Server/etc.) — enforced by
+   `schedule_service._validate_and_apply_document_config()`.
+2. `document_schedule_service.discover_database_records()` runs
+   `source_query` through that connector's **existing**
+   `preview_sql()` (the same dialect-agnostic SQLAlchemy execution the SQL
+   Workspace preview surface already uses — `ConnectorValidationError`
+   enforces SELECT/WITH-only), bounded by `batch_size`, and returns one
+   `dict` per row.
+3. Each row gets a synthetic identity so the **same**
+   `DocumentSourceRegistry` idempotency ledger (§2) works unchanged: no
+   real file path exists, so `record_identity()` builds
+   `source_path = f"query:{sha256(source_query)[:16]}"` and
+   `file_name = f"row_{record_key}"` (the value of
+   `source_record_key_column` in that row, or a content-hash prefix if no
+   key column is configured). `content_hash` is
+   `sha256(json.dumps(row, sort_keys=True, default=str))` — a content
+   change under the same key is a new version, exactly like a changed file
+   would be.
+4. `document_service.save_database_record()` persists the row as a real
+   `Document` (JSON-serialized to disk, `mime_type="application/json"`),
+   then `document_service.build_fields_from_record()` maps each column
+   straight onto the `INVOICE` taxonomy's field shape (a column matching
+   the taxonomy's `line_items` table name becomes a real table field), and
+   `process_document(..., preextracted_fields=fields)` **skips the Image
+   Scanner/OCR/AI Extraction stages entirely** (there is no image to scan
+   and no model call to make — the query's own columns already are the
+   structured data) and records `extraction_model = "STRUCTURED_SOURCE"` at
+   100% extractor confidence. Every stage from validation onward — business
+   rules, `invoice_validation_service`, `invoice_decision_service`, Review
+   Queue routing, PAY9's approval-workflow trigger — is the **same code
+   path**, unmodified, regardless of where the fields came from.
+5. Currently document_type is restricted to `"INVOICE"` for DATABASE-kind
+   schedules (enforced by a pydantic model validator on
+   `DocumentScheduleConfigIn`) — this is where the taxonomy/mapping/
+   decision pipeline already exists end-to-end; a generic-document DATABASE
+   intake was out of scope for PAY18.
+
+**Disclosed limitation:** a DATABASE-sourced invoice's `evidence_quality`
+confidence score is always 0% (there is no OCR page for a `bbox` to point
+at), so it can never clear `STRAIGHT_THROUGH_THRESHOLD` and always lands on
+`REVIEW_REQUIRED` — see [payment-approval-workflow.md §11](payment-approval-workflow.md)
+for the full analysis and live-verification numbers. This is intentional,
+honest routing, not a gap to be "fixed" by fabricating a confidence score.
+
+**ERP-sourced intake is now built too** — see §2d below. As of PAY21, all
+four planned non-file intake kinds for this workflow (FILE incl. email
+inbox §2b, DATABASE §2a, API §2c, ERP §2d) exist; nothing further is
+disclosed as outstanding for this specific workflow.
+
+## 2b. Email inbox (IMAP) source (PAY19)
+
+Unlike DATABASE-kind above, email intake needed **no new `source_kind`
+and no `document_schedule_service.py`/`schedule_service.py` changes at
+all** — it's a new `ConnectionType.EMAIL_IMAP`
+(`connectors/email/imap_client.py`, real stdlib `imaplib`/`email`)
+implementing the exact same `FileConnectorBase` contract SFTP/FTP/Network
+File already implement (`list_files`/`open_read_stream`/`move_file`/
+`file_checksum`/`test_connection`). Since a `source_kind="FILE"` schedule
+(the original, still-default kind — §1) is already generic across any
+STORAGE-category connection, a Document Source schedule pointed at an
+`EMAIL_IMAP` connection runs through the **real, unmodified** OCR → AI
+Extraction → validation → decision → Review Queue pipeline — the same
+code every SFTP/FTP schedule already uses, with zero new dispatch branch.
+
+Identity model: one "file" = one attachment on one message matching the
+schedule's `file_pattern`. `object_name` encodes
+`"{uid}_{part_index}_{filename}"` (IMAP UID, not sequence number — stable
+across sessions); `record`/file identity for the existing
+`DocumentSourceRegistry` ledger (§5) is otherwise unchanged. `list_files()`
+runs a real IMAP `SEARCH` (default `UNSEEN`, configurable per-connection
+via `search_criteria`) then a real `FETCH RFC822` per matching message to
+enumerate attachments; `open_read_stream()` re-fetches by UID and returns
+the specific part's bytes.
+
+**Disclosed quirk:** IMAP's atomic unit is the message, not the
+attachment — `move_file()` (used by "archive after success") moves the
+**whole** source email. A schedule against a mailbox with routinely
+multi-attachment emails should disable archiving or set
+`max_concurrency=1`; this is disclosed in the connector's own docstring,
+not silently papered over.
+
+Live-verified end-to-end against a real Docker `greenmail-standalone`
+SMTP+IMAP test server: a real email with a real PDF invoice attachment,
+sent via `smtplib`, was discovered/downloaded/OCR'd (Tesseract)/AI-
+extracted (real Ollama `llama3.2`) through the actual scheduled workflow —
+correct `invoice_number`/`vendor_name`/`total`, landed on
+`REVIEW_REQUIRED` at a genuine 34% extractor confidence (not forced), a
+real Review Queue item was created, and the source email was correctly
+**not** archived (archiving only fires on the `success` outcome bucket,
+which a NEEDS_REVIEW document never reaches — confirmed the message
+stayed in the inbox afterward). Unlike DATABASE-kind, a FILE-kind email
+attachment has a real OCR page, so `evidence_quality` is real and non-zero
+— an email-sourced invoice CAN reach STRAIGHT_THROUGH given a
+clean-enough source document, unlike a DATABASE-sourced one.
+
+## 2c. API endpoint source (PAY20)
+
+A third `source_kind="API"`, structurally a close mirror of DATABASE-kind
+(§2a): `source_connection_id` points at an API-category connection and
+each decoded response record becomes one `ApInvoice` via the same
+`preextracted_fields` path as DATABASE-kind — no OCR/AI Extraction stage.
+The genuinely new surface area is small because it reuses the
+**already-existing** `BaseConnector.fetch_api()` capability (real,
+paginated HTTP fetch via `httpx` in `RestApiConnector` — the same code
+the SQL Workspace/Source Dataset "preview-api" surface already calls),
+supporting `none`/`page`/`offset`/`cursor`/`token` pagination styles,
+`json_path` envelope extraction, and any of that connector's existing
+auth types.
+
+New: 5 columns on `DocumentScheduleConfig` (`source_api_endpoint`,
+`source_api_method`, `source_api_query_params`, `source_api_pagination`,
+`source_api_json_path`); `document_schedule_service.discover_api_records()`
+(mirrors `discover_database_records()`); `is_database_source` in
+`schedule_service.py` generalized to `is_record_source = source_kind in
+("DATABASE", "API")`, with discovery dispatch still branching internally
+by exact kind. `record_identity()` branches on `source_kind` to build a
+distinct `source_path` prefix (`"api:{hash}"` vs `"query:{hash}"`, the
+hash seeded by the endpoint/method/query_params/pagination dict) while
+reusing the same `source_record_key_column` field and content-hash
+fallback as DATABASE-kind. `_process_one_record()` and
+`document_service.save_database_record()`/`build_fields_from_record()`
+needed **no changes at all** — both were already source-kind-agnostic,
+operating on a plain `dict`.
+
+Live-verified end-to-end against a real local `http.server` mock REST API
+exercising genuine multi-page pagination (2 real HTTP GET requests via
+the real `RestApiConnector.fetch_api()`, not a mocked connector): correct
+data across both pages, correct invoice materialization, and a correct
+idempotent no-op on rerun (`queued: 0`). Separately live-verified through
+the actual **Create Schedule UI** — a schedule built via the real modal
+(Connection picker, Endpoint, Method, Pagination Style + Page Size, JSON
+Path, Record Key Column) saved via a real `POST /api/schedules` (201) and
+ran with `discovered: 2, skipped: 2` — correctly deduping against the
+prior schedule's already-ingested rows via the shared identity hash. Like
+DATABASE-kind, an API-sourced invoice has no source page to verify
+extracted values against, so `evidence_quality` is always 0.0 and the
+decision engine correctly routes every API-sourced invoice to
+`REVIEW_REQUIRED` — confirmed consistent with PAY18/PAY19's findings.
+
+## 2d. ERP source (PAY21)
+
+A fourth `source_kind="ERP"`, the inverse direction of INV9's outbound
+`OracleErpConnector.submit_invoice()`: `source_connection_id` points at an
+`ORACLE_ERP_CLOUD` connection and the schedule pulls invoices FROM Oracle's
+own documented AP Invoices REST collection resource
+(`fscmRestApi/resources/{version}/invoices`) rather than posting to it. Like
+DATABASE-kind and API-kind, each decoded invoice becomes one `ApInvoice` via
+`preextracted_fields` — no OCR/AI Extraction stage.
+
+New: `OracleErpConnector.list_invoices(limit, offset, q=None)` — a real GET
+with `limit`/`offset`/`onlyData=true`/`expand=invoiceLines` (Oracle's
+documented child-resource inlining) and an optional Oracle REST
+query-language filter string, passed through verbatim; returns Oracle's own
+response shape (`items`/`count`/`hasMore`/`offset`/`limit`) unmodified —
+reshaping is `discover_erp_records()`'s job, matching the
+`fetch_api()`/`discover_api_records()` division of labor. One new column,
+`DocumentScheduleConfig.source_erp_query` (optional filter string) —
+deliberately **no** endpoint field, unlike API-kind, since
+`source_connection_id` alone (an `ORACLE_ERP_CLOUD` connection) fully
+identifies the one resource pulled.
+
+**Deliberate non-reuse of the outbound ERP mapping.** INV9's
+`invoice_erp_mapping_service.py` already has a versioned canonical→Oracle
+field mapping for the outbound posting direction, and reversing it looked
+like the obvious reuse — but its canonical side targets `ApInvoice` ORM
+column names (e.g. `"total"`, `"purchase_order"`), which differ from
+`document_taxonomies.py`'s `INVOICE_FIELDS` names (e.g. `"total_amount"`,
+`"po_number"`) that `build_fields_from_record()` actually understands.
+Reversing the outbound mapping would have produced a second, inconsistent
+field-naming scheme feeding the same pipeline. Instead, PAY21 uses a small,
+explicitly disclosed **fixed** dict (`_ERP_HEADER_FIELD_MAP`/
+`_ERP_LINE_FIELD_MAP` in `document_schedule_service.py`) — the same
+"only one ERP connector type ships today" disclosure pattern
+`invoice_erp_mapping_service`'s own default mapping already uses.
+
+`is_record_source` generalized a third time to
+`source_kind in ("DATABASE", "API", "ERP")`, with discovery dispatch still
+branching internally by exact kind. `record_identity()` gained a third
+branch: `source_path = f"erp:{hash}"`, hashed from `source_erp_query`.
+`_validate_and_apply_document_config()` rejects a non-`ORACLE_ERP_CLOUD`
+connection for `source_kind="ERP"`. The frontend's ERP-kind Connection
+picker reuses the **already-existing** `erpConnections` state in
+`ScheduleFormModal.jsx` (fetched since INV11 for the Invoice ERP Posting
+auto-post picker) — zero new frontend state/fetch needed.
+
+Live-verified twice. First, backend-only against a real local `http.server`
+mock shaped exactly like Oracle's documented Invoices resource (real GET
+with `expand=invoiceLines`, not a mocked connector): correct invoice
+materialization and a correct idempotent no-op on rerun (`queued: 0`).
+Second, through the actual **Connections** and **Create Schedule** UIs
+end-to-end: a genuine new `ORACLE_ERP_CLOUD` connection was created via the
+real Connections page and Test Connection succeeded against a fresh mock
+server; a schedule was created via the real modal (ERP Connection picker,
+Source Label, Query Filter, Record Key Column) and saved via a real
+`POST /api/schedules` (201); Run Now produced `discovered: 1, queued: 1,
+processed: 1, success: 1, failed: 0` and materialized `ApInvoice`
+`PAY21-UI-001` (vendor `Acme ERP UI Test`, total `675.25 USD`) matching the
+mock server's fixture exactly. Like DATABASE-kind and API-kind, an
+ERP-sourced invoice has no source page to verify extracted values against,
+so `evidence_quality` is always 0.0 and the decision engine correctly
+routed it to `REVIEW_REQUIRED` (issue text: "Below straight-through
+threshold (90%): Evidence quality 0.0%...") — confirmed consistent with
+PAY18/PAY19/PAY20's findings across all four intake kinds.
+
 ## 3. Connector reuse
 
-No new connector code. `document_schedule_service.py` calls the exact
-`FileConnectorBase` interface every other part of this codebase already
-uses (`list_files`, `open_read_stream`, `move_file`, `file_checksum`,
-`test_connection`), implemented by `LocalFileConnector`, `SftpConnector`,
-`FtpConnector`, `NetworkFileConnector` (SMB), `AzureBlobConnector`,
-`AwsS3Connector`. `list_files()` was extended with a `recursive: bool`
-parameter across the four filesystem-hierarchy connectors (accepted and
-ignored by the two flat cloud-object connectors, where "recursive" is
+No new connector code (except PAY19's `ImapConnector` — see §2b, itself
+just another implementation of this same interface; PAY20's API-kind
+reuses the pre-existing `RestApiConnector.fetch_api()` verbatim; PAY21's
+ERP-kind reuses `OracleErpConnector`, extended with one new read method,
+`list_invoices()`).
+`document_schedule_
+service.py` calls the exact `FileConnectorBase` interface every other
+part of this codebase already uses (`list_files`, `open_read_stream`,
+`move_file`, `file_checksum`, `test_connection`), implemented by
+`LocalFileConnector`, `SftpConnector`, `FtpConnector`,
+`NetworkFileConnector` (SMB), `AzureBlobConnector`, `AwsS3Connector`, and
+now `ImapConnector` (Email Inbox). `list_files()` was extended with a
+`recursive: bool` parameter across the four filesystem-hierarchy
+connectors (accepted and ignored by the flat/non-hierarchical connectors
+— cloud object stores and IMAP mailboxes alike — where "recursive" is
 meaningless).
 
-**Known gap, disclosed, not fixed by this feature:** `LOCAL_FILE` was
-deliberately removed from `connection_service.FIELD_SCHEMAS` in an earlier
-phase (hiding it from the Connections creation UI — a real security
-decision). That removal has the side effect of also breaking
+**Resolved (was a known gap):** `LOCAL_FILE` was deliberately removed from
+`connection_service.FIELD_SCHEMAS` in an earlier phase (hiding it from the
+Connections creation UI), which had the side effect of also breaking
 `connection_service.build_connector()` for `LOCAL_FILE`, since that function
-unconditionally looks the type up in `FIELD_SCHEMAS` first. In practice this
-means a Document Source schedule **cannot** target `LOCAL_FILE` through the
-normal UI/API today — only SFTP, FTP, SMB, Azure, and S3 sources are usable
-end to end. This was already true before this feature (nothing else could
-create a `LOCAL_FILE` connection either) and is out of scope to fix here; the
-automated test suite (§9) works around it locally by constructing a
-`LocalFileConnector` directly, which is legitimate for tests but not
-something the real API surface enables.
+unconditionally looks the type up in `FIELD_SCHEMAS` first — in practice a
+Document Source schedule could not target `LOCAL_FILE` through the normal
+UI/API. Restored on user request: a `LOCAL_FILE` FIELD_SCHEMAS entry (one
+field, `base_path`) is back, with an explicit help-text disclosure that this
+points at a folder on the **backend server's own filesystem**, not the
+browser's machine, and that it's only appropriate when the operator controls
+that server (self-hosted/on-prem) — on shared/multi-tenant hosting it would
+expose whatever the backend process itself can read. `LocalFileConnector`
+(§3 above) already sandboxes every path to stay inside `base_path`; nothing
+about the connector itself changed, only its reachability from the
+Connections UI and `build_connector()`. Live-verified: a real `LOCAL_FILE`
+connection created via the Connections page, a Document Source schedule
+pointed at it, and a real invoice PDF sitting in that folder discovered,
+OCR'd, extracted, and decisioned exactly like any other STORAGE-category
+source — see payment-approval-workflow.md §11 for the run's numbers.
 
 ## 4. Confidence/accuracy routing
 
@@ -224,9 +458,15 @@ change:
   than one backend replica against document schedules.
 - **No WebSocket/SSE.** Live progress is 3-second polling from the frontend.
   Acceptable per spec, but means progress updates are not instantaneous.
-- **`LOCAL_FILE` connections are unusable end-to-end** — see §3.
 - **No Pipeline Builder graphical node** for this workflow; it's configured
   entirely through the Schedules module's own UI.
+- **DATABASE-kind, API-kind, and ERP-kind schedules are INVOICE-only** and
+  can never reach STRAIGHT_THROUGH — see §2a/§2c/§2d.
+- **All four planned non-file intake kinds now exist** — FILE (incl. email
+  inbox, §2b), DATABASE (§2a), API (§2c), and ERP (§2d). Nothing further is
+  disclosed as outstanding for this workflow at this time.
+- **Email inbox archiving is per-message, not per-attachment** — see §2b's
+  disclosed quirk (IMAP has no smaller atomic unit than the whole email).
 - Cloud connectors (Azure Blob, AWS S3) and SFTP/FTP/SMB were live-verified
   in earlier phases of this build against real Docker-hosted services; this
   particular feature's live verification (Phase 7) used a real Docker SFTP
@@ -234,7 +474,7 @@ change:
 
 ## 9. Automated tests
 
-`backend/tests/test_document_scheduling.py` — 14 cases, run via:
+`backend/tests/test_document_scheduling.py` — 22 cases, run via:
 
 ```bash
 cd backend && python -m pytest tests/test_document_scheduling.py -v
@@ -259,6 +499,25 @@ code under test, matching this codebase's existing test conventions
 | 11-12 | `_download_with_retry()` — real retry-then-succeed and retry-exhaustion, against a connector made to fail transiently |
 | 13 | `request_cancel()` sets the cooperative-cancellation flag |
 | 14 | `execute_schedule()` rejects a second run while one is already `RUNNING` |
+| 16 | `discover_database_records()` returns one dict per row (PAY18) |
+| 17 | `record_identity()` uses the key column when present, else falls back to a content hash (PAY18) |
+| 18 | `record_content_hash()` changes when row content changes, not on key order (PAY18) |
+| 19 | `build_fields_from_record()` maps scalars/line-items/JSON-unsafe types (`date`, `Decimal`) correctly (PAY18) |
+| 20 | Full DATABASE-kind run materializes one `ApInvoice` per row with correct fields, `extraction_model="STRUCTURED_SOURCE"`, no OCR (PAY18) |
+| 21 | A DATABASE-kind rerun with unchanged rows is a true no-op (`queued: 0`) (PAY18) |
+| 22 | `DocumentScheduleConfigIn` requires `source_query` and `document_type="INVOICE"` for `source_kind="DATABASE"` (PAY18) |
+| 23 | `discover_api_records()` returns one dict per decoded API record (PAY20) |
+| 24 | `record_identity()` for API-kind uses the key column and is independent of DATABASE-kind's identity hash (PAY20) |
+| 25 | Full API-kind run materializes one `ApInvoice` per row with correct fields (PAY20) |
+| 26 | An API-kind rerun with unchanged rows is a true no-op (`queued: 0`) (PAY20) |
+| 27 | `DocumentScheduleConfigIn` requires `source_api_endpoint` and `document_type="INVOICE"` for `source_kind="API"` (PAY20) |
+| 28 | `_validate_and_apply_document_config()` rejects a non-API connection for `source_kind="API"` (PAY20) |
+| 29 | `discover_erp_records()` returns one mapped dict per invoice (PAY21) |
+| 30 | `record_identity()` for ERP-kind uses the key column and is independent of other kinds' identity hashes (PAY21) |
+| 31 | Full ERP-kind run materializes one `ApInvoice` per row with correct fields (PAY21) |
+| 32 | An ERP-kind rerun with unchanged rows is a true no-op (`queued: 0`) (PAY21) |
+| 33 | `DocumentScheduleConfigIn` requires `document_type="INVOICE"` for `source_kind="ERP"` (PAY21) |
+| 34 | `_validate_and_apply_document_config()` rejects a non-ERP connection for `source_kind="ERP"` (PAY21) |
 
 Tests 8-10 exercise the **real** Tesseract OCR engine and the **real**
 deterministic Custom Extraction Engine (`app/extraction/custom_engine.py`,
@@ -278,15 +537,16 @@ sparse/uncertain extraction should get human review), and the test suite
 is written to assert the real, reliable outcome rather than force an
 artificial "success" path.
 
-**`LOCAL_FILE` in tests vs. production:** because of the gap in §3, tests
-construct a real `LocalFileConnector` directly and monkeypatch it in
-wherever `schedule_service.py`/`document_schedule_service.py` would
-otherwise call `connection_service.build_connector()` — the connector
-itself is fully real; only the FIELD_SCHEMAS-based secret-lookup
-indirection (irrelevant to `LOCAL_FILE`, which has no secrets) is bypassed.
-This is a test-only affordance and does not change, and should not be read
-as reversing, the production decision to keep `LOCAL_FILE` uncreatable via
-the API.
+**`LOCAL_FILE` in the automated test suite:** predates §3's fix and still
+constructs a real `LocalFileConnector` directly, monkeypatched in wherever
+`schedule_service.py`/`document_schedule_service.py` calls
+`connection_service.build_connector()` — the connector itself was always
+fully real; only the FIELD_SCHEMAS-based secret-lookup indirection
+(irrelevant to `LOCAL_FILE`, which has no secrets) was bypassed. Left as-is
+since it's a legitimate, lower-setup way to exercise the connector in tests;
+`base_path` is now also independently reachable through the real API/UI
+(§3), and the live verification there used the real path, not this
+monkeypatch.
 
 ## 10. Configuration reference
 
@@ -336,9 +596,6 @@ python scripts/migrate_document_schedules.py   # one-time, idempotent
 ## 12. Remaining/future work
 
 - Distributed run-lock for multi-instance deployments (§8).
-- Restoring a `LOCAL_FILE` FIELD_SCHEMAS entry, if the product decision from
-  the earlier phase that removed it is ever revisited — would need its own
-  explicit sign-off, not a side effect of this feature.
 - A Pipeline Builder graphical node, if visual pipeline composition is
   wanted for this workflow instead of/alongside the Schedules module UI.
 - Broader confidence-routing configurability (e.g., letting a schedule opt
