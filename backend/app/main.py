@@ -2,11 +2,19 @@
 Data Intelligence Platform — FastAPI backend
 Entry point: uvicorn app.main:app --reload --port 8000
 """
+from __future__ import annotations
+
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
+import shutil
+import sqlite3
+from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.core.config import get_settings
 from app.database.connection import init_db
@@ -140,10 +148,15 @@ from app.models.approval.notification import ApprovalNotificationOutbox  # noqa:
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_FRONTEND_DIST = _PROJECT_ROOT / "frontend" / "dist"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting up — initialising database …")
+    logger.info("Starting up — checking/initialising database …")
+    # Ensure any bundled backup DB is restored if the runtime DB has no users
+    await _restore_db_from_backup_if_needed()
     await init_db()
     await _seed_superadmin()
     await _seed_seller_admin()
@@ -179,6 +192,56 @@ async def _recover_bulk_migration_tasks() -> None:
     stats = await recover_stuck_bulk_migration_tasks()
     if stats["recovered_runs"] or stats["requeued_tasks"] or stats["failed_tasks"]:
         logger.info("Bulk migration recovery: %s", stats)
+
+
+async def _restore_db_from_backup_if_needed() -> None:
+    """If the platform DB exists but contains no users, try restoring
+    it from the newest bundled `dip.db.bak-*` file found in the repo.
+    This helps recover seeded users after an image rebuild.
+    """
+    # Working directory at container start is /app/backend (see Dockerfile/CMD)
+    db_path = Path("./dip.db")
+    if not db_path.exists():
+        # Nothing to do — init_db() will create a fresh DB
+        return
+
+    def _users_count(path: Path) -> Optional[int]:
+        try:
+            con = sqlite3.connect(str(path))
+            cur = con.cursor()
+            cur.execute("SELECT count(*) FROM users")
+            r = cur.fetchone()
+            cur.close()
+            con.close()
+            return int(r[0]) if r else 0
+        except Exception:
+            return None
+
+    current_count = _users_count(db_path)
+    if current_count and current_count > 0:
+        logger.info("Existing DB has %d users; no restore needed.", current_count)
+        return
+
+    # Find newest backup file by lexicographic timestamp suffix
+    backups = sorted(Path(".").glob("dip.db.bak-*"), reverse=True)
+    if not backups:
+        logger.info("No bundled DB backup found to restore.")
+        return
+
+    for backup in backups:
+        try:
+            logger.info("Attempting DB restore from %s", str(backup))
+            shutil.copyfile(str(backup), str(db_path))
+            restored_count = _users_count(db_path)
+            if restored_count and restored_count > 0:
+                logger.info("DB restored from %s — %d users present.", str(backup), restored_count)
+                return
+            else:
+                logger.warning("Restored DB from %s but users count is %s; trying next backup.", str(backup), restored_count)
+        except Exception:
+            logger.exception("Failed to restore DB from %s", str(backup))
+
+    logger.warning("DB restore attempted but no backup produced a users table with rows.")
 
 
 def _start_billing_scheduler():
@@ -368,6 +431,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # ── Routers ────────────────────────────────────────────────────
 app.include_router(auth_router, prefix="/api")
 app.include_router(data_catalog_router, prefix="/api")
@@ -426,7 +490,23 @@ app.include_router(invoice_rules_router, prefix="/api")
 app.include_router(approvals_router, prefix="/api")
 app.include_router(bulk_migration_router, prefix="/api")
 
+if _FRONTEND_DIST.exists():
+    app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")), name="frontend_assets")
+
 
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "service": settings.app_name}
+
+
+@app.get("/{full_path:path}")
+async def serve_react_app(full_path: str):
+    """Fall back to serving the React app for any unknown browser route."""
+    if not _FRONTEND_DIST.exists():
+        return {"status": "ok", "service": settings.app_name}
+
+    candidate = (_FRONTEND_DIST / full_path).resolve()
+    if candidate.is_file() and str(candidate).startswith(str(_FRONTEND_DIST)):
+        return FileResponse(candidate)
+
+    return FileResponse(_FRONTEND_DIST / "index.html")

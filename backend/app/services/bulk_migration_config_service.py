@@ -47,11 +47,19 @@ ALLOWED_IMPORT_EXTENSIONS = {"csv", "tsv", "txt", "xlsx", "xls", "json", "yaml",
 # doesn't need exact header renaming.
 _FIELD_ALIASES = {
     "source_schema": "source_schema",
+    "source_sch": "source_schema",
+    "src_schema": "source_schema",
     "source_object": "source_object",
     "source_table": "source_object",
+    "src_object": "source_object",
+    "src_table": "source_object",
     "target_schema": "target_schema",
+    "target_sch": "target_schema",
+    "tgt_schema": "target_schema",
     "target_object": "target_object",
     "target_table": "target_object",
+    "tgt_object": "target_object",
+    "tgt_table": "target_object",
     "object_type": "object_type",
     "load_type": "load_type",
     "primary_key": "primary_key",
@@ -84,8 +92,19 @@ class BulkMigrationConfigError(Exception):
     pass
 
 
+def _qualify(schema: str | None, obj: str) -> str:
+    """'schema.object' when a real schema is given, else the bare object
+    name — never a leading '.'. Salesforce/NetSuite (and any other
+    schema-less source) leave source_schema/target_schema unset, so
+    build_object_key() used to always splice in the '.' separator
+    regardless, producing keys like '.Account->.Account' instead of
+    'Account->Account'. Found live via a real SFDC/NetSuite pipeline."""
+    schema = (schema or "").strip()
+    return f"{schema}.{obj.strip()}" if schema else obj.strip()
+
+
 def build_object_key(source_schema: str | None, source_object: str, target_schema: str | None, target_object: str) -> str:
-    return f"{(source_schema or '').strip()}.{source_object.strip()}->{(target_schema or '').strip()}.{target_object.strip()}"
+    return f"{_qualify(source_schema, source_object)}->{_qualify(target_schema, target_object)}"
 
 
 async def _audit(db: AsyncSession, *, organization_id, actor_id, action, resource_id=None, status=AuditStatus.SUCCESS, details=None):
@@ -501,14 +520,37 @@ def parse_import_rows(content: bytes, filename: str) -> list[dict]:
     return _parse_yaml(content)  # yaml | yml
 
 
+def _unmapped_headers(raw_rows: list[dict]) -> list[str]:
+    """Any column header the file used that _FIELD_ALIASES doesn't
+    recognize — these get silently dropped from every row rather than
+    raising a hard per-row error (a stray custom column shouldn't block
+    5,000 otherwise-valid rows), but that used to mean a genuine typo
+    (e.g. 'Source_sch' instead of 'source_schema') failed the exact same
+    silent way, with zero feedback that the whole column had been ignored.
+    Found live against a real import file. Computed once from the header
+    set, not per-row, and excludes blank header cells (a trailing
+    delimiter in a hand-edited .txt/.csv produces one)."""
+    seen = set()
+    for row in raw_rows:
+        for raw_key in row.keys():
+            if raw_key is None:
+                continue
+            key = str(raw_key).strip().lower().replace(" ", "_")
+            if key:
+                seen.add(key)
+    return sorted(h for h in seen if h not in _FIELD_ALIASES)
+
+
 async def import_objects(db: AsyncSession, pipeline: BulkMigrationPipeline, content: bytes, filename: str, *,
                           dry_run: bool, actor_id: int | None) -> dict:
     """Parses the whole file (config rows are lightweight even at 50k — see
     module docstring), validates every row, and — unless dry_run — commits
     valid rows in IMPORT_BATCH_SIZE batches with upsert-by-object_key
-    semantics. Returns {total, valid, invalid, imported, updated, errors}.
+    semantics. Returns {total, valid, invalid, imported, updated, errors,
+    unmapped_columns}.
     """
     raw_rows = parse_import_rows(content, filename)
+    unmapped_columns = _unmapped_headers(raw_rows)
     valid_fields: list[dict] = []
     errors: list[str] = []
     seen_keys: set[str] = set()
@@ -524,7 +566,7 @@ async def import_objects(db: AsyncSession, pipeline: BulkMigrationPipeline, cont
         seen_keys.add(fields["object_key"])
         valid_fields.append(fields)
 
-    result = {"total": len(raw_rows), "valid": len(valid_fields), "invalid": len(errors), "imported": 0, "updated": 0, "errors": errors[:500]}
+    result = {"total": len(raw_rows), "valid": len(valid_fields), "invalid": len(errors), "imported": 0, "updated": 0, "errors": errors[:500], "unmapped_columns": unmapped_columns}
     if dry_run or not valid_fields:
         return result
 

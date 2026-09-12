@@ -69,7 +69,9 @@ async def discover_files(connection: Connection, config: DocumentScheduleConfig)
     smbclient/boto3/azure-storage-blob calls are all blocking I/O."""
     connector = build_connector(connection)
     try:
-        return await asyncio.to_thread(connector.list_files, pattern=config.file_pattern, recursive=config.recursive_scan)
+        return await asyncio.to_thread(
+            connector.list_files, pattern=config.file_pattern, recursive=config.recursive_scan, path=config.source_path,
+        )
     except ConnectorError:
         raise  # let the caller attribute this to SOURCE_CONNECTION_FAILED / SOURCE_PATH_NOT_FOUND
 

@@ -50,7 +50,7 @@ from app.database import tenant_engine_registry
 from app.connectors.base import ConnectorError, FileInfo
 from app.core.config import get_settings
 from app.models.connection import Connection
-from app.models.document import DocumentStatus
+from app.models.document import Document, DocumentStatus
 from app.models.document_schedule import DocumentScheduleConfig, DocumentSourceRegistry, DocumentSourceStatus
 from app.models.schedule import RunStatus, Schedule, ScheduleFrequency, ScheduleRun, ScheduleStatus
 from app.models.user import User
@@ -876,6 +876,28 @@ async def _process_one_file(
                 invoice_auto_post=config.invoice_auto_post, invoice_erp_connection_id=config.invoice_erp_connection_id,
             )
 
+            # process_document() can internally roll back THIS SAME shared
+            # session to recover from a genuine mid-pipeline DB error (see
+            # its own docstring's "pending rollback" note) — a rollback
+            # expires EVERY object still attached to the session,
+            # `registry` included, regardless of whether it was involved
+            # in the failure. A plain attribute read on an expired
+            # instance (e.g. transition()'s own `entry.status` check
+            # below) raises MissingGreenlet under AsyncSession instead of
+            # transparently reloading — which would escape this try block
+            # entirely undetected and silently kill the whole background
+            # run. Found live: a document genuinely marked FAILED in the
+            # Documents module while its schedule run stayed stuck at
+            # PROCESSING forever, only "recovering" to QUEUED after a
+            # backend restart's stuck-job sweep (see
+            # recover_stuck_document_schedules() below). Re-fetching here
+            # is cheap and always safe whether or not a rollback actually
+            # happened, so every status branch below works off a
+            # known-good instance.
+            registry = await db.get(DocumentSourceRegistry, registry_id)
+            if registry is None:
+                raise RuntimeError(f"Document Source Registry entry #{registry_id} vanished mid-processing.")
+
             # PAY17 — read the real approval outcome for THIS document's
             # invoice (if any) off already-persisted state, independent
             # of the doc.status/outcome bucket below (an invoice can end
@@ -906,16 +928,26 @@ async def _process_one_file(
                         registry.last_error = f"Processed successfully, but archive move failed: {exc}"
                         await db.commit()
         except Exception as exc:  # noqa: BLE001 - a single file's failure must never sink the whole batch (spec section 28)
-            # Written directly (not via transition()) — a truly
-            # unanticipated exception can happen from ANY status
-            # (download, save, or process_document() itself all throw
-            # from a different current status), and every one of them
-            # legitimately ends at FAILED; transition()'s explicit state
-            # machine is for the MODELED paths above, not this catch-all.
-            registry.processing_attempts += 1
-            registry.status = DocumentSourceStatus.FAILED
-            registry.last_error = str(exc)[:2000]
-            await db.commit()
+            # Re-fetch rather than mutate any `registry` instance already
+            # held above — see the comment after process_document() above
+            # for why it may be expired (a rollback elsewhere in this same
+            # shared session invalidates it). Same recovery shape
+            # document_service.process_document()'s own except block uses
+            # for `doc`: roll back first to clear any pending-rollback
+            # session state, then re-fetch a clean instance before
+            # writing — a truly unanticipated exception can happen from
+            # ANY status (download, save, or process_document() itself
+            # all throw from a different current status), and every one
+            # of them legitimately ends at FAILED; transition()'s explicit
+            # state machine is for the MODELED paths above, not this
+            # catch-all, so it's written directly.
+            await db.rollback()
+            registry = await db.get(DocumentSourceRegistry, registry_id)
+            if registry is not None:
+                registry.processing_attempts += 1
+                registry.status = DocumentSourceStatus.FAILED
+                registry.last_error = str(exc)[:2000]
+                await db.commit()
             outcome = "failed"
 
         async with stats_lock:
@@ -980,6 +1012,17 @@ async def _process_one_record(
                 preextracted_fields=fields,
             )
 
+            # See the identical comment in _process_one_file() above —
+            # process_document() can roll back this shared session
+            # internally, which expires `registry`; re-fetch before
+            # touching it again so transition()'s own attribute reads
+            # never hit an expired instance (MissingGreenlet under
+            # AsyncSession) and silently strand this record's registry
+            # row at PROCESSING forever.
+            registry = await db.get(DocumentSourceRegistry, registry_id)
+            if registry is None:
+                raise RuntimeError(f"Document Source Registry entry #{registry_id} vanished mid-processing.")
+
             if config.document_type == "INVOICE":
                 approval_increments = await _classify_invoice_approval_outcome(db, doc.id)
 
@@ -994,10 +1037,15 @@ async def _process_one_record(
                 await doc_sched_svc.transition(db, registry, DocumentSourceStatus.PROCESSED)
                 outcome = "success"
         except Exception as exc:  # noqa: BLE001 - a single record's failure must never sink the whole batch (spec section 28)
-            registry.processing_attempts += 1
-            registry.status = DocumentSourceStatus.FAILED
-            registry.last_error = str(exc)[:2000]
-            await db.commit()
+            # Re-fetch rather than mutate any `registry` instance already
+            # held above — see the comment after process_document() above.
+            await db.rollback()
+            registry = await db.get(DocumentSourceRegistry, registry_id)
+            if registry is not None:
+                registry.processing_attempts += 1
+                registry.status = DocumentSourceStatus.FAILED
+                registry.last_error = str(exc)[:2000]
+                await db.commit()
             outcome = "failed"
 
         async with stats_lock:
@@ -1167,12 +1215,26 @@ async def _run_document_schedule_background(schedule_id: int, run_id: int, organ
 
         if not to_process:
             run = await db.get(ScheduleRun, run_id)
-            run.status = RunStatus.SUCCESS
             run.ended_at = datetime.now(timezone.utc)
             run.duration_seconds = round((run.ended_at - started_at).total_seconds(), 1)
             run.records_processed = 0
-            run.error_message = None
-            run.logs = [{"timestamp": run.ended_at.isoformat(), "level": "INFO", "message": "No new unprocessed documents found."}]
+            # Discovery itself can reject files before any of them ever
+            # reach `to_process` (oversized, unsupported) — that failure
+            # was already counted into `stats["failed"]`/`stats["unsupported"]`
+            # and persisted via document_stats a few lines up, but an
+            # unconditional SUCCESS + cleared error_message here used to
+            # silently override it: the per-file table already showed
+            # FAILED rows while the run itself claimed a clean SUCCESS.
+            # Found live (user-reported) — see the identical review-vs-
+            # failed gap fixed below for the "some files queued" branch.
+            if stats.get("failed", 0):
+                run.status = RunStatus.FAILED if not (stats.get("skipped", 0) or stats.get("unsupported", 0)) else RunStatus.COMPLETED_WITH_ERRORS
+                run.error_message = f"{stats['failed']} file(s) rejected during discovery — see Document Processing History for details."
+                run.logs = [{"timestamp": run.ended_at.isoformat(), "level": "ERROR", "message": run.error_message}]
+            else:
+                run.status = RunStatus.SUCCESS
+                run.error_message = None
+                run.logs = [{"timestamp": run.ended_at.isoformat(), "level": "INFO", "message": "No new unprocessed documents found."}]
             _finalize_schedule(schedule, run)
             await db.commit()
             return
@@ -1184,27 +1246,70 @@ async def _run_document_schedule_background(schedule_id: int, run_id: int, organ
 
     async def _bounded(item: tuple, registry_id: int) -> None:
         async with semaphore:
-            async with sessionmaker() as check_db:
-                fresh_run = await check_db.get(ScheduleRun, run_id)
-                if fresh_run is not None and fresh_run.cancel_requested:
-                    fresh_registry = await check_db.get(DocumentSourceRegistry, registry_id)
-                    if fresh_registry is not None and fresh_registry.status == DocumentSourceStatus.QUEUED:
-                        await doc_sched_svc.transition(check_db, fresh_registry, DocumentSourceStatus.SKIPPED, error="Run cancelled before this file started.")
-                    return  # cooperative cancellation checkpoint (section 81) — between files only, never mid-file
-            if is_record_source:
-                row, record_key = item
-                await _process_one_record(
-                    organization_id=organization_id, schedule_id=schedule_id, connection=connection, config=config,
-                    row=row, record_key=record_key, registry_id=registry_id, run_id=run_id, stats=stats, stats_lock=stats_lock,
-                    sessionmaker=sessionmaker,
-                )
-            else:
-                (file_info,) = item
-                await _process_one_file(
-                    organization_id=organization_id, schedule_id=schedule_id, connection=connection, config=config,
-                    file_info=file_info, registry_id=registry_id, run_id=run_id, stats=stats, stats_lock=stats_lock,
-                    sessionmaker=sessionmaker, schedule_retry_count=schedule.retry_count, schedule_retry_interval=schedule.retry_interval_seconds,
-                )
+            try:
+                async with sessionmaker() as check_db:
+                    fresh_run = await check_db.get(ScheduleRun, run_id)
+                    if fresh_run is not None and fresh_run.cancel_requested:
+                        fresh_registry = await check_db.get(DocumentSourceRegistry, registry_id)
+                        if fresh_registry is not None and fresh_registry.status == DocumentSourceStatus.QUEUED:
+                            await doc_sched_svc.transition(check_db, fresh_registry, DocumentSourceStatus.SKIPPED, error="Run cancelled before this file started.")
+                        return  # cooperative cancellation checkpoint (section 81) — between files only, never mid-file
+                if is_record_source:
+                    row, record_key = item
+                    await _process_one_record(
+                        organization_id=organization_id, schedule_id=schedule_id, connection=connection, config=config,
+                        row=row, record_key=record_key, registry_id=registry_id, run_id=run_id, stats=stats, stats_lock=stats_lock,
+                        sessionmaker=sessionmaker,
+                    )
+                else:
+                    (file_info,) = item
+                    await _process_one_file(
+                        organization_id=organization_id, schedule_id=schedule_id, connection=connection, config=config,
+                        file_info=file_info, registry_id=registry_id, run_id=run_id, stats=stats, stats_lock=stats_lock,
+                        sessionmaker=sessionmaker, schedule_retry_count=schedule.retry_count, schedule_retry_interval=schedule.retry_interval_seconds,
+                    )
+            except Exception as exc:  # noqa: BLE001 - last-resort backstop: _process_one_file()/_process_one_record() already
+                # catch everything they can anticipate and always mark
+                # their own registry row FAILED before returning — this
+                # only fires for a genuinely unanticipated failure in
+                # code OUTSIDE that try (e.g. the cancellation checkpoint
+                # above, or a bug in this dispatch wiring itself). Without
+                # this, one such exception would escape into the
+                # asyncio.gather() below uncaught, which cancels every
+                # sibling file/record still in flight and (since this
+                # whole background run is itself an un-awaited
+                # asyncio.create_task(), see execute_schedule()) leaves
+                # the ScheduleRun/DocumentSourceRegistry rows stranded at
+                # RUNNING/PROCESSING forever with nothing to report the
+                # failure — exactly the "stuck at Processing until a
+                # backend restart requeues it" symptom found live. A
+                # best-effort attempt to mark this one item FAILED (using
+                # a brand new session, since whatever session was in
+                # scope when this raised may itself be broken) lets the
+                # run finish and report accurately instead.
+                try:
+                    async with sessionmaker() as fail_db:
+                        fail_registry = await fail_db.get(DocumentSourceRegistry, registry_id)
+                        if fail_registry is not None and fail_registry.status not in (
+                            DocumentSourceStatus.PROCESSED, DocumentSourceStatus.FAILED,
+                            DocumentSourceStatus.REVIEW_REQUIRED, DocumentSourceStatus.SKIPPED,
+                        ):
+                            fail_registry.processing_attempts += 1
+                            fail_registry.status = DocumentSourceStatus.FAILED
+                            fail_registry.last_error = f"Unexpected dispatch error: {exc}"[:2000]
+                            await fail_db.commit()
+                except Exception:  # noqa: BLE001 - this IS the last resort; never let cleanup itself take the run down
+                    pass
+                async with stats_lock:
+                    stats["processed"] = stats.get("processed", 0) + 1
+                    stats["failed"] = stats.get("failed", 0) + 1
+                    stats["current_file"] = None
+                    stats["current_stage"] = None
+                try:
+                    async with sessionmaker() as stats_db:
+                        await _persist_stats(stats_db, run_id, stats)
+                except Exception:  # noqa: BLE001 - best-effort persistence; the in-memory `stats` dict this run's final aggregation reads is already updated regardless
+                    pass
 
     if is_record_source:
         await asyncio.gather(*((_bounded((row, record_key), rid)) for row, record_key, rid in to_process))
@@ -1222,12 +1327,24 @@ async def _run_document_schedule_background(schedule_id: int, run_id: int, organ
         if run.cancel_requested:
             run.status = RunStatus.CANCELLED
             run.error_message = f"Cancelled after processing {stats['processed']} of {stats['queued']} queued {unit}."
-        elif stats["failed"] == 0:
+        elif stats["failed"] == 0 and stats.get("review", 0) == 0:
             run.status = RunStatus.SUCCESS
             run.error_message = None
-        elif stats["success"] or stats["review"]:
+        elif stats["success"] or stats.get("review", 0):
+            # A batch where nothing outright failed but some/all queued
+            # items landed in NEEDS_REVIEW used to fall into the branch
+            # above (stats["failed"] == 0 -> SUCCESS) even though every
+            # one of those files genuinely needs a human — found live:
+            # the Document Processing History table correctly showed
+            # REVIEW_REQUIRED/FAILED rows while this run's own status
+            # badge claimed a clean SUCCESS right above it.
             run.status = RunStatus.COMPLETED_WITH_ERRORS
-            run.error_message = f"{stats['failed']} of {stats['queued']} {unit} failed — see Document Processing History for details."
+            parts = []
+            if stats["failed"]:
+                parts.append(f"{stats['failed']} failed")
+            if stats.get("review", 0):
+                parts.append(f"{stats['review']} need review")
+            run.error_message = f"{', '.join(parts)} of {stats['queued']} {unit} — see Document Processing History for details."
         else:
             run.status = RunStatus.FAILED
             run.error_message = f"All {stats['failed']} queued {unit} failed."
@@ -1277,6 +1394,41 @@ async def recover_stuck_document_schedules() -> dict:
             )
         )).scalars().all()
         for entry in stuck_docs:
+            # A registry row can be stuck at PROCESSING while its
+            # underlying Document already reached a real terminal status
+            # (COMPLETED/NEEDS_REVIEW/FAILED) — e.g. process_document()
+            # finished and committed the document's own final status just
+            # before the crash, but the registry's own status-write right
+            # after it never got to run. Sync to that real outcome
+            # instead of blindly requeuing/reprocessing an already-done
+            # document. Found live (user-reported): a document correctly
+            # showing FAILED in the Documents module while its schedule
+            # kept reporting it QUEUED/PROCESSING after a restart.
+            doc = await db.get(Document, entry.document_id) if entry.document_id else None
+            if doc is not None and doc.status in (DocumentStatus.COMPLETED, DocumentStatus.NEEDS_REVIEW, DocumentStatus.FAILED):
+                bucket = {
+                    DocumentStatus.COMPLETED: ("success", DocumentSourceStatus.PROCESSED, None),
+                    DocumentStatus.NEEDS_REVIEW: ("review", DocumentSourceStatus.REVIEW_REQUIRED, None),
+                    DocumentStatus.FAILED: ("failed", DocumentSourceStatus.FAILED, doc.error_message or "Document processing failed (synced from the Documents module after a backend restart)."),
+                }[doc.status]
+                stat_key, registry_status, error = bucket
+                entry.status = registry_status
+                entry.last_error = error
+                if stat_key == "failed":
+                    failed_documents += 1
+                # Keep this run's own summary tiles (document_stats) in
+                # sync with the per-file table they sit above — without
+                # this, the stat tiles (read from the frozen JSON
+                # snapshot) can disagree with the live per-file status
+                # this loop just corrected.
+                if entry.processing_run_id:
+                    run = await db.get(ScheduleRun, entry.processing_run_id)
+                    if run is not None and isinstance(run.document_stats, dict):
+                        fresh_stats = dict(run.document_stats)
+                        fresh_stats[stat_key] = fresh_stats.get(stat_key, 0) + 1
+                        run.document_stats = fresh_stats
+                continue
+
             schedule = await db.get(Schedule, entry.schedule_id) if entry.schedule_id else None
             max_attempts = 1 + max(0, schedule.retry_count if schedule else 0)
             if entry.processing_attempts < max_attempts:

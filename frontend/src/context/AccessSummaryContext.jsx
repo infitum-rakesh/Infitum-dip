@@ -17,7 +17,7 @@ const AccessSummaryContext = createContext(null);
 const EMPTY_SUMMARY = { active_modules: [], expired_modules: {}, expiring_modules: [], has_tenant_access: true };
 
 export function AccessSummaryProvider({ children }) {
-  const { organization, isAuthenticated } = useContext(AuthContext);
+  const { organization, isAuthenticated, syncLicensedModules } = useContext(AuthContext);
   const [summary, setSummary] = useState(EMPTY_SUMMARY);
   const [loading, setLoading] = useState(false);
 
@@ -28,10 +28,17 @@ export function AccessSummaryProvider({ children }) {
     }
     setLoading(true);
     return accessApi.getModulesSummary()
-      .then(setSummary)
+      .then((data) => {
+        setSummary(data);
+        // Feed this real, live snapshot back into the cached
+        // organization.licensed_modules every consumer of hasModule()/
+        // evaluateAccess() actually reads — see syncLicensedModules'
+        // own docstring in AuthContext.jsx for why this is needed.
+        syncLicensedModules(data.active_modules);
+      })
       .catch(() => setSummary(EMPTY_SUMMARY))
       .finally(() => setLoading(false));
-  }, [isAuthenticated, organization]);
+  }, [isAuthenticated, organization, syncLicensedModules]);
 
   useEffect(() => { refetch(); }, [refetch]);
 

@@ -44,6 +44,7 @@ export const MODULES = {
   ANOMALY_DETECTION:     'ANOMALY_DETECTION',
   INVOICE_INTELLIGENCE:  'INVOICE_INTELLIGENCE',
   PAYMENT_APPROVAL:      'PAYMENT_APPROVAL',
+  BULK_MIGRATION:        'BULK_MIGRATION',
 };
 
 /** License status */
@@ -328,6 +329,21 @@ export const PAYMENT_APPROVAL_PERMISSIONS = {
   APPROVAL_RULE_STATUS: { module: MODULES.PAYMENT_APPROVAL, action: ACTIONS.EDIT }, // activate/deactivate
   APPROVAL_SIMULATE:  { module: MODULES.PAYMENT_APPROVAL, action: ACTIONS.EXECUTE },
   APPROVAL_ACT:       { module: MODULES.PAYMENT_APPROVAL, action: ACTIONS.APPROVE }, // approve/reject/review/flag a step
+};
+
+/**
+ * Bulk Object Migration — centralized permission map, same shape as
+ * INVOICE_PERMISSIONS/ANOMALY_PERMISSIONS above. Mirrored server-side by
+ * require_action(action, module="BULK_MIGRATION") in api/bulk_migration.py.
+ * BULK_MIGRATION_RUN covers every EXECUTE-tier action (validate/dry-run/
+ * run/pause/resume/cancel/retry-failed), not a dedicated action per one.
+ */
+export const BULK_MIGRATION_PERMISSIONS = {
+  BULK_MIGRATION_VIEW:   { module: MODULES.BULK_MIGRATION, action: ACTIONS.VIEW },
+  BULK_MIGRATION_CREATE: { module: MODULES.BULK_MIGRATION, action: ACTIONS.CREATE }, // pipeline + object config, import
+  BULK_MIGRATION_EDIT:   { module: MODULES.BULK_MIGRATION, action: ACTIONS.EDIT },
+  BULK_MIGRATION_DELETE: { module: MODULES.BULK_MIGRATION, action: ACTIONS.DELETE },
+  BULK_MIGRATION_RUN:    { module: MODULES.BULK_MIGRATION, action: ACTIONS.EXECUTE }, // validate/dry-run/run/pause/resume/cancel/retry
 };
 
 /**

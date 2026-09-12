@@ -6,7 +6,7 @@ import {
   AlertTriangle, PlayCircle, Clock, Users, Shield, Building2, Key,
   ScrollText, Settings, ChevronRight, LogOut, BarChart3, ArrowLeftRight,
   CreditCard, Puzzle, Gauge, UserCog, Monitor, DollarSign, Receipt, Zap, Lock,
-  BadgeCheck, History,
+  BadgeCheck, History, Boxes,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth.js';
 import { usePermission } from '@/hooks/usePermission.js';
@@ -66,6 +66,13 @@ const NAV = [
       { to: '/app/pipeline',   label: 'Pipeline Builder',      icon: GitBranch },
       { to: '/app/transform',  label: 'Transform Workspace',   icon: Shuffle, module: MODULES.TRANSFORMATION },
       { to: '/app/mapping',    label: 'Column Mapping',        icon: ArrowLeftRight, module: MODULES.TRANSFORMATION },
+    ],
+  },
+  {
+    section: 'BULK MIGRATION',
+    module: MODULES.BULK_MIGRATION,
+    items: [
+      { to: '/app/bulk-migration', label: 'Pipelines', icon: Boxes },
     ],
   },
   {

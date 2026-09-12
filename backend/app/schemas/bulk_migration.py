@@ -314,3 +314,4 @@ class ImportResultOut(BaseModel):
     imported: int
     updated: int
     errors: list[str]
+    unmapped_columns: list[str] = []

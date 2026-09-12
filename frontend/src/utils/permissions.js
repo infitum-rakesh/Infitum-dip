@@ -50,6 +50,7 @@ export const MODULE_META = {
   [MODULES.ANOMALY_DETECTION]:     { label: 'Anomaly Detection',     icon: '🔎', group: 'Pipeline' },
   [MODULES.INVOICE_INTELLIGENCE]:  { label: 'Invoice Intelligence',  icon: '🧾', group: 'Intelligence' },
   [MODULES.PAYMENT_APPROVAL]:      { label: 'Payment Approvals',     icon: '🔏', group: 'Operations' },
+  [MODULES.BULK_MIGRATION]:        { label: 'Bulk Object Migration', icon: '📦', group: 'Pipeline' },
 };
 
 export const SUBSCRIPTION_PLANS = {

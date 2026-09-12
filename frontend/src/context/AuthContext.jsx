@@ -127,6 +127,32 @@ export function AuthProvider({ children }) {
     });
   }, []);
 
+  // Keeps organization.licensed_modules (and therefore every hasModule()/
+  // evaluateAccess() check downstream — Sidebar nav, PermissionGate, route
+  // content) in step with the org's REAL current entitlements, without
+  // requiring a full logout/login. organization.licensed_modules is
+  // otherwise only ever set at login/register/impersonate time and then
+  // cached in localStorage indefinitely — so a module a Seller enables
+  // mid-session (e.g. Bulk Migration) stayed invisible until the user
+  // signed out and back in. AccessSummaryContext already polls the real
+  // GET /access/modules-summary on mount; this just feeds that same real
+  // data back into the cached org object it was always supposed to
+  // reflect. No-ops (and skips the localStorage write) when the set is
+  // unchanged, so this is safe to call on every AccessSummaryContext fetch.
+  const syncLicensedModules = useCallback((activeModules) => {
+    if (!Array.isArray(activeModules)) return;
+    setOrg((prev) => {
+      if (!prev) return prev;
+      const prevModules = prev.licensed_modules ?? [];
+      const same = prevModules.length === activeModules.length
+        && prevModules.every((m) => activeModules.includes(m));
+      if (same) return prev;
+      const next = { ...prev, licensed_modules: activeModules };
+      _persist(STORAGE_KEYS.ORGANIZATION, next);
+      return next;
+    });
+  }, []);
+
   const isImpersonating = !!_load(STORAGE_KEYS.IMPERSONATION_ORIGINAL);
 
   const exitImpersonation = useCallback(() => {
@@ -155,6 +181,7 @@ export function AuthProvider({ children }) {
     exitImpersonation,
     isImpersonating,
     clearMustChangePassword,
+    syncLicensedModules,
     isAuthenticated: !!user,
   };
 

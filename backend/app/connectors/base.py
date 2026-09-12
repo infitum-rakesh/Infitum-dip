@@ -341,7 +341,14 @@ class BaseConnector(abc.ABC):
 
     # ── File operations (File/SFTP source, Phase 5) ───────────────────
 
-    def list_files(self, pattern: str | None = None) -> list[FileInfo]:
+    def list_files(self, pattern: str | None = None, path: str | None = None) -> list[FileInfo]:
+        """`path`, when given, scopes the listing to a sub-folder/prefix
+        under this connection's own configured root (base_path/share/
+        container/bucket) — e.g. a DocumentScheduleConfig's source_path,
+        letting several schedules share one Connection while each reading
+        its own subfolder. None/'' means the connection's root itself,
+        the pre-existing behavior every caller that doesn't pass it keeps
+        unchanged."""
         raise ConnectorUnsupportedError(f"{self.connection_type} does not support file listing.")
 
     def open_read_stream(self, file_path: str):

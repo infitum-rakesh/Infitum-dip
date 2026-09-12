@@ -51,6 +51,21 @@ class LocalFileConnector(FileConnectorBase):
             raise ConnectorValidationError(f"'{object_name}' resolves outside this connection's base path.")
         return str(candidate)
 
+    def _effective_base(self, path: str | None) -> Path:
+        """Resolves an optional sub-folder (e.g. a schedule's configured
+        source_path) against this connection's base_path — same
+        outside-the-sandbox containment check _resolve_path() applies to
+        a single object_name, since a caller-supplied sub-path is exactly
+        that kind of untrusted input too. None/'' means the connection's
+        own base_path itself, the pre-existing behavior."""
+        base = self._base()
+        if not path or not path.strip():
+            return base
+        candidate = (base / path.strip().strip("/\\")).resolve()
+        if candidate != base and base not in candidate.parents:
+            raise ConnectorValidationError(f"'{path}' resolves outside this connection's base path.")
+        return candidate
+
     def test_connection(self) -> ConnectionTestResult:
         start = time.monotonic()
         try:
@@ -65,8 +80,12 @@ class LocalFileConnector(FileConnectorBase):
         except Exception as exc:
             return ConnectionTestResult(success=False, message=self._scrub(str(exc)), latency_ms=round((time.monotonic() - start) * 1000, 1))
 
-    def list_files(self, pattern: str | None = None, recursive: bool = False) -> list[FileInfo]:
-        base = self._base()
+    def list_files(self, pattern: str | None = None, recursive: bool = False, path: str | None = None) -> list[FileInfo]:
+        base = self._effective_base(path)
+        if not base.exists():
+            raise ConnectorValidationError(f"Source path does not exist: {path or '.'}")
+        if not base.is_dir():
+            raise ConnectorValidationError(f"Source path is not a directory: {path or '.'}")
         effective_pattern = pattern or self.config.get("file_pattern") or "*"
         is_regex = effective_pattern.startswith("re:")
         regex = re.compile(effective_pattern[3:]) if is_regex else None

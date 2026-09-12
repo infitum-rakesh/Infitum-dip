@@ -1,0 +1,153 @@
+/* ============================================================
+   Bulk Object Migration module styles — scoped to .bkm-*
+   Mirrors anomaly-detection.css's .anm-* / reconciliation.css's
+   .rcn-* patterns (list page, KPI cards, editor header, option
+   cards) so the module looks native to the rest of the app.
+   ============================================================ */
+
+.bkm-page { max-width: 1280px; }
+
+/* ── Page header ───────────────────────────────────────────── */
+.bkm-header {
+  display: flex; align-items: flex-start;
+  justify-content: space-between; margin-bottom: 20px; gap: 16px; flex-wrap: wrap;
+}
+.bkm-title {
+  font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary);
+  display: flex; align-items: center; gap: 8px;
+}
+.bkm-subtitle { font-size: var(--fs-md); color: var(--text-muted); margin-top: 3px; }
+.bkm-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.bkm-error-banner {
+  background: var(--color-danger-bg, #FEF2F2); color: var(--color-danger-dark, #991B1B);
+  border: 1px solid var(--color-danger, #EF4444); border-radius: var(--radius-md);
+  padding: 10px 14px; margin-bottom: 16px; font-size: var(--fs-sm);
+}
+
+/* ── KPI cards ─────────────────────────────────────────────── */
+.bkm-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+.bkm-kpi-card {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl);
+  padding: 14px 16px;
+}
+.bkm-kpi-value { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; color: var(--text-primary); line-height: 1.2; }
+.bkm-kpi-label { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600; }
+.bkm-kpi-warning .bkm-kpi-value { color: var(--color-warning-dark, #B45309); }
+.bkm-kpi-danger  .bkm-kpi-value { color: var(--color-danger-dark, #991B1B); }
+.bkm-kpi-info    .bkm-kpi-value { color: var(--color-primary); }
+@media (max-width: 900px) { .bkm-kpis { grid-template-columns: repeat(2, 1fr); } }
+
+/* ── List table panel ─────────────────────────────────────── */
+.bkm-list-table-panel { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); overflow: hidden; }
+.bkm-name-link {
+  background: none; border: none; padding: 0; font: inherit; cursor: pointer;
+  font-weight: 600; color: var(--color-primary); text-align: left;
+}
+.bkm-name-link:hover { text-decoration: underline; }
+.bkm-mono { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); }
+.bkm-row-actions { display: flex; gap: 6px; align-items: center; }
+.bkm-icon-btn {
+  width: 26px; height: 26px; border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); border: 1px solid transparent; transition: var(--transition);
+  background: none; flex-shrink: 0; cursor: pointer;
+}
+.bkm-icon-btn:hover { background: var(--color-danger-bg); color: var(--color-danger); border-color: var(--color-danger); }
+.bkm-icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.bkm-icon-btn-edit:hover { background: var(--bg-body); color: var(--text-primary); border-color: var(--border-dark); }
+.bkm-icon-btn-run {
+  background: var(--color-primary); color: var(--text-on-primary); border-color: var(--color-primary);
+}
+.bkm-icon-btn-run:hover:not(:disabled) { background: var(--color-primary-dark); border-color: var(--color-primary-dark); }
+.bkm-spinner {
+  width: 13px; height: 13px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff;
+  border-radius: 50%; animation: bkm-spin 0.65s linear infinite; display: inline-block;
+}
+.bkm-spin { animation: bkm-spin 0.8s linear infinite; }
+@keyframes bkm-spin { to { transform: rotate(360deg); } }
+
+/* ── Editor / detail header ───────────────────────────────── */
+.bkm-back-link {
+  display: flex; width: fit-content; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600;
+  color: var(--text-muted); text-decoration: none; margin-bottom: 8px;
+}
+.bkm-back-link:hover { color: var(--color-primary); }
+.bkm-detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+.bkm-detail-name { font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary); display: flex; align-items: center; gap: 10px; }
+.bkm-detail-desc { font-size: var(--fs-sm); color: var(--text-muted); margin-top: 4px; max-width: 640px; }
+.bkm-detail-meta { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--text-muted); }
+.bkm-detail-meta strong { color: var(--text-secondary); font-weight: 600; }
+
+.bkm-toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; align-items: center; }
+.bkm-toolbar-spacer { flex: 1; }
+
+/* ── Filters ───────────────────────────────────────────────── */
+.bkm-filters { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; align-items: center; }
+.bkm-filters select, .bkm-input {
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); background: var(--bg-card); color: var(--text-primary);
+}
+.bkm-filters select { min-width: 150px; }
+
+/* ── Field / form ──────────────────────────────────────────── */
+.bkm-field { margin-bottom: 12px; }
+.bkm-label { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-secondary); display: block; margin-bottom: 5px; }
+.bkm-hint { font-size: 11px; color: var(--text-faint); display: block; margin-top: 4px; }
+.bkm-input-full, .bkm-select-full { width: 100%; box-sizing: border-box; }
+.bkm-field-row { display: flex; gap: 16px; flex-wrap: wrap; }
+.bkm-field-row .bkm-field { flex: 1; min-width: 160px; }
+.bkm-checkbox-row { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--text-primary); margin-bottom: 10px; }
+
+/* ── Run status summary cards ──────────────────────────────── */
+.bkm-run-summary { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 18px; }
+.bkm-run-summary-card { text-align: center; background: var(--bg-body); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 12px; }
+.bkm-run-summary-val { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; line-height: 1.2; color: var(--text-primary); }
+.bkm-run-summary-val.success { color: var(--color-success-dark, #15803D); }
+.bkm-run-summary-val.danger  { color: var(--color-danger-dark, #991B1B); }
+.bkm-run-summary-val.info    { color: var(--color-primary); }
+.bkm-run-summary-val.warning { color: var(--color-warning-dark, #B45309); }
+.bkm-run-summary-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-muted); margin-top: 4px; }
+@media (max-width: 900px) { .bkm-run-summary { grid-template-columns: repeat(2, 1fr); } }
+
+/* ── Progress bar ──────────────────────────────────────────── */
+.bkm-progress-track { height: 10px; background: var(--bg-body); border: 1px solid var(--border); border-radius: 99px; overflow: hidden; display: flex; margin-bottom: 6px; }
+.bkm-progress-seg { height: 100%; }
+.bkm-progress-seg.success { background: var(--color-success, #22C55E); }
+.bkm-progress-seg.danger  { background: var(--color-danger, #EF4444); }
+.bkm-progress-seg.info    { background: var(--color-primary); }
+.bkm-progress-seg.warning { background: var(--color-warning, #F59E0B); }
+.bkm-progress-seg.gray    { background: var(--border-dark); }
+.bkm-progress-label { font-size: 11.5px; color: var(--text-muted); display: flex; justify-content: space-between; }
+
+/* ── Validation / dry-run result panel ────────────────────── */
+.bkm-vresult { display: flex; flex-direction: column; gap: 14px; }
+.bkm-vresult-stats { display: flex; gap: 10px; flex-wrap: wrap; }
+.bkm-vresult-stat { flex: 1; min-width: 90px; text-align: center; background: var(--bg-body); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 10px; }
+.bkm-vresult-stat-val { font-size: 18px; font-weight: 800; color: var(--text-primary); }
+.bkm-vresult-stat-val.danger { color: var(--color-danger-dark); }
+.bkm-vresult-stat-val.warning { color: var(--color-warning-dark); }
+.bkm-vresult-stat-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.3px; color: var(--text-muted); font-weight: 700; margin-top: 2px; }
+.bkm-vresult-list { max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.bkm-vresult-row { display: flex; gap: 8px; padding: 7px 10px; border-bottom: 1px solid #F1F5F9; font-size: 12.5px; align-items: flex-start; }
+.bkm-vresult-row:last-child { border-bottom: none; }
+.bkm-vresult-row-code { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); white-space: nowrap; }
+.bkm-vresult-row-msg { color: var(--text-primary); }
+.bkm-vresult-row-obj { color: var(--text-muted); font-family: var(--font-mono); font-size: 11px; }
+
+/* ── Event log ─────────────────────────────────────────────── */
+.bkm-log-panel {
+  background: #0B1220; border-radius: var(--radius-lg); padding: 12px 14px;
+  max-height: 320px; overflow-y: auto; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.7;
+}
+.bkm-log-empty { color: #64748B; padding: 8px 0; }
+.bkm-log-row { display: flex; gap: 8px; color: #CBD5E1; white-space: pre-wrap; word-break: break-word; }
+.bkm-log-ts { color: #64748B; flex-shrink: 0; }
+.bkm-log-type { flex-shrink: 0; font-weight: 700; }
+.bkm-log-type.TASK_FAILED, .bkm-log-type.RUN_FAILED { color: #F87171; }
+.bkm-log-type.TASK_SUCCEEDED, .bkm-log-type.RUN_COMPLETED { color: #4ADE80; }
+.bkm-log-type.TASK_RETRY { color: #FBBF24; }
+
+@media (max-width: 900px) {
+  .bkm-vresult-stats { flex-wrap: wrap; }
+}

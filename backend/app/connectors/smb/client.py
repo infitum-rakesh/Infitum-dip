@@ -85,6 +85,16 @@ class NetworkFileConnector(FileConnectorBase):
     def _resolve_path(self, object_name: str) -> str:
         return f"{self._base_path()}\\{object_name}"
 
+    def _effective_base(self, path: str | None) -> str:
+        """Joins an optional sub-path (e.g. a schedule's configured
+        source_path) onto this connection's own base_path. None/'' means
+        the connection's base_path itself, the pre-existing behavior."""
+        base = self._base_path()
+        if not path or not path.strip():
+            return base
+        sub = path.strip().strip("/\\").replace("/", "\\")
+        return f"{base}\\{sub}"
+
     def test_connection(self) -> ConnectionTestResult:
         start = time.monotonic()
         try:
@@ -109,8 +119,8 @@ class NetworkFileConnector(FileConnectorBase):
                 out.append((child_relative, child_path))
         return out
 
-    def list_files(self, pattern: str | None = None, recursive: bool = False) -> list[FileInfo]:
-        base = self._base_path()
+    def list_files(self, pattern: str | None = None, recursive: bool = False, path: str | None = None) -> list[FileInfo]:
+        base = self._effective_base(path)
         effective_pattern = pattern or "*"
         is_regex = effective_pattern.startswith("re:")
         regex = re.compile(effective_pattern[3:]) if is_regex else None

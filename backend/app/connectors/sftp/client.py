@@ -40,6 +40,15 @@ class SftpConnector(FileConnectorBase):
     def _base_path(self) -> str:
         return self.config.get("base_path") or "/"
 
+    def _effective_base(self, path: str | None) -> str:
+        """Joins an optional sub-path (e.g. a schedule's configured
+        source_path) onto this connection's own base_path. None/'' means
+        the connection's base_path itself, the pre-existing behavior."""
+        base = self._base_path()
+        if not path or not path.strip():
+            return base
+        return f"{base.rstrip('/')}/{path.strip().strip('/')}"
+
     def _resolve_path(self, object_name: str) -> str:
         return f"{self._base_path().rstrip('/')}/{object_name}"
 
@@ -108,11 +117,11 @@ class SftpConnector(FileConnectorBase):
                 out.append((child_relative, entry))
         return out
 
-    def list_files(self, pattern: str | None = None, recursive: bool = False) -> list[FileInfo]:
+    def list_files(self, pattern: str | None = None, recursive: bool = False, path: str | None = None) -> list[FileInfo]:
         client = None
         try:
             client, sftp = self._open_sftp()
-            base = self._base_path()
+            base = self._effective_base(path)
             effective_pattern = pattern or "*"
             is_regex = effective_pattern.startswith("re:")
             regex = re.compile(effective_pattern[3:]) if is_regex else None

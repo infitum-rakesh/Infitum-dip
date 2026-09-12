@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite+aiosqlite:///./dip.db"
 
-    allowed_origins: str = "http://localhost:5173,http://localhost:3000"
+    allowed_origins: str = "http://localhost:5173,http://localhost:3000,http://localhost:8080"
 
     # Where the frontend actually lives — used to build real links inside
     # outbound emails (Seller-created-customer welcome email; later SSO
@@ -35,6 +35,16 @@ class Settings(BaseSettings):
     @property
     def api_public_base_url(self) -> str:
         return self.backend_public_base_url or self.frontend_base_url
+
+    @property
+    def origins_list(self) -> list[str]:
+        raw = self.allowed_origins.strip()
+        if raw == "*":
+            return ["*"]
+        origins = [o.strip() for o in raw.split(",") if o.strip()]
+        if not origins:
+            return [self.frontend_base_url]
+        return origins
 
     first_superadmin_email: str = "admin@dip.local"
     first_superadmin_password: str = "Admin@1234!"
@@ -76,10 +86,6 @@ class Settings(BaseSettings):
     incident_sla_hours_high: float = 8.0
     incident_sla_hours_medium: float = 24.0
     incident_sla_hours_low: float = 72.0
-
-    @property
-    def origins_list(self) -> list[str]:
-        return [o.strip() for o in self.allowed_origins.split(",")]
 
 
 @lru_cache

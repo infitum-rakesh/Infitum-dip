@@ -29,6 +29,7 @@ import { SQL_WORKSPACE_PERMISSIONS } from '@/utils/constants.js';
 import { useAuth } from '@/hooks/useAuth.js';
 import { connectionApi } from '@/services/api/connectionApi.js';
 import { sqlWorkspaceApi } from '@/services/api/sqlWorkspaceApi.js';
+import { useSqlWorkspaceTabs, makeTab } from '@/context/SqlWorkspaceContext.jsx';
 import { pipelineFileApi } from '@/services/api/pipelineFileApi.js';
 import { createNode, createEdge } from '@/components/pipeline/nodeTypes.js';
 import DatabaseExplorer, { generateSelectSql } from './DatabaseExplorer.jsx';
@@ -81,34 +82,9 @@ const ROW_LIMITS = [100, 200, 500, 1000];
 // (server clamps any value it does honor to TIMEOUT_MIN/MAX_SECONDS anyway).
 const TIMEOUT_OPTIONS = [10, 30, 60, 120, 300];
 
-let _nextTabId = 1;
-function makeTab(overrides = {}) {
-  return {
-    id: _nextTabId++,
-    name: 'Untitled Query',
-    connectionId: null,
-    sqlText: '',
-    savedSqlText: '',      // text as of last save/load — dirty = sqlText !== savedSqlText
-    rowLimit: 200,
-    timeoutSeconds: 30,     // real server-side cutoff on PostgreSQL/MySQL; null = no limit
-    runId: null,            // set while `running` — lets Cancel target this specific in-flight run
-    running: false,
-    canceling: false,
-    result: null,
-    error: '',
-    activeQueryId: null,
-    isShared: false,        // shares this saved query org-wide once saved — see Saved panel's "Shared" tab
-    cancelNote: '',         // transient message when a Cancel attempt itself couldn't be honored (query already finished, unsupported connection type, ...) — the run keeps going
-    sendingToTransform: false,
-    sendToTransformError: '',
-    activeSchemaName: '',
-    resultView: 'results',   // 'results' | 'messages' | 'statistics' | 'explain'
-    explaining: false,
-    explainResult: null,
-    explainError: '',
-    ...overrides,
-  };
-}
+// makeTab() itself now lives in SqlWorkspaceContext.jsx alongside the
+// tabs/activeTabId state it initializes — see that file for why (state
+// needs to survive route navigation, not just re-renders).
 
 // ── Results grid ───────────────────────────────────────────────────
 
@@ -415,8 +391,11 @@ function TabBar({ tabs, activeTabId, onSelect, onNewTab, onCloseTab, onRename, o
 export default function SqlWorkspace() {
   const navigate = useNavigate();
   const [connections, setConnections] = useState([]);
-  const [tabs, setTabs] = useState(() => [makeTab()]);
-  const [activeTabId, setActiveTabId] = useState(() => tabs[0].id);
+  // Lives in SqlWorkspaceContext (mounted once at the app-shell level, see
+  // providers.jsx) instead of component-local state — otherwise navigating
+  // to another module and back unmounted/remounted this component and
+  // silently threw away every tab's SQL text, in-flight run, and result.
+  const { tabs, setTabs, activeTabId, setActiveTabId } = useSqlWorkspaceTabs();
 
   // Real DOM portal targets — filter/freeze/export live in the result-tabs
   // banner (right-aligned, alongside Results/Messages/Statistics/Execution

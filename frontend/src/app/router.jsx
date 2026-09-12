@@ -106,6 +106,13 @@ import PipelineRuns    from '@/pages/pipeline/PipelineRuns.jsx';
 // Schedules (implemented)
 import Schedules from '@/pages/schedules/Schedules.jsx';
 
+// Bulk Object Migration (BM9-13) — Pipelines list is the landing page;
+// PipelineDetail is the objects grid + validate/dry-run/run workspace;
+// RunMonitor is the live-polling run-progress page.
+import BulkMigrationPipelines from '@/pages/bulk-migration/BulkMigrationPipelines.jsx';
+import BulkMigrationPipelineDetail from '@/pages/bulk-migration/BulkMigrationPipelineDetail.jsx';
+import BulkMigrationRunMonitor from '@/pages/bulk-migration/BulkMigrationRunMonitor.jsx';
+
 // Customer Billing (implemented, SB29)
 import CustomerBilling from '@/pages/billing/CustomerBilling.jsx';
 
@@ -315,6 +322,14 @@ export const router = createBrowserRouter([
           // Operations
           { path: 'pipeline-runs', element: <PipelineRuns /> },
           { path: 'schedules',     element: <Schedules /> },
+
+          // Bulk Object Migration — Pipelines list is the bare-path
+          // landing page; "new" is a static-prefix route and must stay
+          // registered before the :pipelineId catch-all below it, per
+          // this router's own static-before-dynamic convention.
+          { path: 'bulk-migration',                        element: <BulkMigrationPipelines /> },
+          { path: 'bulk-migration/runs/:runId',             element: <BulkMigrationRunMonitor /> },
+          { path: 'bulk-migration/:pipelineId',             element: <BulkMigrationPipelineDetail /> },
 
           // Billing (SB29) — org-scoped self-service Subscriptions/
           // Invoices/Payments, reachable regardless of subscription

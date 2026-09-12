@@ -93,7 +93,7 @@ function toLocalParts(iso, timeZone) {
 export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [pipelines, setPipelines] = useState([]);
-  const [sourceType, setSourceType] = useState('PIPELINE'); // 'PIPELINE' | 'DOCUMENT_SOURCE'
+  const [sourceType, setSourceType] = useState('PIPELINE'); // 'PIPELINE' | 'DOCUMENT_SOURCE' | 'INVOICE_SOURCE'
   const [docConfig, setDocConfig] = useState(EMPTY_DOCUMENT_CONFIG);
   const [storageConnections, setStorageConnections] = useState([]);
   const [dbConnections, setDbConnections] = useState([]);
@@ -140,7 +140,13 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
         notification_emails: schedule.notification_emails ?? '',
       });
       if (schedule.document_config) {
-        setSourceType('DOCUMENT_SOURCE');
+        // Invoice Intelligence schedules ARE Document Source schedules
+        // with document_type="INVOICE" (INV11 — reuses the exact same
+        // scheduler/idempotency/dispatch infrastructure rather than a
+        // parallel one); re-derive the friendlier top-level choice from
+        // that so an invoice schedule reopens showing "Invoice Source",
+        // not the generic "Document Source".
+        setSourceType(schedule.document_config.document_type === 'INVOICE' ? 'INVOICE_SOURCE' : 'DOCUMENT_SOURCE');
         // source_api_pagination comes back from the API as a nested
         // object ({style, page_size, ...}) — flatten it into the two
         // form fields this modal actually edits.
@@ -182,6 +188,7 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
     setSaving(true);
     setError(null);
     try {
+      const isDocSource = sourceType === 'DOCUMENT_SOURCE' || sourceType === 'INVOICE_SOURCE';
       const body = {
         name: form.name,
         pipeline_id: sourceType === 'PIPELINE' ? form.pipeline_id : '',
@@ -194,7 +201,7 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
         notify_on_failure: form.notify_on_failure, notify_on_success: form.notify_on_success,
         notification_emails: form.notification_emails || null,
       };
-      if (sourceType === 'DOCUMENT_SOURCE') {
+      if (isDocSource) {
         const isDatabase = docConfig.source_kind === 'DATABASE';
         const isApi = docConfig.source_kind === 'API';
         const isErp = docConfig.source_kind === 'ERP';
@@ -226,13 +233,16 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
           move_failed_to_review_path: isNonFile ? null : (docConfig.move_failed_to_review_path || null),
           duplicate_content_behavior: docConfig.duplicate_content_behavior,
           max_file_size_mb: Number(docConfig.max_file_size_mb),
-          // A DATABASE/API source requires Document Type == INVOICE
+          // A DATABASE/API/ERP source requires Document Type == INVOICE
           // server-side (see DocumentScheduleConfigIn's own validators) —
           // force it here too so the picker's "Auto-detect" default can't
-          // slip through.
-          document_type: isNonFile ? 'INVOICE' : (docConfig.document_type || null),
-          invoice_auto_post: docConfig.document_type === 'INVOICE' ? docConfig.invoice_auto_post : false,
-          invoice_erp_connection_id: (docConfig.document_type === 'INVOICE' && docConfig.invoice_auto_post && docConfig.invoice_erp_connection_id)
+          // slip through. Same forcing for the "Invoice Source" top-level
+          // choice (FILE kind included) — that choice exists specifically
+          // so Invoice Intelligence scheduling doesn't require knowing
+          // this nested field even exists.
+          document_type: (isNonFile || sourceType === 'INVOICE_SOURCE') ? 'INVOICE' : (docConfig.document_type || null),
+          invoice_auto_post: (isNonFile || sourceType === 'INVOICE_SOURCE' || docConfig.document_type === 'INVOICE') ? docConfig.invoice_auto_post : false,
+          invoice_erp_connection_id: ((isNonFile || sourceType === 'INVOICE_SOURCE' || docConfig.document_type === 'INVOICE') && docConfig.invoice_auto_post && docConfig.invoice_erp_connection_id)
             ? Number(docConfig.invoice_erp_connection_id) : null,
         };
       }
@@ -247,7 +257,8 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
     }
   };
 
-  const docSourceValid = sourceType !== 'DOCUMENT_SOURCE' || (
+  const isDocSourceType = sourceType === 'DOCUMENT_SOURCE' || sourceType === 'INVOICE_SOURCE';
+  const docSourceValid = !isDocSourceType || (
     docConfig.source_connection_id && docConfig.source_path
     && (docConfig.source_kind !== 'DATABASE' || docConfig.source_query)
     && (docConfig.source_kind !== 'API' || docConfig.source_api_endpoint)
@@ -257,7 +268,7 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
     && Number(docConfig.batch_size) > 0 && Number(docConfig.max_concurrency) > 0
     && Number(docConfig.confidence_threshold) >= 0 && Number(docConfig.confidence_threshold) <= 100
     && Number(docConfig.accuracy_threshold) >= 0 && Number(docConfig.accuracy_threshold) <= 100
-    && (!docConfig.invoice_auto_post || (docConfig.document_type === 'INVOICE' && docConfig.invoice_erp_connection_id))
+    && (!docConfig.invoice_auto_post || ((sourceType === 'INVOICE_SOURCE' || docConfig.document_type === 'INVOICE') && docConfig.invoice_erp_connection_id))
   );
   const valid = form.name && form.start_date && form.start_time
     && (form.frequency !== 'CUSTOM_CRON' || form.cron_expression)
@@ -284,7 +295,14 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
           <select className="sched-input" value={sourceType} onChange={(e) => setSourceType(e.target.value)}>
             <option value="PIPELINE">Pipeline Builder Pipeline</option>
             <option value="DOCUMENT_SOURCE">Document Source (Scheduled Document Intelligence)</option>
+            <option value="INVOICE_SOURCE">Invoice Source (Scheduled Invoice Intelligence)</option>
           </select>
+          {sourceType === 'INVOICE_SOURCE' && (
+            <div className="sched-field-hint">
+              Same real intake/OCR/AI pipeline as Document Source, pinned to the Invoice taxonomy — batches straight into Invoice Intelligence
+              (Review Queue or straight-through ERP posting), not the generic Documents list.
+            </div>
+          )}
         </div>
 
         {sourceType === 'PIPELINE' && (
@@ -333,10 +351,10 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
         )}
       </div>
 
-      {sourceType === 'DOCUMENT_SOURCE' && (
+      {isDocSourceType && (
         <>
           <div className="sched-form-divider" />
-          <div className="sched-section-title">Source</div>
+          <div className="sched-section-title">{sourceType === 'INVOICE_SOURCE' ? 'Invoice Source' : 'Source'}</div>
           <div className="sched-field-grid">
             <div className="sched-field">
               <label className="sched-field-label">Source Kind</label>
@@ -534,10 +552,21 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
               </div>
               <div className="sched-field">
                 <label className="sched-field-label">Document Type</label>
-                <select className="sched-input" value={docConfig.document_type} onChange={setDoc('document_type')}>
-                  {DOCUMENT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-                </select>
-                <div className="sched-field-hint">Pins intake to a known canonical schema instead of auto-detecting — required for straight-through ERP auto-post below.</div>
+                {sourceType === 'INVOICE_SOURCE' ? (
+                  <>
+                    <select className="sched-input" value="INVOICE" disabled>
+                      {DATABASE_DOCUMENT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                    </select>
+                    <div className="sched-field-hint">Pinned by the Invoice Source type selected above.</div>
+                  </>
+                ) : (
+                  <>
+                    <select className="sched-input" value={docConfig.document_type} onChange={setDoc('document_type')}>
+                      {DOCUMENT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                    </select>
+                    <div className="sched-field-hint">Pins intake to a known canonical schema instead of auto-detecting — required for straight-through ERP auto-post below.</div>
+                  </>
+                )}
               </div>
               <label className="sched-field sched-field-checkbox">
                 <input type="checkbox" checked={docConfig.recursive_scan} onChange={setDoc('recursive_scan')} />
@@ -601,7 +630,7 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
           </>
           )}
 
-          {docConfig.document_type === 'INVOICE' && docConfig.source_kind === 'FILE' && (
+          {(sourceType === 'INVOICE_SOURCE' || docConfig.document_type === 'INVOICE') && docConfig.source_kind === 'FILE' && (
             <>
               <div className="sched-section-title">Invoice ERP Posting</div>
               <div className="sched-field-grid">
