@@ -112,7 +112,7 @@ function registerSqlCompletionProvider(monaco) {
   });
 }
 
-export default function SqlEditor({ value, onChange, onRun, onSave, onDropSql, connectionId, height }) {
+export default function SqlEditor({ value, onChange, onRun, onSave, connectionId, height }) {
   const editorRef = useRef(null);
   const monacoRef = useRef(null);
 
@@ -127,17 +127,60 @@ export default function SqlEditor({ value, onChange, onRun, onSave, onDropSql, c
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => onRun?.());
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => onSave?.());
 
-    // Drag-and-drop from DatabaseExplorer — same payload convention as
-    // the plain-textarea version this replaced (a real generated SELECT
-    // string set as text/plain in DatabaseExplorer's onDragStart).
+    // Drag-and-drop from DatabaseExplorer — custom drop handler ensures clean SQL
+    // insertion without any trailing '$0' snippet artifacts or cursor misalignment.
     const domNode = editor.getDomNode();
     if (domNode) {
-      domNode.addEventListener('dragover', (e) => e.preventDefault());
-      domNode.addEventListener('drop', (e) => {
+      const onDragOver = (e) => {
         e.preventDefault();
-        const sql = e.dataTransfer.getData('text/plain');
-        if (sql) onDropSql?.(sql);
-      });
+        if (e.dataTransfer) {
+          e.dataTransfer.dropEffect = 'copy';
+        }
+      };
+
+      const onDrop = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        let text = e.dataTransfer?.getData('text/plain') || '';
+        if (!text) return;
+
+        // Clean any accidental '$0' snippet tokens
+        text = text.replace(/\$0/g, '');
+
+        // Find precise target drop position in editor
+        const target = editor.getTargetAtClientPoint?.(e.clientX, e.clientY);
+        let position = target?.position;
+
+        if (!position) {
+          const model = editor.getModel();
+          const lastLine = model ? model.getLineCount() : 1;
+          const lastCol = model ? model.getLineMaxColumn(lastLine) : 1;
+          position = { lineNumber: lastLine, column: lastCol };
+        }
+
+        // Insert text at target position
+        editor.executeEdits('drag-and-drop', [{
+          range: new monaco.Range(position.lineNumber, position.column, position.lineNumber, position.column),
+          text: text,
+          forceMoveMarkers: true,
+        }]);
+
+        // Place cursor right after the inserted text
+        const textLines = text.split('\n');
+        const endLineNumber = position.lineNumber + textLines.length - 1;
+        const endColumn = textLines.length === 1
+          ? position.column + textLines[0].length
+          : textLines[textLines.length - 1].length + 1;
+
+        editor.setPosition({ lineNumber: endLineNumber, column: endColumn });
+        editor.focus();
+
+        onChange?.(editor.getValue());
+      };
+
+      domNode.addEventListener('dragover', onDragOver);
+      domNode.addEventListener('drop', onDrop);
     }
   };
 
@@ -153,7 +196,7 @@ export default function SqlEditor({ value, onChange, onRun, onSave, onDropSql, c
         options={{
           minimap: { enabled: false },
           fontSize: 13,
-          fontFamily: 'var(--font-mono)',
+          fontFamily: "Consolas, 'Courier New', monospace, 'JetBrains Mono'",
           lineNumbers: 'on',
           scrollBeyondLastLine: false,
           automaticLayout: true,
@@ -162,6 +205,7 @@ export default function SqlEditor({ value, onChange, onRun, onSave, onDropSql, c
           renderLineHighlight: 'line',
           tabSize: 2,
           padding: { top: 10, bottom: 10 },
+          dropIntoEditor: { enabled: false },
         }}
       />
     </div>

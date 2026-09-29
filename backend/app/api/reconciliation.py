@@ -73,6 +73,7 @@ async def create_job(body: JobCreateRequest, user: User = Depends(_create), db: 
             key_columns=body.key_columns, compare_columns=body.compare_columns, comparison_types=body.comparison_types,
             column_mapping=body.column_mapping, created_by=user.id,
             source_mapping_id=body.source_mapping_id, source_mapping_version=body.source_mapping_version,
+            fallback_match_columns=body.fallback_match_columns, name_normalization=body.name_normalization,
         )
     except svc.ReconciliationServiceError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
@@ -92,6 +93,7 @@ async def update_job(job_id: int, body: JobUpdateRequest, user: User = Depends(_
         row = await svc.update_job(
             db, row, name=body.name, key_columns=body.key_columns, compare_columns=body.compare_columns,
             comparison_types=body.comparison_types, column_mapping=body.column_mapping, updated_by=user.id,
+            fallback_match_columns=body.fallback_match_columns, name_normalization=body.name_normalization,
         )
     except svc.ReconciliationServiceError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))

@@ -44,6 +44,8 @@ const FILE_TYPES = [
   { value: 'csv', label: 'CSV' },
   { value: 'excel', label: 'Excel (.xlsx)' },
   { value: 'json', label: 'JSON' },
+  { value: 'xml', label: 'XML' },
+  { value: 'parquet', label: 'Parquet' },
 ];
 const HTTP_WRITE_METHODS = ['POST', 'PUT', 'PATCH'];
 

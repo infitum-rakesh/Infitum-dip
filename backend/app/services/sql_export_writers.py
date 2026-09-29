@@ -18,7 +18,9 @@ import csv
 import datetime
 import decimal
 import json
+import re
 from pathlib import Path
+from xml.sax.saxutils import escape as xml_escape
 
 from openpyxl import Workbook
 import pyarrow as pa
@@ -64,10 +66,10 @@ class ChunkWriter(abc.ABC):
 
 
 class CsvChunkWriter(ChunkWriter):
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, delimiter: str = ",", quotechar: str = '"', encoding: str = "utf-8"):
         super().__init__(path)
-        self._fh = open(path, "w", newline="", encoding="utf-8")
-        self._writer = csv.writer(self._fh)
+        self._fh = open(path, "w", newline="", encoding=encoding)
+        self._writer = csv.writer(self._fh, delimiter=delimiter, quotechar=quotechar)
 
     def write_rows(self, columns: list[str], rows: list[list]) -> None:
         if not self._header_written:
@@ -113,10 +115,15 @@ class XlsxChunkWriter(ChunkWriter):
     row-by-row disk-visible file the way CSV/JSON have mid-export; a
     disclosed format limitation, not something this code pretends away."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, sheet_name: str = "Result"):
         super().__init__(path)
         self._wb = Workbook(write_only=True)
-        self._ws = self._wb.create_sheet("Result")
+        # Excel sheet names can't exceed 31 chars or contain []:*?/\ —
+        # openpyxl raises on an invalid name rather than silently
+        # truncating/sanitizing it, so do that ourselves up front instead
+        # of letting a job fail on an otherwise-successful export.
+        safe_name = re.sub(r"[\[\]:*?/\\]", "_", sheet_name or "Result")[:31] or "Result"
+        self._ws = self._wb.create_sheet(safe_name)
 
     def write_rows(self, columns: list[str], rows: list[list]) -> None:
         if not self._header_written:
@@ -175,14 +182,85 @@ class ParquetChunkWriter(ChunkWriter):
             pq.write_table(pa.table({}), str(self.path))
 
 
-_WRITERS = {"CSV": CsvChunkWriter, "JSON": JsonChunkWriter, "XLSX": XlsxChunkWriter, "PARQUET": ParquetChunkWriter}
-_EXTENSIONS = {"CSV": "csv", "JSON": "json", "XLSX": "xlsx", "PARQUET": "parquet"}
+_INVALID_XML_NAME_CHARS = re.compile(r"[^A-Za-z0-9_.\-]")
 
 
-def make_writer(fmt: str, path: Path) -> ChunkWriter:
+def _xml_tag(name: str) -> str:
+    tag = _INVALID_XML_NAME_CHARS.sub("_", str(name)) or "col"
+    if tag[0].isdigit() or tag[0] in ".-":
+        tag = f"_{tag}"
+    return tag
+
+
+class XmlChunkWriter(ChunkWriter):
+    """Real streaming XML writer (Data Format Transformation Engine,
+    Phase 4) — one <row> element per row, written straight to disk as
+    chunks arrive (root element opened at init, closed at close()), the
+    same "never buffer the whole export in memory" discipline every
+    writer in this module follows. Column names are sanitized into valid
+    XML element names (spaces/invalid characters replaced, a leading
+    digit/dot/hyphen prefixed with "_") since arbitrary column names
+    aren't always valid XML tags; when sanitization actually changed the
+    name, the ORIGINAL is preserved as a `name` attribute on that <col>
+    element so no information is lost — a real, disclosed consequence:
+    reading this file back (connectors/files/xml_format.py) recovers the
+    sanitized tag as the column name, not the original, since that reader
+    doesn't special-case this attribute."""
+
+    def __init__(self, path: Path, root_element: str = "rows", row_element: str = "row"):
+        super().__init__(path)
+        self._row_tag = _xml_tag(row_element or "row")
+        self._root_tag = _xml_tag(root_element or "rows")
+        self._fh = open(path, "w", encoding="utf-8")
+        self._fh.write(f'<?xml version="1.0" encoding="UTF-8"?>\n<{self._root_tag}>\n')
+        self._tags: list[str] | None = None
+
+    def write_rows(self, columns: list[str], rows: list[list]) -> None:
+        if self._tags is None:
+            self._tags = [_xml_tag(c) for c in columns]
+            self._header_written = True
+        for row in rows:
+            self._fh.write(f"  <{self._row_tag}>")
+            for col, tag, value in zip(columns, self._tags, row):
+                v = value if value is None or isinstance(value, (str, int, float, bool)) else _json_default(value)
+                text = "" if v is None else xml_escape(str(v))
+                if tag == col:
+                    self._fh.write(f"<{tag}>{text}</{tag}>")
+                else:
+                    safe_name = xml_escape(col, {'"': "&quot;"})
+                    self._fh.write(f'<{tag} name="{safe_name}">{text}</{tag}>')
+            self._fh.write(f"</{self._row_tag}>\n")
+
+    def close(self) -> None:
+        self._fh.write(f"</{self._root_tag}>")
+        self._fh.close()
+
+
+_WRITERS = {"CSV": CsvChunkWriter, "JSON": JsonChunkWriter, "XLSX": XlsxChunkWriter, "PARQUET": ParquetChunkWriter, "XML": XmlChunkWriter}
+_EXTENSIONS = {"CSV": "csv", "JSON": "json", "XLSX": "xlsx", "PARQUET": "parquet", "XML": "xml"}
+
+
+def make_writer(fmt: str, path: Path, options: dict | None = None) -> ChunkWriter:
+    """options (all optional, format-specific — unrecognized/inapplicable
+    keys for the chosen fmt are simply ignored rather than raising, so
+    callers can pass one shared options dict regardless of target format):
+      CSV: delimiter, quotechar, encoding
+      XLSX: sheet_name
+      XML: root_element, row_element
+    """
     cls = _WRITERS.get(fmt)
     if cls is None:
         raise ValueError(f"Unknown export format: {fmt}")
+    options = options or {}
+    if cls is CsvChunkWriter:
+        kwargs = {k: v for k, v in options.items() if k in ("delimiter", "quotechar", "encoding") and v}
+        return cls(path, **kwargs)
+    if cls is XlsxChunkWriter:
+        kwargs = {k: v for k, v in options.items() if k in ("sheet_name",) and v}
+        return cls(path, **kwargs)
+    if cls is XmlChunkWriter:
+        kwargs = {k: v for k, v in options.items() if k in ("root_element", "row_element") and v}
+        return cls(path, **kwargs)
     return cls(path)
 
 

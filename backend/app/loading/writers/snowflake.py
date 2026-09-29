@@ -27,8 +27,10 @@ from __future__ import annotations
 import uuid
 
 import pandas as pd
-from snowflake.connector.pandas_tools import write_pandas
-from sqlalchemy import text
+try:
+    from snowflake.connector.pandas_tools import write_pandas
+except ImportError:  # pragma: no cover
+    write_pandas = None
 
 from app.connectors.base import ConnectorValidationError
 from app.loading.writers.base import BaseBulkWriter
@@ -42,6 +44,19 @@ def _unwrap_dbapi_connection(raw):
     than assuming one, since this exact unwrap couldn't be exercised
     against a live driver in this environment."""
     return getattr(raw, "dbapi_connection", None) or getattr(raw, "connection", None) or raw
+
+
+def _run_on_dbapi_connection(dbapi_conn, sql: str) -> None:
+    """Executes real SQL directly on the same DBAPI connection/session
+    write_pandas() just used — see write_batch()'s upsert path for why
+    this must NOT go through engine.begin() (a fresh pooled connection
+    can't see a TEMPORARY table created on a different session)."""
+    cursor = dbapi_conn.cursor()
+    try:
+        cursor.execute(sql)
+        dbapi_conn.commit()
+    finally:
+        cursor.close()
 
 
 class SnowflakeBulkWriter(BaseBulkWriter):
@@ -85,12 +100,25 @@ class SnowflakeBulkWriter(BaseBulkWriter):
                     insert_vals = ", ".join(f"s.{quoted_cols[c]}" for c in columns)
                     sql += f" WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})"
 
-                    with engine.begin() as cxn:
-                        cxn.execute(text(sql))
+                    # Real bug fix: the staging table above was created as
+                    # table_type="temporary" via write_pandas(dbapi_conn,
+                    # ...) — Snowflake TEMPORARY tables are session-scoped,
+                    # visible only on the exact connection/session that
+                    # created them. engine.begin()/engine.connect() checks
+                    # out a DIFFERENT pooled connection while `raw` (this
+                    # same dbapi_conn) is still held open — confirmed
+                    # empirically that SQLAlchemy's QueuePool hands back a
+                    # distinct underlying DBAPI connection in that case —
+                    # so a MERGE issued through engine.begin() would run in
+                    # a session that can't see the staging table at all.
+                    # Executing directly on dbapi_conn's own cursor keeps
+                    # every statement (PUT/COPY INTO from write_pandas, the
+                    # MERGE, and the cleanup DROP below) on the one session
+                    # that actually owns the temporary table.
+                    _run_on_dbapi_connection(dbapi_conn, sql)
                 finally:
                     try:
-                        with engine.begin() as cxn:
-                            cxn.execute(text(f"DROP TABLE IF EXISTS {self.connector.quote_identifier(stage_table)}"))
+                        _run_on_dbapi_connection(dbapi_conn, f"DROP TABLE IF EXISTS {self.connector.quote_identifier(stage_table)}")
                     except Exception:
                         pass  # a session-scoped TEMPORARY table also disappears on connection close — not a leak
                 return len(rows)

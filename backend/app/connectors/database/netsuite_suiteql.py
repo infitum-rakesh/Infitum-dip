@@ -307,7 +307,10 @@ class NetSuiteSuiteQlConnector(BaseConnector):
         finally:
             conn.close()
 
-    def open_sql_stream(self, sql: str, parameters: dict, *, extraction_mode: str | None = None) -> SqlStream:
+    def open_sql_stream(
+        self, sql: str, parameters: dict, *, extraction_mode: str | None = None,
+        log_fn=None, cancel_check=None,
+    ) -> SqlStream:
         # extraction_mode (BULK/AUTO/ROW_BY_ROW) is a Salesforce-only
         # concept (see SalesforceConnector.open_sql_stream) — accepted here
         # only for interface compatibility with the generic caller in
@@ -317,7 +320,11 @@ class NetSuiteSuiteQlConnector(BaseConnector):
         # override originally did) raised "open_sql_stream() got an
         # unexpected keyword argument 'extraction_mode'" the moment a
         # Custom Query Source Dataset ran against a NetSuite connection —
-        # found live running a real pipeline.
+        # found live running a real pipeline. log_fn/cancel_check are
+        # accepted the same way and for the same reason — found live
+        # 2026-09-16 — see connectors/base.py's open_sql_stream() for the
+        # full story (the interleaved streaming fast path always passes
+        # both as keywords, and this override didn't accept them either).
         stripped = (sql or "").strip()
         if not stripped:
             raise ConnectorValidationError("SQL text is empty.")

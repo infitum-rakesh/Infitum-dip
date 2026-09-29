@@ -45,6 +45,17 @@ class Pipeline(TenantBase):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     current_version: Mapped[int] = mapped_column(Integer, default=1)
 
+    # "Open Pipeline" bug fix — the document that originated this pipeline
+    # (via a document's structured dataset uploaded as a Source file), so
+    # re-clicking "Open Pipeline" for the same document loads this same
+    # pipeline instead of creating a duplicate every time. Nullable: every
+    # OTHER way of creating a pipeline (blank canvas, SQL Workspace "Send
+    # to Transform Workspace") leaves this null, same additive-module
+    # stance as the rest of this file — a real FK since Document lives in
+    # the same tenant database, unlike the cross-boundary FKs this file's
+    # docstring warns against.
+    document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"), nullable=True, index=True)
+
     created_by: Mapped[int | None] = mapped_column(nullable=True, index=True)
     updated_by: Mapped[int | None] = mapped_column(nullable=True)
 

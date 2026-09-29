@@ -82,6 +82,7 @@ async def create_pipeline(body: PipelineCreateRequest, user: User = Depends(_cre
     pipeline = await svc.create_pipeline(
         db, organization_id=user.organization_id, user_id=user.id,
         name=body.name, nodes=body.nodes, edges=body.edges, settings=body.settings,
+        document_id=body.document_id,
     )
     name_map = await svc.user_name_map(db, {user.id})
     return PipelineWithDefinitionOut(

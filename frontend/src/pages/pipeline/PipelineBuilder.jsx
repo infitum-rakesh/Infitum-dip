@@ -27,6 +27,10 @@ import './pipeline-builder.css';
 const JOB_STATUS_VARIANT = { SUCCEEDED: 'success', FAILED: 'danger', RUNNING: 'info', PENDING: 'gray', CANCELLED: 'gray' };
 const RUNNING_STATUSES = new Set(['PENDING', 'RUNNING']);
 
+function apiErrorMessage(err, fallback) {
+  return err?.data?.detail || err?.response?.data?.detail || err?.message || fallback;
+}
+
 function fmtJobStatus(job) {
   if (!job) return 'never run';
   return job.status.toLowerCase();
@@ -144,7 +148,7 @@ export default function PipelineBuilder() {
       setJobsByPipeline((prev) => ({ ...prev, [pipeline.id]: job }));
       setOpenLogJobId(job.id);
     } catch (err) {
-      alert(err?.response?.data?.detail ?? 'Could not start the pipeline run.');
+      alert(apiErrorMessage(err, 'Could not start the pipeline run.'));
     } finally {
       setRunningIds((s) => { const n = new Set(s); n.delete(pipeline.id); return n; });
     }
@@ -154,7 +158,7 @@ export default function PipelineBuilder() {
     try {
       await pipelineJobApi.cancel(jobId);
     } catch (err) {
-      alert(err?.response?.data?.detail ?? 'Could not cancel the run.');
+      alert(apiErrorMessage(err, 'Could not cancel the run.'));
     }
   };
 

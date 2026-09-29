@@ -78,6 +78,12 @@ export default function Transformation() {
   const location = useLocation();
   const navigate = useNavigate();
   const [activePipeline, setActivePipeline] = useState(() => location.state?.initialPipeline ?? null);
+  // Open Pipeline bug fix — captured once at mount, same as activePipeline
+  // above, since the effect right below clears location.state on this same
+  // tick. Only present when arriving from DocumentDetails.jsx's "Open
+  // Pipeline" button; passed through to the designer so its first Save
+  // links the new pipeline back to this document.
+  const [openedFromDocumentId, setOpenedFromDocumentId] = useState(() => location.state?.documentId ?? null);
   const [activeTab, setActiveTab]           = useState('designer');
   const [loadingDeepLink, setLoadingDeepLink] = useState(!!searchParams.get('pipelineId'));
 
@@ -112,7 +118,7 @@ export default function Transformation() {
     if (!id) return;
     setOpenError('');
     pipelineVersionApi.get(id)
-      .then((full) => setActivePipeline(full))
+      .then((full) => { setActivePipeline(full); setOpenedFromDocumentId(null); })
       .catch(() => setOpenError('Could not load that pipeline. It may have been deleted.'))
       .finally(() => setLoadingDeepLink(false));
   }, [searchParams]);
@@ -120,6 +126,7 @@ export default function Transformation() {
   const newPipeline = () => {
     setSearchParams({}, { replace: true });
     setActivePipeline({ name: 'Untitled Pipeline', nodes: [], edges: [] });
+    setOpenedFromDocumentId(null);
   };
 
   const handlePick = async (meta) => {
@@ -128,6 +135,7 @@ export default function Transformation() {
       const full = await pipelineVersionApi.get(meta.id);
       setSearchParams({}, { replace: true });
       setActivePipeline(full);
+      setOpenedFromDocumentId(null);
       setShowPicker(false);
     } catch {
       setOpenError('Could not load that pipeline. It may have been deleted.');
@@ -176,6 +184,7 @@ export default function Transformation() {
             key={activePipeline?.id ?? activePipeline?.name ?? 'empty'}
             initialPipeline={activePipeline}
             onSaved={handleDesignerSaved}
+            documentId={openedFromDocumentId}
           />
         )
       )}

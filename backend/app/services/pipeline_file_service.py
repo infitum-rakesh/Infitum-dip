@@ -24,7 +24,11 @@ settings = get_settings()
 
 DELIMITED_EXTENSIONS = {"csv", "tsv", "txt"}
 EXCEL_EXTENSIONS = {"xlsx", "xls"}
-ALLOWED_EXTENSIONS = DELIMITED_EXTENSIONS | EXCEL_EXTENSIONS | {"json", "jsonl"}
+# xml/parquet get no extra sniffing here (no delimiter/sheet concept) — same
+# "row_count/column_count stay None" treatment json/jsonl already get below;
+# actual reading reuses connectors/files/xml_format.py and pandas' pyarrow-
+# backed read_parquet() in pipeline_job_executor.py's _run_source().
+ALLOWED_EXTENSIONS = DELIMITED_EXTENSIONS | EXCEL_EXTENSIONS | {"json", "jsonl", "xml", "parquet"}
 
 SAMPLE_BYTES_FOR_SNIFF = 8192
 PREVIEW_ROW_CAP = 5000  # bound row-counting cost for very large uploads

@@ -178,9 +178,21 @@ function ObjectRow({
       <div
         className="sqlw-exp-object-row"
         draggable
-        onDragStart={async (e) => {
-          const cols = await ensureColumns();
-          e.dataTransfer.setData('text/plain', generateSelectSql(schema, obj.name, cols, { includeColumns: true, addLimit: true }, connectionType));
+        onMouseEnter={() => {
+          if (!columns && !loadingCols) {
+            ensureColumns().catch(() => {});
+          }
+        }}
+        onDragStart={(e) => {
+          const sql = generateSelectSql(
+            schema,
+            obj.name,
+            columns,
+            { includeColumns: !!(columns && columns.length > 0), addLimit: true },
+            connectionType
+          );
+          e.dataTransfer.setData('text/plain', sql);
+          e.dataTransfer.effectAllowed = 'copy';
         }}
         onClick={() => onToggle(obj.name)}
         title={qualifiedName(schema, obj.name, connectionType)}

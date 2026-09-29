@@ -110,9 +110,14 @@ export const documentApi = {
   getDocument: (id) => apiClient.get(`/documents/${id}`).then((r) => r.data),
 
   /** Upload a document to the repository (multipart/form-data). */
-  uploadDocument: (file, { onProgress } = {}) => {
+  uploadDocument: (file, { onProgress, languageConfig } = {}) => {
     const form = new FormData();
     form.append('file', file);
+    if (languageConfig) {
+      form.append('language_mode', languageConfig.mode || 'auto');
+      form.append('selected_languages', (languageConfig.selected_languages || []).join(','));
+      form.append('primary_language', languageConfig.primary_language || 'auto');
+    }
     return apiClient
       .post('/documents/upload', form, {
         headers: { 'Content-Type': 'multipart/form-data' },
@@ -153,9 +158,9 @@ export const documentApi = {
   /** Starts real OCR + AI Extraction as a backend background task and
    * returns immediately (document status flips to SCANNING) — does NOT
    * wait for the pipeline to finish. Follow with pollUntilDone() below. */
-  processDocument: (id) => apiClient.post(`/documents/${id}/process`).then((r) => r.data),
+  processDocument: (id, languageConfig = null) => apiClient.post(`/documents/${id}/process`, languageConfig ? { language_config: languageConfig } : null).then((r) => r.data),
 
-  reprocessDocument: (id) => apiClient.post(`/documents/${id}/reprocess`).then((r) => r.data),
+  reprocessDocument: (id, languageConfig = null) => apiClient.post(`/documents/${id}/reprocess`, languageConfig ? { language_config: languageConfig } : null).then((r) => r.data),
 
   /**
    * Polls GET /documents/{id} until status is a terminal value
@@ -234,6 +239,27 @@ export const documentApi = {
   getExtraction: (id) => apiClient.get(`/documents/${id}/extraction`).then((r) => r.data),
 
   getDataset: (id) => apiClient.get(`/documents/${id}/dataset`).then((r) => r.data),
+
+  /** Document-level metadata only (filename/type/status/size/pipeline
+   * timestamps) — no OCR/extraction/dataset payload. Part 6 of the
+   * Processed Data Storage spec. */
+  getMetadata: (id) => apiClient.get(`/documents/${id}/metadata`).then((r) => r.data),
+
+  /**
+   * On-demand export of this document's already-persisted processed
+   * datasets (see models/document_storage.py's DocumentProcessedDataset)
+   * — never triggers a reprocess. datasets=null exports every dataset
+   * type this document has a row for; destination="inline" returns the
+   * JSON body directly, "connection" re-pushes via the org's configured
+   * Processed Data Storage target instead.
+   */
+  exportDatasets: (id, { datasets = null, destination = 'inline' } = {}) =>
+    apiClient.post(`/documents/${id}/export`, { datasets, destination }).then((r) => r.data),
+
+  /** Open Pipeline bug fix — checks for an existing pipeline already linked
+   * to this document before building a new one, so re-clicking "Open
+   * Pipeline" reopens it instead of creating a duplicate. */
+  getLinkedPipeline: (id) => apiClient.get(`/documents/${id}/pipeline`).then((r) => r.data),
 
   /** Fetch the raw file as a Blob — used by the in-page viewer (auth header required). */
   getFileBlob: (id) =>

@@ -7,10 +7,20 @@ import { useState, useRef, useCallback } from 'react';
 import { UploadCloud, RotateCw, ZoomIn, FileText, CheckCircle2, ArrowRight } from 'lucide-react';
 import { Button, LoadingSpinner } from '@/components/common/index.js';
 import { documentApi } from '@/services/api/documentApi.js';
+import { LANGUAGE_NAMES } from '@/utils/languageNames.js';
 import './document-intelligence.css';
 
 const ACCEPTED_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/tiff', 'image/bmp', 'image/gif'];
 const FILE_LABELS    = ['PDF', 'JPG', 'PNG', 'TIFF', 'BMP'];
+const OCR_LANGUAGE_OPTIONS = ['auto', 'en', 'hi', 'kn', 'ta', 'te', 'ml', 'mr', 'bn', 'gu', 'pa', 'or', 'as', 'ur'];
+const AUTO_DETECT_LANGUAGES = OCR_LANGUAGE_OPTIONS.filter((code) => code !== 'auto');
+
+function languageConfigForSelection(language) {
+  if (!language || language === 'auto') {
+    return { mode: 'auto', selected_languages: AUTO_DETECT_LANGUAGES, primary_language: 'auto' };
+  }
+  return { mode: 'explicit', selected_languages: ['en', language], primary_language: language };
+}
 
 const ENHANCEMENTS = [
   { key: 'autoRotate',    label: 'Auto Rotate', defaultOn: true  },
@@ -30,6 +40,7 @@ export function ImageScanner({ onComplete }) {
   const [enhancements, setEnhancements]   = useState(
     () => Object.fromEntries(ENHANCEMENTS.map((e) => [e.key, e.defaultOn]))
   );
+  const [ocrLanguage, setOcrLanguage]     = useState('auto');
   const [error, setError]                 = useState('');
   const fileInputRef = useRef(null);
 
@@ -51,14 +62,15 @@ export function ImageScanner({ onComplete }) {
       // content, not a canned sample. The backend's DocumentDetailOut uses
       // snake_case (mime_type/page_count) and has no client preview URL —
       // aliased back to what this wizard's UI already reads.
-      const doc = await documentApi.uploadDocument(file);
+      const languageConfig = languageConfigForSelection(ocrLanguage);
+      const doc = await documentApi.uploadDocument(file, { languageConfig });
       setDocument({ ...doc, type: doc.mime_type, pageCount: doc.page_count, previewUrl: URL.createObjectURL(file) });
     } catch (err) {
       setError(err?.response?.data?.detail || err?.message || 'Upload failed. Please try again.');
     } finally {
       setUploading(false);
     }
-  }, []);
+  }, [ocrLanguage]);
 
   const onFileInput = (e) => handleFile(e.target.files?.[0]);
 
@@ -121,38 +133,50 @@ export function ImageScanner({ onComplete }) {
         {/* ── Left: preview / upload ── */}
         <div>
           {!document ? (
-            <div
-              className={`di-upload-zone ${isDragging ? 'drag-over' : ''}`}
-              onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={onDrop}
-              onClick={() => fileInputRef.current?.click()}
-              role="button"
-              aria-label="Upload document"
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".pdf,.jpg,.jpeg,.png,.tiff,.tif,.bmp"
-                style={{ display: 'none' }}
-                onChange={onFileInput}
-              />
-              {uploading ? (
-                <>
-                  <LoadingSpinner size="lg" />
-                  <p className="di-upload-title">Uploading…</p>
-                </>
-              ) : (
-                <>
-                  <div className="di-upload-icon"><UploadCloud size={24} /></div>
-                  <p className="di-upload-title">Drop your document here</p>
-                  <p className="di-upload-sub">or click to browse files</p>
-                  <div className="di-upload-types">
-                    {FILE_LABELS.map((l) => <span key={l} className="di-file-tag">{l}</span>)}
-                  </div>
-                </>
-              )}
-            </div>
+            <>
+              <div className="di-controls-card" style={{ marginBottom: 12 }}>
+                <div className="di-controls-section">
+                  <div className="di-controls-section-title">OCR Language</div>
+                  <select className="pc-config-select" value={ocrLanguage} onChange={(e) => setOcrLanguage(e.target.value)}>
+                    {OCR_LANGUAGE_OPTIONS.map((code) => (
+                      <option key={code} value={code}>{code === 'auto' ? 'Auto Detect' : LANGUAGE_NAMES[code]}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div
+                className={`di-upload-zone ${isDragging ? 'drag-over' : ''}`}
+                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={onDrop}
+                onClick={() => fileInputRef.current?.click()}
+                role="button"
+                aria-label="Upload document"
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png,.tiff,.tif,.bmp"
+                  style={{ display: 'none' }}
+                  onChange={onFileInput}
+                />
+                {uploading ? (
+                  <>
+                    <LoadingSpinner size="lg" />
+                    <p className="di-upload-title">Uploading…</p>
+                  </>
+                ) : (
+                  <>
+                    <div className="di-upload-icon"><UploadCloud size={24} /></div>
+                    <p className="di-upload-title">Drop your document here</p>
+                    <p className="di-upload-sub">or click to browse files</p>
+                    <div className="di-upload-types">
+                      {FILE_LABELS.map((l) => <span key={l} className="di-file-tag">{l}</span>)}
+                    </div>
+                  </>
+                )}
+              </div>
+            </>
           ) : (
             <div className="di-doc-preview" style={{ position: 'relative' }}>
               {/* Toolbar */}
@@ -220,6 +244,15 @@ export function ImageScanner({ onComplete }) {
         <div>
           {document && (
             <div className="di-controls-card">
+              <div className="di-controls-section">
+                <div className="di-controls-section-title">Language</div>
+                <select className="pc-config-select" value={ocrLanguage} onChange={(e) => setOcrLanguage(e.target.value)} disabled={Boolean(document)}>
+                  {OCR_LANGUAGE_OPTIONS.map((code) => (
+                    <option key={code} value={code}>{code === 'auto' ? 'Auto Detect' : LANGUAGE_NAMES[code]}</option>
+                  ))}
+                </select>
+              </div>
+
               {/* Enhancements */}
               <div className="di-controls-section">
                 <div className="di-controls-section-title">Image Enhancements</div>

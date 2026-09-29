@@ -303,7 +303,27 @@ class BaseConnector(abc.ABC):
     ) -> ChunkResult:
         raise ConnectorUnsupportedError(f"{self.connection_type} does not support chunked extraction.")
 
-    def open_sql_stream(self, sql: str, parameters: dict, *, extraction_mode: str | None = None) -> SqlStream:
+    def open_sql_stream(
+        self, sql: str, parameters: dict, *, extraction_mode: str | None = None,
+        log_fn=None, cancel_check=None,
+    ) -> SqlStream:
+        # log_fn/cancel_check let the interleaved streaming fast path
+        # (pipeline_job_executor._execute_streaming_chain) surface a
+        # connector's own internal per-page progress and let a connector
+        # whose single fetch_chunk() call can span several of ITS OWN
+        # remote pages (e.g. Salesforce Bulk API) notice a mid-fetch
+        # cancellation — see SalesforceConnector.open_sql_stream. Accepted
+        # here (and in every subclass override) purely for interface
+        # compatibility with that one generic caller, which always passes
+        # them as keywords: real bug found live 2026-09-16 — the generic
+        # SQL-dialect override and NetSuite SuiteQL's override didn't
+        # accept these two kwargs, so `TypeError: open_sql_stream() got an
+        # unexpected keyword argument 'log_fn'` killed the streaming fast
+        # path for EVERY non-Salesforce source the instant it started
+        # (falling through to the older, capped, full-buffering engine
+        # instead) — exactly the kind of silent, connector-specific
+        # regression the extraction_mode compatibility parameter above was
+        # already added once to prevent.
         raise ConnectorUnsupportedError(f"{self.connection_type} does not support streaming SQL extraction.")
 
     def build_select_all_sql(self, object_name: str, schema: str | None = None) -> str:

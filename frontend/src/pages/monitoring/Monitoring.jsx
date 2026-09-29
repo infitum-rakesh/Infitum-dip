@@ -36,7 +36,10 @@ const STATUS_VARIANT = {
 function fmtDuration(sec) {
   if (sec == null) return '—';
   if (sec < 60) return `${sec.toFixed(1)}s`;
-  return `${Math.floor(sec / 60)}m ${Math.round(sec % 60)}s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ${Math.round(sec % 60)}s`;
+  const hrs = Math.floor(sec / 3600);
+  const mins = Math.round((sec % 3600) / 60);
+  return `${hrs}h ${mins}m`;
 }
 function fmtDate(d) { return d ? new Date(d).toLocaleString() : '—'; }
 function apiErrorMessage(err, fallback) { return err?.response?.data?.detail || err?.message || fallback; }
@@ -154,7 +157,10 @@ function fmtSeconds(sec) {
   if (sec == null) return '—';
   if (sec < 1) return `${Math.round(sec * 1000)}ms`;
   if (sec < 60) return `${sec.toFixed(1)}s`;
-  return `${Math.floor(sec / 60)}m ${Math.round(sec % 60)}s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ${Math.round(sec % 60)}s`;
+  const hrs = Math.floor(sec / 3600);
+  const mins = Math.round((sec % 3600) / 60);
+  return `${hrs}h ${mins}m`;
 }
 
 function InvoiceProcessingTab() {

@@ -32,6 +32,14 @@ class JobCreateRequest(BaseModel):
     # module docstring for why the real diff engine stays untouched).
     source_mapping_id: int | None = None
     source_mapping_version: int | None = None
+    # ID->NAME fallback matching (spec sections 12-17) — source-side column
+    # name(s); empty list (the default) means no fallback, exact-key-only
+    # matching (byte-identical to every job created before this existed).
+    fallback_match_columns: list[str] = []
+    # {"trim": bool, "case_insensitive": bool, "collapse_spaces": bool,
+    # "unicode_normalize": bool} — only read when fallback_match_columns is
+    # non-empty; empty dict means the engine's own sensible defaults apply.
+    name_normalization: dict = {}
 
 
 class JobUpdateRequest(BaseModel):
@@ -40,6 +48,8 @@ class JobUpdateRequest(BaseModel):
     compare_columns: list[str] | None = None
     comparison_types: list[str] | None = None
     column_mapping: dict[str, str] | None = None
+    fallback_match_columns: list[str] | None = None
+    name_normalization: dict | None = None
 
 
 class JobOut(BaseModel):
@@ -57,6 +67,8 @@ class JobOut(BaseModel):
     compare_columns: list[str]
     comparison_types: list[str]
     column_mapping: dict[str, str] = {}
+    fallback_match_columns: list[str] = []
+    name_normalization: dict = {}
     created_by: int | None
     created_by_name: str | None = None
     updated_by: int | None
@@ -84,6 +96,10 @@ class RunOut(BaseModel):
     extra_count: int | None
     mismatched_count: int | None
     checksum_match: bool | None
+    matched_by_id_count: int | None = None
+    matched_by_name_count: int | None = None
+    ambiguous_count: int | None = None
+    duplicate_target_count: int | None = None
     exceptions_truncated: bool
     started_at: datetime | None
     completed_at: datetime | None
@@ -99,6 +115,11 @@ class ExceptionOut(BaseModel):
     column: str | None
     source_value: str | None
     target_value: str | None
+    match_method: str | None = None
+    source_id: str | None = None
+    source_name: str | None = None
+    target_id: str | None = None
+    target_name: str | None = None
 
     model_config = {"from_attributes": True}
 

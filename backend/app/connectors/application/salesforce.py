@@ -104,15 +104,34 @@ from app.connectors.base import (
 
 try:
     from simple_salesforce import Salesforce
+    from simple_salesforce.bulk2 import Operation, ColumnDelimiter, LineEnding
     from simple_salesforce.exceptions import SalesforceAuthenticationFailed, SalesforceError
 except ImportError:  # pragma: no cover - simple-salesforce is in requirements.txt; guarded for import-time safety only
     Salesforce = None
+    Operation = ColumnDelimiter = LineEnding = None
     SalesforceError = Exception
     SalesforceAuthenticationFailed = Exception
 
-_NON_QUERYABLE_COLUMN_TYPES = {"address", "location", "base64"}
+_NON_QUERYABLE_COLUMN_TYPES = {"location", "base64"}
 _MAX_PAGE_SIZE = 2000  # Salesforce REST query API's own hard per-request cap
 _BULK_PAGE_SIZE = 50_000  # Bulk API 2.0's own default/recommended page size per HTTP round trip
+
+# CPython's csv module caps a single field at 131,072 bytes by default
+# (csv.field_size_limit()'s own stock value). Salesforce's Long Text Area /
+# Rich Text Area fields (e.g. EmailMessage.HtmlBody/TextBody) can
+# legitimately reach right around that size, so a Bulk API 2.0 CSV page
+# containing one used to blow up mid-stream with the confusing
+# "_csv.Error: field larger than field limit (131072)" — a Python CSV
+# parsing limit, not a real Salesforce or Oracle error (it surfaced
+# further up the pipeline as a misleading "[TARGET] insert failed", since
+# the target was never actually reached for that chunk). Raised well
+# above Salesforce's own maximum field sizes so no genuine value can hit
+# this ceiling again; _pull_page() below also rejects-and-continues on
+# any row that still fails to parse, as defense in depth.
+try:
+    csv.field_size_limit(50_000_000)
+except OverflowError:  # pragma: no cover - only on platforms with a 32-bit C long
+    csv.field_size_limit(2_147_483_647)
 
 
 def _soql_literal(value) -> str:
@@ -149,6 +168,16 @@ def _parse_soql_select_fields(soql: str) -> list[str]:
     return [f.strip().split(" ")[-1] for f in m.group(1).split(",") if f.strip()]
 
 
+_ISO_DATETIME_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
+
+def _normalize_sfdc_value(val):
+    if val == "" or val is None:
+        return None
+    if isinstance(val, str) and _ISO_DATETIME_Z_RE.match(val):
+        return val[:-1] + "+0000"
+    return val
+
+
 class _SalesforceBulkSqlStream(SqlStream):
     """Wraps simple-salesforce's bulk2 query() generator — which submits a
     real Bulk API 2.0 query job and pages results back via Salesforce's
@@ -163,13 +192,15 @@ class _SalesforceBulkSqlStream(SqlStream):
     checkpoint/staging/batch granularity is free to differ from Salesforce's
     page size."""
 
-    def __init__(self, page_generator):
+    def __init__(self, page_generator, log_fn=None):
         self._pages = page_generator
+        self._log_fn = log_fn
         self._buffer: list[dict] = []
         self._columns: list[str] = []
         self._exhausted = False
         self._page_num = 0
         self._total_rows = 0
+        self._parse_errors: list[dict] = []
         self._pull_page()  # prime — columns are known as soon as the stream opens, matching the SqlStream contract
 
     def _pull_page(self) -> bool:
@@ -179,21 +210,60 @@ class _SalesforceBulkSqlStream(SqlStream):
             csv_text = next(self._pages)
         except StopIteration:
             self._exhausted = True
-            print(f"[SFDC Bulk] Stream exhausted — {self._total_rows:,} total row(s) across {self._page_num} page(s).", flush=True)
+            msg = f"Bulk API stream exhausted — {self._total_rows:,} total row(s) across {self._page_num} page(s)."
+            print(f"[SFDC Bulk] {msg}", flush=True)
+            if self._log_fn:
+                try: self._log_fn("INFO", msg)
+                except Exception: pass
             return False
         reader = csv.DictReader(io.StringIO(csv_text))
         if not self._columns:
             self._columns = list(reader.fieldnames or [])
-        rows = [dict(row) for row in reader]
+        rows: list[dict] = []
+        while True:
+            try:
+                raw_row = next(reader)
+            except StopIteration:
+                break
+            except csv.Error as exc:
+                # A single still-oversized/malformed CSV row (see the
+                # field_size_limit note above) shouldn't abort the whole
+                # page — reject just that row like any other bad record
+                # and keep parsing the rest of the page. Drained by
+                # pop_parse_errors() below and recorded as a real
+                # RejectedRecord by the executor, same view/download UI
+                # a target-write reject already uses.
+                self._parse_errors.append({
+                    "row": {"_source": "salesforce_bulk_csv", "_page": self._page_num + 1, "_csv_line": reader.line_num},
+                    "error": f"Skipped during Salesforce Bulk API CSV parsing (page {self._page_num + 1}, line {reader.line_num}): {exc}",
+                })
+                msg = f"Bulk API page {self._page_num + 1}: skipped one unparseable row at CSV line {reader.line_num} ({exc})."
+                print(f"[SFDC Bulk] {msg}", flush=True)
+                if self._log_fn:
+                    try: self._log_fn("WARN", msg)
+                    except Exception: pass
+                continue
+            rows.append({k: _normalize_sfdc_value(v) for k, v in raw_row.items()})
         self._buffer.extend(rows)
         self._page_num += 1
         self._total_rows += len(rows)
-        print(f"[SFDC Bulk] Page {self._page_num}: fetched {len(rows):,} row(s) (running total: {self._total_rows:,}).", flush=True)
+        msg = f"Bulk API page {self._page_num}: downloaded {len(rows):,} row(s) (running total: {self._total_rows:,})."
+        print(f"[SFDC Bulk] {msg}", flush=True)
+        if self._log_fn:
+            try: self._log_fn("INFO", msg)
+            except Exception: pass
         return True
 
     @property
     def columns(self) -> list[str]:
         return self._columns
+
+    def pop_parse_errors(self) -> list[dict]:
+        """Drains and returns any rows skipped by _pull_page()'s per-row
+        csv.Error handling since the last call — polled by the executor
+        after each fetch_chunk() alongside normal target-write rejects."""
+        errors, self._parse_errors = self._parse_errors, []
+        return errors
 
     def fetch_chunk(self, size: int) -> list[dict]:
         while len(self._buffer) < size and self._pull_page():
@@ -374,10 +444,32 @@ class SalesforceConnector(BaseConnector):
         return fields
 
     def _queryable_field_names(self, object_name: str) -> list[str]:
-        names = [f["name"] for f in self._describe_fields(object_name) if f.get("type") not in _NON_QUERYABLE_COLUMN_TYPES]
-        if not names:
-            raise ConnectorError(f"Salesforce object '{object_name}' has no queryable (non-compound, non-blob) fields.")
-        return names
+        raw_fields = self._describe_fields(object_name)
+        names: list[str] = []
+        for f in raw_fields:
+            ftype = f.get("type")
+            if ftype in _NON_QUERYABLE_COLUMN_TYPES:
+                continue
+            if ftype == "address":
+                # Expand compound address fields to their standard queryable scalar component fields
+                base_prefix = f["name"].replace("Address", "")
+                components = [c["name"] for c in raw_fields if c["name"].startswith(base_prefix) and c["name"] != f["name"] and c.get("type") not in _NON_QUERYABLE_COLUMN_TYPES]
+                if components:
+                    names.extend(components)
+                else:
+                    names.append(f["name"])
+            else:
+                names.append(f["name"])
+        # Deduplicate while preserving order
+        seen = set()
+        dedup_names = []
+        for n in names:
+            if n not in seen:
+                seen.add(n)
+                dedup_names.append(n)
+        if not dedup_names:
+            raise ConnectorError(f"Salesforce object '{object_name}' has no queryable fields.")
+        return dedup_names
 
     def get_columns(self, object_name: str, schema: str | None = None) -> list[ColumnInfo]:
         return [
@@ -482,7 +574,7 @@ class SalesforceConnector(BaseConnector):
         except SalesforceError as exc:
             raise ConnectorError(self._scrub(f"Salesforce SOQL query failed: {exc}")) from exc
 
-    def _expand_select_star(self, soql: str) -> str:
+    def _expand_select_star(self, soql: str, log_fn=None) -> str:
         """SOQL has no `SELECT *` — Salesforce's real API rejects it
         outright with a syntax fault. Both SQL Workspace (run_sql, below)
         and the streaming/custom-SQL surface (open_sql_stream) accept
@@ -505,16 +597,23 @@ class SalesforceConnector(BaseConnector):
         if not match:
             return soql
         object_name = match.group(1)
-        print(f"[SFDC] Expanding SELECT * for object: {object_name}...", flush=True)
+        msg_expanding = f"Expanding SELECT * for {object_name}..."
+        print(f"[SFDC] {msg_expanding}", flush=True)
+        if log_fn:
+            try: log_fn(msg_expanding)
+            except Exception: pass
         try:
             fields = self._queryable_field_names(object_name)
         except ConnectorError as exc:
             print(f"[SFDC] Could not expand SELECT * for {object_name}: {exc}", flush=True)
             raise
-        print(f"[SFDC] Found {len(fields)} queryable field(s) for {object_name}.", flush=True)
+        msg_expanded = f"Expanded to {len(fields)} fields"
+        print(f"[SFDC] {msg_expanded}", flush=True)
+        if log_fn:
+            try: log_fn(msg_expanded)
+            except Exception: pass
         field_list = ", ".join(fields)
         expanded = _SELECT_STAR_RE.sub(f"SELECT {field_list} FROM {object_name}", soql, count=1)
-        print(f"[SFDC] Expanded query length: {len(expanded)} character(s).", flush=True)
         return expanded
 
     # ── Bulk API 2.0 streaming (Run Load / QUERY-mode Run Extraction /
@@ -524,7 +623,7 @@ class SalesforceConnector(BaseConnector):
     # mechanism from _run_soql()'s REST Query API pagination, not just
     # this same call reused with a bigger loop. ─────────────────────────
 
-    def open_sql_stream(self, sql: str, parameters: dict, *, extraction_mode: str | None = None) -> SqlStream:
+    def open_sql_stream(self, sql: str, parameters: dict, *, extraction_mode: str | None = None, log_fn=None, cancel_check=None) -> SqlStream:
         """extraction_mode threads through the Source Dataset node's real
         "Load Type" setting (BULK / AUTO / ROW_BY_ROW — see
         SourceDatasetConfig.jsx, Salesforce-only field) so a user's
@@ -548,41 +647,105 @@ class SalesforceConnector(BaseConnector):
         stripped = (sql or "").strip()
         if not stripped:
             raise ConnectorValidationError("SOQL text is empty.")
-        stripped = self._expand_select_star(stripped)
-        # Named-parameter substitution — SOQL has no client-side bind-
-        # parameter API the way SQLAlchemy's text() does, so each :name
-        # token is resolved to a real, escaped SOQL literal (_soql_literal
-        # above) before submission, the same discipline read_key_range_chunk
-        # already applies to its own WHERE clause values.
+        
+        def _emit(msg):
+            print(f"[SFDC] {msg}", flush=True)
+            if log_fn:
+                try:
+                    log_fn("INFO", msg)
+                except Exception:
+                    pass
+
+        _emit("Connecting to source: SFDC")
+        sf = self._client()
+        _emit("Connected to Salesforce")
+
+        stripped = self._expand_select_star(stripped, log_fn=_emit)
         for key, value in (parameters or {}).items():
             stripped = re.sub(rf":{re.escape(key)}\b", lambda _m, v=value: _soql_literal(v), stripped)
-        sf = self._client()
+
+        match_obj = _SELECT_STAR_RE.search(sql) or re.search(r"\bFROM\s+([A-Za-z_]\w*)", sql, re.IGNORECASE)
+        obj_name_for_log = match_obj.group(1) if match_obj else "object"
+        _emit(f"Fetching SFDC metadata for {obj_name_for_log}...")
+
         mode = (extraction_mode or "AUTO").upper()
 
         if mode == "ROW_BY_ROW":
-            print(f"[SFDC] Load Type = ROW_BY_ROW — using the REST Query API's standard queryMore() pagination (Bulk API 2.0 not attempted).", flush=True)
+            _emit("Load Type = ROW_BY_ROW — using REST Query API pagination (Bulk API 2.0 not attempted).")
             stream = _SalesforceRestSqlStream(sf, stripped)
             if not stream.columns:
                 stream._columns = _parse_soql_select_fields(stripped)
             return stream
 
-        print(f"[SFDC Bulk] Load Type = {mode} — creating a real Bulk API 2.0 query job (page size {_BULK_PAGE_SIZE:,})...", flush=True)
+        _emit("Using Bulk API 2.0 for extraction...")
+        _emit(f"Creating Bulk 2.0 query job for {obj_name_for_log}...")
         try:
-            page_generator = sf.bulk2.Query.query(stripped, max_records=_BULK_PAGE_SIZE)
-            stream = _SalesforceBulkSqlStream(page_generator)
-            print(f"[SFDC Bulk] Bulk API 2.0 job accepted — streaming results.", flush=True)
-        except Exception as bulk_exc:  # job creation, polling, or first-page fetch can all fail — SalesforceError, SalesforceOperationError, or a bare network error
-            # Real automatic fallback (not a hard failure): some orgs don't
-            # have Bulk API 2.0 enabled at all, and a Bulk job can fail for
-            # reasons unrelated to the query itself (org-side queue issues,
-            # a timeout waiting for JobComplete). Retry the SAME read via
-            # the REST Query API's own real pagination instead of giving up
-            # — slower and more API-call-hungry at real scale, but a real,
-            # working read. Logged, never silent — and logged louder when
-            # the user explicitly asked for BULK, since that's the one
-            # case where "it quietly fell back" is itself the complaint.
+            res = sf.bulk2.Query._client.create_job(
+                Operation.query,
+                stripped,
+                ColumnDelimiter.COMMA,
+                LineEnding.LF,
+            )
+            sfdc_job_id = res.get("id")
+            if sfdc_job_id:
+                _emit(f"Bulk job created: {sfdc_job_id}")
+
+            t0 = time.time()
+            last_poll_log = 0
+            # Cancellation-aware polling loop for Salesforce Bulk API 2.0 job
+            while True:
+                if cancel_check and cancel_check():
+                    _emit(f"Cancellation requested! Aborting Salesforce Bulk API job {sfdc_job_id}...")
+                    try:
+                        sf.bulk2.Query._client.abort_job(sfdc_job_id, is_query=True)
+                        _emit(f"Salesforce Bulk API job {sfdc_job_id} status: ABORTED")
+                    except Exception as abort_err:
+                        _emit(f"Could not abort Salesforce Bulk job {sfdc_job_id}: {abort_err}")
+                    raise ConnectorError("Salesforce Bulk API extraction was aborted by user.")
+
+                job_info = sf.bulk2.Query._client.get_job(sfdc_job_id, is_query=True)
+                job_status = job_info.get("state")
+                processed_count = job_info.get("numberRecordsProcessed")
+
+                now = time.time()
+                if now - last_poll_log >= 10:
+                    last_poll_log = now
+                    elapsed_s = int(now - t0)
+                    proc_str = f" | Processed: {processed_count:,}" if processed_count is not None else ""
+                    _emit(f"Bulk job: {str(job_status).lower()} | Elapsed: {elapsed_s}s | SFDC is preparing data{proc_str}...")
+
+                if job_status in ("JobComplete", "Aborted", "Failed"):
+                    if job_status != "JobComplete":
+                        err_msg = job_info.get("errorMessage") or job_info
+                        raise ConnectorError(f"Salesforce Bulk job failure ({job_status}): {err_msg}")
+                    break
+                time.sleep(2.0)
+
+            elapsed = time.time() - t0
+            mins = int(elapsed // 60)
+            secs = int(elapsed % 60)
+            time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+            _emit(f"Bulk job completed in {time_str}!")
+
+            def _page_gen():
+                locator = "INIT"
+                while locator:
+                    if cancel_check and cancel_check():
+                        _emit(f"Cancellation requested during page download! Stopping fetch.")
+                        raise ConnectorError("Salesforce result download aborted by user.")
+                    if locator == "INIT":
+                        locator = ""
+                    res_chunk = sf.bulk2.Query._client.get_query_results(sfdc_job_id, locator, _BULK_PAGE_SIZE)
+                    locator = res_chunk.get("locator")
+                    yield res_chunk["records"]
+
+            _emit("Downloading bulk query results...")
+            stream = _SalesforceBulkSqlStream(_page_gen(), log_fn=log_fn)
+        except Exception as bulk_exc:
+            if "aborted by user" in str(bulk_exc).lower():
+                raise
             level = "BULK mode requested but Bulk API 2.0 failed" if mode == "BULK" else "Bulk API 2.0 query failed"
-            print(f"[SFDC Bulk] {level}, falling back to the REST Query API: {self._scrub(str(bulk_exc))}", flush=True)
+            _emit(f"{level}, falling back to REST Query API: {self._scrub(str(bulk_exc))}")
             try:
                 stream = _SalesforceRestSqlStream(sf, stripped)
             except Exception as rest_exc:

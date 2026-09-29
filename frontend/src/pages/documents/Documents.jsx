@@ -9,7 +9,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import {
-  Upload, FolderUp, PlayCircle, X, FileText, Image as ImageIcon, FileSpreadsheet,
+  Upload, FolderUp, FileArchive, Layers, PlayCircle, X, FileText, Image as ImageIcon, FileSpreadsheet,
   FileType2, File as FileIcon, Eye, RefreshCw, Download, MoreVertical, Pencil,
   Trash2, CheckSquare, XCircle, GitBranch, Sparkles, Database,
 } from 'lucide-react';
@@ -21,6 +21,9 @@ import { formatFileSize, formatDateTime } from '@/utils/formatters.js';
 import { usePermission } from '@/hooks/usePermission.js';
 import { documentApi } from '@/services/api/documentApi.js';
 import { reviewQueueApi } from '@/services/api/reviewQueueApi.js';
+import { documentZipBatchApi } from '@/services/api/zipBatchApi.js';
+import { ZipUploadDialog } from '@/components/batch-upload/ZipUploadDialog.jsx';
+import { ZipBatchListModal } from '@/components/batch-upload/ZipBatchListModal.jsx';
 import { DocumentFilters } from './DocumentFilters.jsx';
 import { SendToReviewModal } from './SendToReviewModal.jsx';
 import { BulkUploadPanel } from './BulkUploadPanel.jsx';
@@ -31,6 +34,10 @@ import './documents.css';
 // reprocess) are disabled while a document is NEEDS_REVIEW — the review
 // must be resolved, or explicitly cancelled, first.
 const isInReview = (status) => status === 'NEEDS_REVIEW';
+
+function apiErrorMessage(err, fallback) {
+  return err?.response?.data?.detail?.message || err?.response?.data?.detail || err?.data?.detail?.message || err?.data?.detail || err?.message || fallback;
+}
 
 const TYPE_ICON = { PDF: FileText, IMAGE: ImageIcon, EXCEL: FileSpreadsheet, WORD: FileType2, TEXT: FileText, OTHER: FileIcon };
 
@@ -76,12 +83,14 @@ export default function Documents() {
   const [error, setError] = useState(null);
 
   const [selected, setSelected] = useState(new Set());
-  const [uploadModal, setUploadModal] = useState(null); // 'file' | 'folder' | null
+  const [uploadModal, setUploadModal] = useState(null); // 'file' | 'folder' | 'zip' | null
+  const [zipBatchListOpen, setZipBatchListOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState(null);
   const [renameForm, setRenameForm] = useState({ filename: '', folder: '' });
   const [busyId, setBusyId] = useState(null);
   const [sendReviewModal, setSendReviewModal] = useState(null); // { type: 'single', row } | { type: 'bulk' } | null
   const [runExtractionTarget, setRunExtractionTarget] = useState(null); // row | null
+  const [actionError, setActionError] = useState(null);
 
   useEffect(() => {
     const t = setTimeout(() => { setSearch(searchInput); setPage(1); }, 300);
@@ -186,11 +195,27 @@ export default function Documents() {
     }
   };
   const startProcessing = async () => {
-    const ids = selected.size > 0 ? Array.from(selected) : rows.filter((r) => r.status === 'UPLOADED').map((r) => r.id);
-    if (ids.length === 0) return;
-    await documentApi.bulkAction(ids, 'process');
-    clearSelection();
-    refreshAll();
+    setActionError(null);
+    // Real bug found live: this used to silently fall back to every
+    // UPLOADED row when nothing was checked, and returned with zero
+    // feedback if that fallback set was also empty — so clicking the
+    // button with nothing selected either did something surprising
+    // (bulk-process everything) or nothing at all, with no indication
+    // either way. The button is now selection-gated (see the JSX below,
+    // disabled when selected.size === 0), so this only fires with an
+    // explicit selection; this guard stays as defense in depth.
+    const ids = Array.from(selected);
+    if (ids.length === 0) {
+      setActionError('Please select at least one job to process.');
+      return;
+    }
+    try {
+      await documentApi.bulkAction(ids, 'process');
+      clearSelection();
+      refreshAll();
+    } catch (err) {
+      setActionError(apiErrorMessage(err, 'Could not start processing the selected document(s).'));
+    }
   };
 
   const columns = [
@@ -309,12 +334,24 @@ export default function Documents() {
             <PermissionGate {...DOCUMENT_PERMISSIONS.DOCUMENT_UPLOAD} fallback={null}>
               <Button variant="secondary" icon={<Upload size={14} />} onClick={() => setUploadModal('file')}>Upload Document</Button>
               <Button variant="secondary" icon={<FolderUp size={14} />} onClick={() => setUploadModal('folder')}>Upload Folder</Button>
+              <Button variant="secondary" icon={<FileArchive size={14} />} onClick={() => setUploadModal('zip')}>Upload ZIP</Button>
+              <Button variant="ghost" icon={<Layers size={14} />} onClick={() => setZipBatchListOpen(true)}>ZIP Batches</Button>
             </PermissionGate>
             <PermissionGate {...DOCUMENT_PERMISSIONS.DOCUMENT_PROCESS} fallback={null}>
-              <Button variant="primary" icon={<PlayCircle size={14} />} onClick={startProcessing}>Start Processing</Button>
+              <Button
+                variant="primary"
+                icon={<PlayCircle size={14} />}
+                onClick={startProcessing}
+                disabled={selected.size === 0}
+                title={selected.size === 0 ? 'Select at least one document to process' : undefined}
+              >
+                Start Processing{selected.size > 0 ? ` (${selected.size})` : ''}
+              </Button>
             </PermissionGate>
           </div>
         </div>
+
+        {actionError && <div className="doc-error-banner">{actionError}</div>}
 
         {/* KPIs */}
         <div className="doc-kpis">
@@ -393,11 +430,32 @@ export default function Documents() {
       </div>
 
       {/* Upload modal — bulk upload + automatic processing, no separate "Process" click */}
-      <Modal open={!!uploadModal} onClose={() => setUploadModal(null)} title={uploadModal === 'folder' ? 'Upload Folder' : 'Upload Document'} size="md">
+      <Modal open={uploadModal === 'file' || uploadModal === 'folder'} onClose={() => setUploadModal(null)} title={uploadModal === 'folder' ? 'Upload Folder' : 'Upload Document'} size="md">
         <BulkUploadPanel
           directory={uploadModal === 'folder'}
           onDocumentReady={refreshAll}
           onAllSettled={refreshAll}
+        />
+      </Modal>
+
+      {/* Upload ZIP — chunked upload of a .zip of many documents, extracted,
+          deduplicated, and processed through this same pipeline in bounded
+          parallel (ZB1-ZB12). Real backend, not a variant of BulkUploadPanel. */}
+      <Modal open={uploadModal === 'zip'} onClose={() => setUploadModal(null)} title="Upload ZIP" size="md">
+        <ZipUploadDialog
+          zipBatchApi={documentZipBatchApi}
+          onBatchCreated={refreshAll}
+          onViewBatch={(batch) => { setUploadModal(null); navigate(`/app/doc-intel/documents/zip-batches/${batch.id}`); }}
+          onClose={() => setUploadModal(null)}
+        />
+      </Modal>
+
+      {/* ZIP Batches — always-available way back to a batch's live progress
+          page, regardless of whether the upload dialog was closed early. */}
+      <Modal open={zipBatchListOpen} onClose={() => setZipBatchListOpen(false)} title="ZIP Batches" size="lg">
+        <ZipBatchListModal
+          zipBatchApi={documentZipBatchApi}
+          onOpenBatch={(batchId) => { setZipBatchListOpen(false); navigate(`/app/doc-intel/documents/zip-batches/${batchId}`); }}
         />
       </Modal>
 

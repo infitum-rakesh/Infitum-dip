@@ -213,7 +213,7 @@
 
 /* Exception type filter */
 .rcn-filter-row {
-  padding: 12px 16px; display: flex; align-items: center; gap: 8px;
+  padding: 12px 20px; display: flex; align-items: center; gap: 8px;
   border-bottom: 1px solid var(--border); background: #F8FAFC; flex-wrap: wrap;
 }
 .rcn-filter-btn {
@@ -224,26 +224,29 @@
 .rcn-filter-btn:hover { border-color: var(--border-dark); color: var(--text-primary); }
 .rcn-filter-btn.active { background: var(--color-primary); border-color: var(--color-primary); color: white; }
 
-/* Exception row */
-.rcn-exc-row {
-  display: grid;
-  grid-template-columns: 150px 130px 1fr 1fr 90px;
-  gap: 8px; align-items: center;
-  padding: 9px 16px; border-bottom: 1px solid #F1F5F9;
-  font-size: var(--fs-sm); transition: var(--transition);
+/* Exception table — a real <table> so every row shares the SAME column
+   tracks as the header, regardless of how long any one row's content is
+   (a plain per-row CSS grid computes its column widths independently per
+   row, which drifts out of alignment with the header the moment one row's
+   content — e.g. a "Duplicate Target" badge — is wider than another's). */
+.rcn-exc-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.rcn-exc-table thead tr { background: #F8FAFC; border-bottom: 1px solid var(--border); }
+.rcn-exc-table th {
+  text-align: left; padding: 9px 20px; font-size: 10px; font-weight: 700;
+  color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap;
 }
-.rcn-exc-row:last-child { border-bottom: none; }
-.rcn-exc-row:hover { background: #FAFBFC; }
-.rcn-exc-key  { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text-primary); }
-.rcn-exc-col  { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
-.rcn-exc-val  { font-size: 12px; color: var(--text-primary); }
+.rcn-exc-table td { padding: 9px 20px; border-bottom: 1px solid #F1F5F9; vertical-align: middle; }
+.rcn-exc-table tbody tr:last-child td { border-bottom: none; }
+.rcn-exc-table tbody tr:hover { background: #FAFBFC; }
+.rcn-exc-key  { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text-primary); white-space: nowrap; }
+.rcn-exc-col  { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.rcn-exc-val  { font-size: 12px; color: var(--text-primary); word-break: break-word; }
 .rcn-exc-diff { font-size: 11px; color: var(--color-danger-dark); font-weight: 500; }
 
 @media (max-width: 1100px) {
   .rcn-setup         { grid-template-columns: 1fr; }
   .rcn-options       { grid-template-columns: repeat(2, 1fr); }
   .rcn-summary-grid  { grid-template-columns: repeat(3, 1fr); }
-  .rcn-exc-row       { grid-template-columns: 100px 100px 1fr auto; }
 }
 
 /* ── List page (/app/reconciliation) ──────────────────────────

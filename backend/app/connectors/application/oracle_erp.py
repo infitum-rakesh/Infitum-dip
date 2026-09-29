@@ -141,6 +141,15 @@ class OracleErpConnector(BaseConnector):
             client_auth = self._client_auth()
         except ConnectorValidationError as exc:
             return ConnectionTestResult(False, str(exc))
+        except ConnectorError as exc:
+            # OAuth2 auth type routes through _oauth2_token(), which makes
+            # a real network call to token_url and can raise ConnectorError
+            # (unreachable host, or the IDCS/OCI IAM endpoint rejecting the
+            # client credentials) — without this, that error would
+            # propagate uncaught out of test_connection() instead of the
+            # graceful ConnectionTestResult(False, ...) every other failure
+            # path here returns.
+            return ConnectionTestResult(False, str(exc))
         # limit=1 keeps this a genuinely cheap real call — reads real
         # metadata about the invoices resource without pulling any actual
         # invoice data, same intent as REST connector's bare-base-URL GET.

@@ -106,6 +106,17 @@ async def receive_webhook(
                     status="FAILED", payment_method=gateway_name.lower(), raw_reference=event.raw_payload,
                 )
             webhook_row.status = WebhookEventStatus.PROCESSED
+        elif event.event_type == "PAYMENT_PENDING":
+            # Some gateways (PayPal's Orders API) require an explicit
+            # second server-side call to actually move money after the
+            # buyer approves — CHECKOUT.ORDER.APPROVED is the real,
+            # documented trigger point for that (Stripe/Razorpay never
+            # produce this event type since their hosted-checkout
+            # products auto-capture on completion, so this is inert for
+            # them). See PayPalProvider.capture_order()'s docstring.
+            if hasattr(provider, "capture_order") and event.gateway_transaction_id:
+                await provider.capture_order(event.gateway_transaction_id)
+            webhook_row.status = WebhookEventStatus.PROCESSED
         else:
             # A real, recognized-but-not-yet-handled event type (e.g.
             # REFUND/CHARGEBACK/SUBSCRIPTION_RENEWED) — acknowledged, not

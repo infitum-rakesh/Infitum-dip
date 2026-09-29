@@ -696,7 +696,7 @@ function NodeConfigPanel({ node, onApply, onClose, pipelineId, pipelineDirty, no
 
 // ── Main designer ──────────────────────────────────────────────
 
-export function TransformationDesigner({ initialPipeline = null, onSaved = null }) {
+export function TransformationDesigner({ initialPipeline = null, onSaved = null, documentId = null }) {
   const [pipeline, dispatch] = useReducer(
     pipelineReducer,
     initialPipeline ?? INIT_PIPELINE
@@ -769,9 +769,17 @@ export function TransformationDesigner({ initialPipeline = null, onSaved = null 
     try {
       const payload = { name: pipeline.name, nodes: structural(pipeline.nodes), edges: pipeline.edges, settings: {} };
       const wasUnsaved = !pipelineId;
+      // Open Pipeline bug fix — only the very first Save of a pipeline
+      // opened from a document (documentId prop, from location.state,
+      // set by DocumentDetails.jsx's "Open Pipeline" button) links it back
+      // to that document, so future clicks reopen this same pipeline
+      // instead of creating a duplicate (see pipeline_service.
+      // get_pipeline_for_document()). A save-version PUT never takes this
+      // field — the link is set once, at creation, never rewritten.
+      const createPayload = wasUnsaved && documentId ? { ...payload, document_id: documentId } : payload;
       const result = pipelineId
         ? await pipelineVersionApi.save(pipelineId, payload)
-        : await pipelineVersionApi.create(payload);
+        : await pipelineVersionApi.create(createPayload);
       setPipelineId(result.id);
       setCurrentVersion(result.current_version);
       setSavedSnapshot(snapshotOf(pipeline));

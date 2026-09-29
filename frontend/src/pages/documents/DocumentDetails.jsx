@@ -7,18 +7,72 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, Eye, PlayCircle, RefreshCw, Download, Pencil, Trash2, CheckSquare, XCircle,
   ZoomIn, ZoomOut, RotateCw, Maximize2, ChevronLeft, ChevronRight, Info, Clock,
-  FileSearch, Sparkles, Database, ShieldCheck, ScrollText, AlertTriangle, GitBranch,
+  FileSearch, Sparkles, Database, ShieldCheck, ScrollText, AlertTriangle, GitBranch, FileOutput,
 } from 'lucide-react';
 import { Button, StatusBadge, DataTable, EmptyState, Modal, PermissionGate, FullPageSpinner } from '@/components/common/index.js';
 import { MODULES, ACTIONS, DOCUMENT_PERMISSIONS } from '@/utils/constants.js';
 import { formatFileSize, formatDateTime, formatDuration } from '@/utils/formatters.js';
 import { documentApi } from '@/services/api/documentApi.js';
 import { reviewQueueApi } from '@/services/api/reviewQueueApi.js';
+import { pipelineFileApi } from '@/services/api/pipelineFileApi.js';
+import { createNode, createEdge } from '@/components/pipeline/nodeTypes.js';
 import { languageName } from '@/utils/languageNames.js';
 import { SendToReviewModal } from './SendToReviewModal.jsx';
 import { ManualStructuringPanel } from './ManualStructuringPanel.jsx';
 import { RunExtractionControl } from './RunExtractionControl.jsx';
 import './documents.css';
+
+function apiErrorMessage(err, fallback) {
+  return err?.response?.data?.detail?.message || err?.response?.data?.detail || err?.message || fallback;
+}
+
+function csvEscape(v) {
+  const s = String(v ?? '');
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/** Real CSV built from the document's actual persisted structured dataset
+ * (GET /documents/{id}/dataset's table.columns/table.rows — row-major
+ * arrays aligned with columns, see build_dataset() in document_service.py). */
+function tableToCsv(table) {
+  const cols = table?.columns || [];
+  const rows = table?.rows || [];
+  const header = cols.map(csvEscape).join(',');
+  const body = rows.map((row) => cols.map((_, i) => csvEscape(row[i])).join(',')).join('\n');
+  return `${header}\n${body}\n`;
+}
+
+/**
+ * "Open Pipeline" bug fix — mirrors StructuredDataset.jsx's
+ * buildInitialPipelineFromDataset() (the DI wizard's "Continue to
+ * Transformation", the proven working pattern for this exact problem):
+ * uploads the document's already-persisted structured dataset as a real
+ * file (same /api/pipeline-files/upload endpoint the Source node's own
+ * "Upload File" option uses) and returns a ready-to-edit pipeline —
+ * Source(that file) -> Output Dataset — instead of the previous bare
+ * navigate('/app/pipeline') with no document data at all.
+ */
+async function buildInitialPipelineFromDocument(doc) {
+  const ds = await documentApi.getDataset(doc.id);
+  const csv = tableToCsv(ds.table);
+  const baseName = doc.filename.replace(/\.[^./]+$/, '');
+  const file = new File([csv], `${baseName}_dataset.csv`, { type: 'text/csv' });
+
+  const sourceNode = createNode('source', { x: 60, y: 160 });
+  const targetNode = createNode('target', { x: 420, y: 160 });
+
+  const uploaded = await pipelineFileApi.upload(file, sourceNode.id);
+
+  sourceNode.config = { ...sourceNode.config, objectType: 'FILE', uploadedFileId: uploaded.id };
+  sourceNode.label = `${doc.filename} (extracted)`;
+  targetNode.label = 'Write extracted data';
+
+  return {
+    name: `${doc.filename} — Pipeline`,
+    nodes: [sourceNode, targetNode],
+    edges: [createEdge(sourceNode.id, targetNode.id)],
+  };
+}
 
 const STATUS_VARIANT = {
   UPLOADED: 'gray', SCANNING: 'info', OCR_PROCESSING: 'info', AI_EXTRACTION: 'info',
@@ -38,6 +92,7 @@ const TABS = [
   { key: 'extraction', label: 'AI Extraction', icon: Sparkles },
   { key: 'dataset', label: 'Structured Dataset', icon: Database },
   { key: 'validation', label: 'Validation', icon: ShieldCheck },
+  { key: 'export', label: 'Export', icon: FileOutput },
   { key: 'audit', label: 'Audit', icon: ScrollText },
 ];
 
@@ -94,6 +149,30 @@ export default function DocumentDetails() {
     if (!window.confirm(`Delete "${doc.filename}"? This cannot be undone.`)) return;
     await documentApi.deleteDocument(documentId);
     navigate('/app/doc-intel/documents');
+  };
+  // "Open Pipeline" bug fix — this used to be a bare navigate('/app/pipeline')
+  // with no document data, so the button always opened an empty canvas.
+  // Now: check for a pipeline already linked to this document (avoids
+  // creating a duplicate on every click) and reopen it via Transformation.jsx's
+  // existing ?pipelineId= loader; otherwise build a real Source node from
+  // this document's structured dataset and hand it to Transformation.jsx
+  // via router state (the same location.state.initialPipeline contract
+  // Document Intelligence's "Continue to Transformation" already uses).
+  const openPipeline = async () => {
+    setBusy(true);
+    try {
+      const { pipeline_id } = await documentApi.getLinkedPipeline(documentId);
+      if (pipeline_id) {
+        navigate(`/app/transform?pipelineId=${pipeline_id}`);
+        return;
+      }
+      const initialPipeline = await buildInitialPipelineFromDocument(doc);
+      navigate('/app/transform', { state: { initialPipeline, documentId: doc.id } });
+    } catch (err) {
+      window.alert(apiErrorMessage(err, 'Could not open a pipeline for this document.'));
+    } finally {
+      setBusy(false);
+    }
   };
   const submitRename = async () => {
     await documentApi.updateDocument(documentId, renameForm);
@@ -167,7 +246,15 @@ export default function DocumentDetails() {
                     <Button variant="secondary" size="sm" icon={<CheckSquare size={13} />} onClick={() => setSendReviewModal(true)}>Send to Review</Button>
                   )}
                 </PermissionGate>
-                <Button variant="secondary" size="sm" icon={<GitBranch size={13} />} onClick={() => navigate('/app/pipeline')}>Open Pipeline</Button>
+                <Button
+                  variant="secondary" size="sm" icon={<GitBranch size={13} />}
+                  loading={busy}
+                  disabled={!['COMPLETED', 'NEEDS_REVIEW'].includes(doc.status)}
+                  title={!['COMPLETED', 'NEEDS_REVIEW'].includes(doc.status) ? 'Available once this document has finished processing' : undefined}
+                  onClick={openPipeline}
+                >
+                  Open Pipeline
+                </Button>
                 <PermissionGate {...DOCUMENT_PERMISSIONS.DOCUMENT_DELETE} fallback={null}>
                   <Button variant="danger" size="sm" icon={<Trash2 size={13} />} disabled={isInReview(doc.status)}
                     title={isInReview(doc.status) ? 'Resolve or cancel the review first' : undefined} onClick={runDelete}>
@@ -210,6 +297,7 @@ export default function DocumentDetails() {
           {activeTab === 'extraction' && <ExtractionTab key={`ext-${version}`} documentId={doc.id} doc={doc} onManualSaved={onManualStructuringSaved} />}
           {activeTab === 'dataset'    && <DatasetTab key={`ds-${version}`} documentId={doc.id} navigate={navigate} />}
           {activeTab === 'validation' && <ValidationTab doc={doc} navigate={navigate} />}
+          {activeTab === 'export'     && <ExportTab documentId={doc.id} filename={doc.filename} />}
           {activeTab === 'audit'      && <AuditTab doc={doc} />}
         </div>
       </div>
@@ -587,6 +675,114 @@ function ValidationTab({ doc, navigate }) {
           Open Validation Module
         </Button>
       </PermissionGate>
+    </div>
+  );
+}
+
+// ── Export ────────────────────────────────────────────────────────
+// On-demand export of this document's already-persisted processed
+// datasets (spec item #6) — reads from DocumentProcessedDataset rows,
+// never triggers a reprocess. Independent of the automatic push-on-
+// completion that Processed Data Storage/webhook settings configure —
+// this lets an admin re-export or re-push any already-processed
+// document at any time.
+
+const EXPORT_DATASETS = [
+  { value: 'metadata', label: 'Metadata' },
+  { value: 'ocr', label: 'OCR' },
+  { value: 'extraction', label: 'AI Extraction' },
+  { value: 'structured_data', label: 'Structured Dataset' },
+  { value: 'validation', label: 'Validation' },
+  { value: 'processing_run', label: 'Processing Run' },
+];
+
+function ExportTab({ documentId, filename }) {
+  const [selected, setSelected] = useState(() => new Set(EXPORT_DATASETS.map((d) => d.value)));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [pushResult, setPushResult] = useState(null);
+
+  const toggle = (value) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(value)) next.delete(value); else next.add(value);
+      return next;
+    });
+  };
+
+  const datasetsParam = selected.size === EXPORT_DATASETS.length ? null : Array.from(selected);
+
+  const downloadJson = async () => {
+    setBusy(true); setError(''); setPushResult(null);
+    try {
+      const body = await documentApi.exportDatasets(documentId, { datasets: datasetsParam, destination: 'inline' });
+      const blob = new Blob([JSON.stringify(body, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${filename.replace(/\.[^./]+$/, '')}_export.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(apiErrorMessage(err, 'Could not export this document.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pushToConnection = async () => {
+    setBusy(true); setError(''); setPushResult(null);
+    try {
+      const body = await documentApi.exportDatasets(documentId, { datasets: datasetsParam, destination: 'connection' });
+      setPushResult(body);
+    } catch (err) {
+      setError(apiErrorMessage(err, 'Could not push this document to the configured connection.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ padding: 20 }}>
+      <div className="docd-meta-card" style={{ marginBottom: 16 }}>
+        <div className="card-title">Export processed data</div>
+        <p className="text-muted text-sm" style={{ marginTop: 4, marginBottom: 14 }}>
+          Exports this document's already-persisted processed output — never triggers a reprocess. Pick which
+          datasets to include, then either download them as JSON or re-push them through the organization's
+          configured Processed Data Storage connection (Administration &gt; Settings &gt; Processed Data Storage).
+        </p>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
+          {EXPORT_DATASETS.map((d) => (
+            <label key={d.value} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+              <input type="checkbox" checked={selected.has(d.value)} onChange={() => toggle(d.value)} />
+              {d.label}
+            </label>
+          ))}
+        </div>
+
+        <div className="docd-actions">
+          <Button variant="secondary" size="sm" icon={<Download size={13} />} loading={busy} disabled={selected.size === 0} onClick={downloadJson}>
+            Download JSON
+          </Button>
+          <Button variant="secondary" size="sm" icon={<FileOutput size={13} />} loading={busy} disabled={selected.size === 0} onClick={pushToConnection}>
+            Push to Connection
+          </Button>
+        </div>
+
+        {error && <p className="docd-timeline-error" style={{ marginTop: 12 }}><AlertTriangle size={13} /> {error}</p>}
+
+        {pushResult && (
+          <div style={{ marginTop: 12 }}>
+            <StatusBadge variant={pushResult.status === 'SUCCESS' ? 'success' : 'danger'} dot>
+              {pushResult.status ?? 'UNKNOWN'}
+            </StatusBadge>
+            {pushResult.error && <p className="docd-timeline-error" style={{ marginTop: 8 }}><AlertTriangle size={13} /> {pushResult.error}</p>}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -102,11 +102,20 @@ async def cancel_job(job_id: int, user: User = Depends(_create), db: AsyncSessio
     job = await svc.get_job(db, job_id, _effective_org_id(user))
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
-    if job.status.value not in ("PENDING", "RUNNING"):
+    if job.status.value in ("SUCCEEDED", "FAILED", "CANCELLED"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Job is already {job.status.value.lower()} — nothing to cancel.")
-    requested = pipeline_job_executor.request_cancel(job_id)
-    if not requested:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Job is not currently running in this process (it may have been interrupted by a server restart) — it cannot be cancelled, only re-run.")
+    
+    # Send cancellation signal to active worker threads & tasks
+    pipeline_job_executor.request_cancel(job_id)
+    
+    # Update status to CANCELLED in database
+    job.status = pipeline_job_executor.JobStatus.CANCELLED
+    job.completed_at = pipeline_job_executor.datetime.now(pipeline_job_executor.timezone.utc)
+    if not job.error_message:
+        job.error_message = f"Job aborted by user {user.full_name or user.email}."
+    await db.commit()
+    await db.refresh(job)
+
     name_map = await svc.user_name_map(db, {job.created_by})
     return svc.job_to_out(job, name_map)
 

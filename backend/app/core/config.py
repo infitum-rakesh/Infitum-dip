@@ -87,6 +87,43 @@ class Settings(BaseSettings):
     incident_sla_hours_medium: float = 24.0
     incident_sla_hours_low: float = 72.0
 
+    # ZIP Batch Upload module (Document Intelligence + Invoice Intelligence,
+    # ZB1-ZB12) — one ZIP upload = one chunked upload session + one batch
+    # run + many bounded-parallel per-file tasks, reusing the existing
+    # per-document pipeline (never a second processing engine, never one
+    # pipeline/scheduler-job per file). All limits below are real, enforced
+    # values (zip_security_service.py/document_batch_service.py) — "never
+    # extract unlimited data."
+    zip_upload_enabled: bool = True
+    max_zip_size_mb: int = 10240          # 10 GB — whole uploaded archive
+    max_extracted_size_mb: int = 51200    # 50 GB — running total across all extracted entries
+    max_files_per_zip: int = 10000
+    max_single_file_size_mb: int = 5120   # 5 GB — per extracted entry
+    max_zip_depth: int = 20               # directory nesting depth of an entry's path
+    max_compression_ratio: int = 100      # uncompressed:compressed ratio above this is treated as a decompression bomb
+    allow_nested_zip: bool = False        # a .zip-within-the-.zip is catalogued as NESTED_ARCHIVE_NOT_SUPPORTED unless true
+    zip_retention_days: int = 30
+    extracted_file_retention_days: int = 30
+    auto_process_after_upload: bool = True
+    upload_chunk_size_mb: int = 8
+    upload_concurrency: int = 4           # concurrent chunk uploads the client may use per session
+    batch_insert_size: int = 500          # DocumentBatchFile rows per bulk-insert during registration
+    processing_batch_size: int = 50
+
+    # Document-processing concurrency (ZB5) — three independent layers:
+    # DOCUMENT_WORKER_COUNT bounds the existing process-wide
+    # _background_processing_semaphore (manual/bulk upload, document
+    # schedules, AND batch tasks all now share this one real cap);
+    # OCR_CONCURRENCY/AI_CONCURRENCY are finer sub-limits acquired around
+    # just the OCR stage and just the AI-extraction stage inside
+    # process_document(), so "8 documents processing but only 4 concurrent
+    # AI requests" is expressible. Fixed at process start (a Semaphore
+    # can't be resized per-request) — deliberately NOT part of the per-org
+    # runtime-editable settings blob (settings_service.py).
+    document_worker_count: int = 4
+    ocr_concurrency: int = 4
+    ai_concurrency: int = 4
+
 
 @lru_cache
 def get_settings() -> Settings:

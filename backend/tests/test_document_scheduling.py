@@ -562,7 +562,11 @@ async def test_08_full_run_processes_a_new_file_and_flags_an_unsupported_one_wit
     await _run_background(schedule, run, org.id)
 
     await db.refresh(run)
-    assert run.status == RunStatus.SUCCESS  # SUCCESS means "nothing FAILED", not "nothing needs review" — see finalization logic
+    # A run with any REVIEW_REQUIRED item is COMPLETED_WITH_ERRORS, not a
+    # clean SUCCESS (schedule_service.py's own finalization logic, fixed
+    # live in an earlier phase — a SUCCESS badge next to a Document
+    # Processing History full of REVIEW_REQUIRED rows was the real bug).
+    assert run.status == RunStatus.COMPLETED_WITH_ERRORS
     assert run.document_stats["discovered"] == 2
     assert run.document_stats["unsupported"] == 1
     assert run.document_stats["queued"] == 1

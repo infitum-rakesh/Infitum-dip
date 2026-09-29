@@ -870,11 +870,17 @@ async def _process_one_file(
                 stats["current_stage"] = "OCR / AI EXTRACTION"
                 await _persist_stats(db, run_id, stats)
 
-            doc = await document_service.process_document(
-                db, doc, confidence_threshold=config.confidence_threshold, accuracy_threshold=config.accuracy_threshold,
-                document_type=config.document_type,
-                invoice_auto_post=config.invoice_auto_post, invoice_erp_connection_id=config.invoice_erp_connection_id,
-            )
+            # ZIP Batch Upload (ZB5) — thread the same process-wide document
+            # semaphore batch/manual/bulk uploads already honor, so a
+            # running schedule and a manual upload jointly respect one real
+            # global cap instead of this schedule's own local
+            # max_concurrency being the only bound on OCR/AI work.
+            async with document_service._background_processing_semaphore:
+                doc = await document_service.process_document(
+                    db, doc, confidence_threshold=config.confidence_threshold, accuracy_threshold=config.accuracy_threshold,
+                    document_type=config.document_type,
+                    invoice_auto_post=config.invoice_auto_post, invoice_erp_connection_id=config.invoice_erp_connection_id,
+                )
 
             # process_document() can internally roll back THIS SAME shared
             # session to recover from a genuine mid-pipeline DB error (see
@@ -907,7 +913,23 @@ async def _process_one_file(
                 approval_increments = await _classify_invoice_approval_outcome(db, doc.id)
 
             if doc.status == DocumentStatus.NEEDS_REVIEW:
-                await review_svc.create_from_document(db, doc)
+                # Real bug found live: create_from_document() only inspects
+                # doc.extraction_result["fields"] (_pick_primary_issue()) and
+                # returns None when the fields themselves are clean — which
+                # is exactly the case for a NEEDS_REVIEW verdict driven by
+                # OCR quality flags instead. document_service.py's own
+                # _process_in_background() and document_batch_service.py's
+                # per-file executor both cover that with a
+                # create_from_ocr_quality() fallback; this scheduled-workflow
+                # path called process_document() the same way but never had
+                # that fallback, so a scheduled document flagged
+                # NEEDS_REVIEW purely on OCR quality silently never got a
+                # ReviewQueueItem at all. Mirrored here exactly.
+                item = await review_svc.create_from_document(db, doc)
+                if item is None:
+                    ocr_flags = (doc.ocr_result or {}).get("quality_flags") or []
+                    if ocr_flags:
+                        await review_svc.create_from_ocr_quality(db, doc, ocr_flags)
                 await doc_sched_svc.transition(db, registry, DocumentSourceStatus.REVIEW_REQUIRED)
                 outcome = "review"
             elif doc.status == DocumentStatus.FAILED:
@@ -1005,12 +1027,14 @@ async def _process_one_record(
                 await _persist_stats(db, run_id, stats)
 
             fields = document_service.build_fields_from_record(row, config.document_type)
-            doc = await document_service.process_document(
-                db, doc, confidence_threshold=config.confidence_threshold, accuracy_threshold=config.accuracy_threshold,
-                document_type=config.document_type,
-                invoice_auto_post=config.invoice_auto_post, invoice_erp_connection_id=config.invoice_erp_connection_id,
-                preextracted_fields=fields,
-            )
+            # Same global-cap threading as _process_one_file() above.
+            async with document_service._background_processing_semaphore:
+                doc = await document_service.process_document(
+                    db, doc, confidence_threshold=config.confidence_threshold, accuracy_threshold=config.accuracy_threshold,
+                    document_type=config.document_type,
+                    invoice_auto_post=config.invoice_auto_post, invoice_erp_connection_id=config.invoice_erp_connection_id,
+                    preextracted_fields=fields,
+                )
 
             # See the identical comment in _process_one_file() above —
             # process_document() can roll back this shared session
@@ -1027,7 +1051,14 @@ async def _process_one_record(
                 approval_increments = await _classify_invoice_approval_outcome(db, doc.id)
 
             if doc.status == DocumentStatus.NEEDS_REVIEW:
-                await review_svc.create_from_document(db, doc)
+                # Same OCR-quality-fallback gap as the file-based branch
+                # above (see its comment) — mirrored here for the
+                # record-based scheduled workflow.
+                item = await review_svc.create_from_document(db, doc)
+                if item is None:
+                    ocr_flags = (doc.ocr_result or {}).get("quality_flags") or []
+                    if ocr_flags:
+                        await review_svc.create_from_ocr_quality(db, doc, ocr_flags)
                 await doc_sched_svc.transition(db, registry, DocumentSourceStatus.REVIEW_REQUIRED)
                 outcome = "review"
             elif doc.status == DocumentStatus.FAILED:

@@ -39,7 +39,7 @@ AUDIT_MODULES = [
     "License Changes", "Connection Changes", "Document Upload", "OCR",
     "AI Extraction", "Transformation", "Validation", "Reconciliation",
     "Pipeline", "Schedule", "Incident", "Settings", "Anomaly Detection",
-    "Column Mapping", "Bulk Object Migration",
+    "Column Mapping", "Bulk Object Migration", "Document Batch",
 ]
 
 

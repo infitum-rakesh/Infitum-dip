@@ -231,7 +231,10 @@ export function ReconciliationRules({
   source, setSource, target, setTarget,
   keyColumns, setKeyColumns, compareColumns, setCompareColumns,
   comparisonTypes, setComparisonTypes,
-  columnMapping, setColumnMapping, locked,
+  columnMapping, setColumnMapping,
+  fallbackMatchColumns, setFallbackMatchColumns,
+  nameNormalization, setNameNormalization,
+  locked,
 }) {
   const [sourceColumns, setSourceColumns] = useState([]);
   const [targetColumns, setTargetColumns] = useState([]);
@@ -321,6 +324,41 @@ export function ReconciliationRules({
           disabled={!colNames.length || !targetColNames.length}
           emptyLabel="Pick a source AND target connection, schema and table above first."
         />
+      </div>
+
+      <div style={{ gridColumn: '1 / -1' }}>
+        <div style={{ fontWeight: 700, fontSize: 'var(--fs-sm)', color: 'var(--text-primary)', marginBottom: 4 }}>
+          Fallback Match Columns <span style={{ fontWeight: 500, color: 'var(--text-faint)' }}>(optional)</span>
+          {fallbackMatchColumns.length > 0 && <span className="rcn-col-count-badge">{fallbackMatchColumns.length} selected</span>}
+        </div>
+        <span style={{ fontSize: 11, color: 'var(--text-faint)', display: 'block', marginBottom: 8 }}>
+          When a source record's key doesn't exist on the target (e.g. IDs changed after a migration), try matching
+          by these column(s) instead — normalized per the rules below — before reporting it Missing. Two or more
+          target records sharing the same normalized name are never auto-picked; they're reported Ambiguous instead.
+        </span>
+        <ColumnCheckboxList
+          columns={colNames} selected={fallbackMatchColumns} onChange={setFallbackMatchColumns} disabled={!colNames.length}
+          emptyLabel="Pick a source connection, schema and table above first."
+        />
+        {fallbackMatchColumns.length > 0 && (
+          <div style={{ display: 'flex', gap: 16, marginTop: 10, flexWrap: 'wrap' }}>
+            {[
+              ['trim', 'Trim whitespace'],
+              ['case_insensitive', 'Case-insensitive'],
+              ['collapse_spaces', 'Collapse repeated spaces'],
+              ['unicode_normalize', 'Unicode normalize (NFKC)'],
+            ].map(([key, label]) => (
+              <label key={key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={nameNormalization[key] ?? (key === 'trim' || key === 'case_insensitive')}
+                  onChange={(e) => setNameNormalization({ ...nameNormalization, [key]: e.target.checked })}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+        )}
       </div>
 
       <div style={{ gridColumn: '1 / -1' }}>

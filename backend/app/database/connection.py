@@ -3,6 +3,7 @@ import json
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 
@@ -28,11 +29,29 @@ def json_serializer(obj) -> str:
     return json.dumps(obj, ensure_ascii=False)
 
 
+_is_sqlite = settings.database_url.startswith("sqlite")
+
+# NullPool for SQLite: a pooled aiosqlite connection's background worker
+# thread is bound to whichever asyncio event loop was running when the
+# connection was opened. A long-lived pool that hands the same physical
+# connection to a LATER call running on a DIFFERENT loop (e.g. this
+# project's own test suite, which runs each test function in its own
+# short-lived event loop against one shared engine — see
+# backend/tests/conftest.py) breaks with "RuntimeError: Event loop is
+# closed" the moment that stale connection's thread tries to signal back
+# to the loop that created it. NullPool opens a fresh connection per
+# checkout and fully closes it on checkin, so no connection ever
+# outlives the loop it was created on — this is SQLAlchemy's own
+# documented fix for this exact aiosqlite failure mode. Real production
+# traffic runs one persistent event loop for the process lifetime so this
+# never bites there; the only cost is a (cheap, local-file) connection
+# open per session instead of a pooled reuse.
 engine = create_async_engine(
     settings.database_url,
     echo=settings.app_debug,
     future=True,
     json_serializer=json_serializer,
+    poolclass=NullPool if _is_sqlite else None,
 )
 
 # WAL mode lets readers and a writer proceed concurrently instead of

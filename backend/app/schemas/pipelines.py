@@ -88,6 +88,11 @@ class PipelineCreateRequest(BaseModel):
     nodes: list[dict] = []
     edges: list[dict] = []
     settings: dict = {}
+    # Open Pipeline bug fix — set only on the first Save of a pipeline
+    # opened from a document's "Open Pipeline" button (see
+    # pipeline_service.get_pipeline_for_document()), so future clicks
+    # reopen this same pipeline instead of creating a duplicate.
+    document_id: int | None = None
 
 
 class PipelineSaveRequest(BaseModel):

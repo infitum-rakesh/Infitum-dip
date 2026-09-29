@@ -23,11 +23,14 @@ import json
 from pathlib import Path
 
 from openpyxl import Workbook
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.units import inch
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+try:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+except ImportError:  # pragma: no cover
+    colors = letter = getSampleStyleSheet = inch = Paragraph = SimpleDocTemplate = Spacer = Table = TableStyle = None
 
 PDF_RECORD_CAP = 500
 

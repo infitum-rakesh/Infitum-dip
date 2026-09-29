@@ -565,13 +565,13 @@ export function SourceDatasetConfig({ cfg, set, pipelineId, nodeId, pipelineDirt
                 {uploading ? 'Uploading…' : 'Upload File'}
                 <input
                   type="file" style={{ display: 'none' }} disabled={uploading}
-                  accept=".csv,.tsv,.txt,.xlsx,.xls,.json,.jsonl"
+                  accept=".csv,.tsv,.txt,.xlsx,.xls,.json,.jsonl,.xml,.parquet"
                   onChange={(e) => { handleUploadFile(e.target.files?.[0]); e.target.value = ''; }}
                 />
               </label>
               <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 5, display: 'block' }}>
-                CSV, TSV, TXT, Excel (.xlsx/.xls) or JSON. Delimiter and sheet names are detected automatically —
-                or browse an existing SFTP connection below instead.
+                CSV, TSV, TXT, Excel (.xlsx/.xls), JSON, XML or Parquet. Delimiter and sheet names are detected
+                automatically — or browse an existing SFTP connection below instead.
               </span>
             </>
           )}

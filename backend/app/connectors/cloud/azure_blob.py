@@ -31,8 +31,13 @@ import hashlib
 import re
 import time
 
-from azure.core.exceptions import AzureError, ResourceNotFoundError
-from azure.storage.blob import BlobServiceClient
+try:
+    from azure.core.exceptions import AzureError, ResourceNotFoundError
+    from azure.storage.blob import BlobServiceClient
+except ImportError:  # pragma: no cover
+    AzureError = Exception
+    ResourceNotFoundError = Exception
+    BlobServiceClient = None
 
 from app.connectors.base import ConnectionTestResult, ConnectorError, ConnectorValidationError, FileInfo
 from app.connectors.files.base import FileConnectorBase

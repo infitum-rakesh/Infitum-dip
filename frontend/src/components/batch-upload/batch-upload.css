@@ -1,0 +1,120 @@
+/* ZIP Batch Upload (ZB11) — shared styles for ZipUploadDialog and BatchDetail,
+   used from both Document Intelligence (Documents.jsx) and Invoice
+   Intelligence (InvoiceInbox.jsx). Tokens only — see the app's global
+   theme variables (--text-*, --bg-*, --color-*, --border*, --radius-*). */
+
+.zb-upload-dialog { display: flex; flex-direction: column; gap: 4px; }
+
+.zb-picked-file {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-card); color: var(--color-primary);
+}
+.zb-picked-file-body { flex: 1; min-width: 0; }
+.zb-picked-file-name { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zb-picked-file-size { font-size: var(--fs-xs); color: var(--text-muted); }
+
+.zb-option-row { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+.zb-option-label { font-size: var(--fs-xs); font-weight: var(--fw-medium); color: var(--text-muted); }
+.zb-select {
+  padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-card); color: var(--text-primary); font-size: var(--fs-sm);
+}
+.zb-checkbox-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: var(--fs-sm); color: var(--text-primary); cursor: pointer; }
+
+.zb-text-input {
+  padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-card); color: var(--text-primary); font-size: var(--fs-sm);
+}
+
+.zb-storage-toggle {
+  display: flex; align-items: center; gap: 6px; margin-top: 14px; padding: 0;
+  background: none; border: none; cursor: pointer; font-size: var(--fs-sm);
+  font-weight: var(--fw-medium); color: var(--text-primary);
+}
+.zb-storage-toggle-current { font-weight: var(--fw-regular, 400); color: var(--text-muted); font-size: var(--fs-xs); margin-left: 2px; }
+.zb-storage-panel {
+  margin-top: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-body);
+}
+.zb-storage-hint { font-size: 11px; color: var(--text-faint); margin: 10px 0 0; }
+
+.zb-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+.zb-error-banner {
+  margin-top: 10px; padding: 10px 12px; border-radius: var(--radius-md);
+  background: var(--color-danger-light, rgba(220, 38, 38, 0.08)); color: var(--color-danger-dark, var(--color-danger));
+  font-size: var(--fs-sm);
+}
+
+.zb-progress-phase { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; padding: 24px 10px; color: var(--text-muted); }
+.zb-progress-phase-name { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-primary); margin-top: 4px; }
+.zb-progress-phase-label { display: flex; align-items: center; gap: 6px; font-size: var(--fs-xs); margin-top: 8px; margin-bottom: 4px; }
+.zb-progress-phase-hint { font-size: 11px; color: var(--text-faint); margin: 0 0 14px; }
+.zb-error-icon { color: var(--color-danger); }
+
+.zb-summary-header { display: flex; align-items: flex-start; gap: 10px; }
+.zb-summary-ok-icon { color: var(--color-success); flex-shrink: 0; margin-top: 2px; }
+.zb-summary-title { font-size: var(--fs-md); font-weight: var(--fw-semibold); color: var(--text-primary); }
+.zb-summary-sub { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; }
+.zb-summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 16px; }
+.zb-summary-stat { padding: 10px; border-radius: var(--radius-md); background: var(--bg-body); text-align: center; }
+.zb-summary-stat-val { font-size: var(--fs-lg); font-weight: var(--fw-semibold); color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.zb-summary-stat-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.zb-summary-stat-success .zb-summary-stat-val { color: var(--color-success-dark, var(--color-success)); }
+.zb-summary-stat-warn .zb-summary-stat-val { color: var(--color-warning-dark, var(--color-warning)); }
+
+/* ── BatchDetail page ─────────────────────────────────────────── */
+
+.zb-page { padding: 20px 24px 40px; max-width: 1400px; margin: 0 auto; }
+.zb-back-link {
+  display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-sm);
+  color: var(--text-muted); margin-bottom: 12px; text-decoration: none;
+}
+.zb-back-link:hover { color: var(--color-primary); }
+
+.zb-detail-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.zb-detail-name { display: flex; align-items: center; gap: 10px; font-size: var(--fs-lg); font-weight: var(--fw-semibold); color: var(--text-primary); flex-wrap: wrap; }
+.zb-detail-meta { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 8px; font-size: var(--fs-xs); color: var(--text-muted); }
+.zb-detail-meta strong { color: var(--text-secondary, var(--text-primary)); font-weight: var(--fw-medium); }
+.zb-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.zb-kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-top: 20px; }
+.zb-kpi-card { padding: 12px; border-radius: var(--radius-md); background: var(--bg-card); border: 1px solid var(--border); text-align: center; }
+.zb-kpi-val { font-size: var(--fs-lg); font-weight: var(--fw-semibold); color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.zb-kpi-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.zb-kpi-val-success { color: var(--color-success-dark, var(--color-success)); }
+.zb-kpi-val-warning { color: var(--color-warning-dark, var(--color-warning)); }
+.zb-kpi-val-danger { color: var(--color-danger-dark, var(--color-danger)); }
+.zb-kpi-val-info { color: var(--color-primary); }
+
+.zb-progress-track {
+  display: flex; height: 10px; border-radius: var(--radius-full); overflow: hidden;
+  background: var(--border); margin-top: 18px;
+}
+.zb-progress-seg { height: 100%; transition: width 0.3s ease; }
+.zb-progress-seg.success { background: var(--color-success); }
+.zb-progress-seg.info { background: var(--color-primary); }
+.zb-progress-seg.warning { background: var(--color-warning); }
+.zb-progress-seg.danger { background: var(--color-danger); }
+.zb-progress-seg.gray { background: var(--text-faint, var(--border-dark)); }
+.zb-progress-label { display: flex; justify-content: space-between; font-size: var(--fs-xs); color: var(--text-muted); margin-top: 6px; }
+
+.zb-body-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; margin-top: 22px; align-items: start; }
+@media (max-width: 1080px) { .zb-body-grid { grid-template-columns: 1fr; } }
+
+.zb-section-label { font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: var(--text-primary); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.zb-panel { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-card); overflow: hidden; }
+
+.zb-filters { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+
+.zb-log-panel { max-height: 420px; overflow-y: auto; padding: 8px 12px; font-family: var(--font-mono, monospace); font-size: 12px; }
+.zb-log-empty { color: var(--text-faint); padding: 16px 0; text-align: center; }
+.zb-log-row { display: flex; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+.zb-log-row:last-child { border-bottom: none; }
+.zb-log-ts { color: var(--text-faint); flex-shrink: 0; }
+.zb-log-type { flex-shrink: 0; font-weight: var(--fw-medium); color: var(--color-primary); }
+.zb-log-msg { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.zb-mono { font-family: var(--font-mono, monospace); font-size: 12px; }
+.zb-error-cell { color: var(--color-danger-dark, var(--color-danger)); }

@@ -32,6 +32,11 @@ export default function Reconciliation() {
   // between the two sides; anything not in here falls back to matching by
   // name on the target, same as before this existed.
   const [columnMapping, setColumnMapping] = useState({});
+  // ID->NAME fallback matching (spec sections 12-18) — source-side column
+  // name(s) to try when a record's key doesn't exist on the target; empty
+  // array means no fallback, exact-key-only matching (unchanged behavior).
+  const [fallbackMatchColumns, setFallbackMatchColumns] = useState([]);
+  const [nameNormalization, setNameNormalization] = useState({});
   const [savedSnapshot, setSavedSnapshot] = useState(null);
 
   const [jobs, setJobs] = useState([]);
@@ -48,7 +53,7 @@ export default function Reconciliation() {
   // connection_id can legitimately be 0 (the file-backed sentinel — see
   // ReconciliationRules.jsx), so this can't just truthy-check connection_id.
   const bothReady = !!(source.object_name && source.connection_id != null && target.object_name && target.connection_id != null);
-  const draft = { name, source, target, keyColumns, compareColumns, comparisonTypes, columnMapping };
+  const draft = { name, source, target, keyColumns, compareColumns, comparisonTypes, columnMapping, fallbackMatchColumns, nameNormalization };
   const dirty = savedSnapshot !== null ? JSON.stringify(draft) !== savedSnapshot : (source.object_name || target.object_name);
 
   useEffect(() => { reconciliationApi.listJobs().then((r) => setJobs(r.items)).catch(() => {}); }, [id]);
@@ -62,6 +67,7 @@ export default function Reconciliation() {
       setId(null); setName('Untitled Reconciliation Job');
       setSource(emptyRef()); setTarget(emptyRef());
       setKeyColumns([]); setCompareColumns([]); setComparisonTypes(['COUNT']); setColumnMapping({});
+      setFallbackMatchColumns([]); setNameNormalization({});
       setSavedSnapshot(null); setRun(null); setError(''); setActiveTab('setup');
       setLoading(false);
       return;
@@ -81,10 +87,13 @@ export default function Reconciliation() {
       setTarget(tgt);
       setKeyColumns(d.key_columns); setCompareColumns(d.compare_columns); setComparisonTypes(d.comparison_types);
       setColumnMapping(d.column_mapping || {});
+      setFallbackMatchColumns(d.fallback_match_columns || []);
+      setNameNormalization(d.name_normalization || {});
       setSavedSnapshot(JSON.stringify({
         name: d.name, source: src, target: tgt,
         keyColumns: d.key_columns, compareColumns: d.compare_columns, comparisonTypes: d.comparison_types,
         columnMapping: d.column_mapping || {},
+        fallbackMatchColumns: d.fallback_match_columns || [], nameNormalization: d.name_normalization || {},
       }));
     }).catch((err) => setError(apiErrorMessage(err, 'Could not load this job.'))).finally(() => setLoading(false));
   }, [jobId]);
@@ -107,8 +116,14 @@ export default function Reconciliation() {
     setSaving(true); setError('');
     try {
       if (id) {
-        const r = await reconciliationApi.updateJob(id, { name, key_columns: keyColumns, compare_columns: compareColumns, comparison_types: comparisonTypes, column_mapping: columnMapping });
-        setSavedSnapshot(JSON.stringify({ name: r.name, source, target, keyColumns: r.key_columns, compareColumns: r.compare_columns, comparisonTypes: r.comparison_types, columnMapping: r.column_mapping || {} }));
+        const r = await reconciliationApi.updateJob(id, {
+          name, key_columns: keyColumns, compare_columns: compareColumns, comparison_types: comparisonTypes, column_mapping: columnMapping,
+          fallback_match_columns: fallbackMatchColumns, name_normalization: nameNormalization,
+        });
+        setSavedSnapshot(JSON.stringify({
+          name: r.name, source, target, keyColumns: r.key_columns, compareColumns: r.compare_columns, comparisonTypes: r.comparison_types,
+          columnMapping: r.column_mapping || {}, fallbackMatchColumns: r.fallback_match_columns || [], nameNormalization: r.name_normalization || {},
+        }));
       } else {
         const r = await reconciliationApi.createJob({
           name,
@@ -117,9 +132,13 @@ export default function Reconciliation() {
           target_connection_id: target.connection_id, target_schema: target.schema_name || null, target_object: target.object_name,
           target_uploaded_file_id: target.uploaded_file_id || null,
           key_columns: keyColumns, compare_columns: compareColumns, comparison_types: comparisonTypes, column_mapping: columnMapping,
+          fallback_match_columns: fallbackMatchColumns, name_normalization: nameNormalization,
         });
         setId(r.id);
-        setSavedSnapshot(JSON.stringify({ name: r.name, source, target, keyColumns: r.key_columns, compareColumns: r.compare_columns, comparisonTypes: r.comparison_types, columnMapping: r.column_mapping || {} }));
+        setSavedSnapshot(JSON.stringify({
+          name: r.name, source, target, keyColumns: r.key_columns, compareColumns: r.compare_columns, comparisonTypes: r.comparison_types,
+          columnMapping: r.column_mapping || {}, fallbackMatchColumns: r.fallback_match_columns || [], nameNormalization: r.name_normalization || {},
+        }));
         navigate(`/app/reconciliation/${r.id}`, { replace: true });
       }
     } catch (err) { setError(apiErrorMessage(err, 'Could not save job.')); }
@@ -195,6 +214,8 @@ export default function Reconciliation() {
             compareColumns={compareColumns} setCompareColumns={setCompareColumns}
             comparisonTypes={comparisonTypes} setComparisonTypes={setComparisonTypes}
             columnMapping={columnMapping} setColumnMapping={setColumnMapping}
+            fallbackMatchColumns={fallbackMatchColumns} setFallbackMatchColumns={setFallbackMatchColumns}
+            nameNormalization={nameNormalization} setNameNormalization={setNameNormalization}
             locked={locked}
           />
         )}

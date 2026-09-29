@@ -35,6 +35,7 @@ class DocumentOut(BaseModel):
     ocr_percent: float | None
     extraction_percent: float | None
     confidence: float | None
+    language_config: dict[str, Any] | None = None
     uploaded_by_id: int | None
     uploaded_by_name: str | None = None
     uploaded_at: datetime

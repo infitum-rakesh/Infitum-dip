@@ -58,9 +58,13 @@ class RazorpayProvider(PaymentGatewayProvider):
             raise PaymentGatewayError("Razorpay is not configured — set key_id and key_secret in its credentials.")
         return key_id, key_secret
 
-    async def _request(self, method: str, path: str, json_body: dict | None = None, params: dict | None = None) -> dict:
+    async def _request(
+        self, method: str, path: str, json_body: dict | None = None, params: dict | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        headers = {"X-Razorpay-Idempotency-Key": idempotency_key} if idempotency_key else None
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.request(method, f"{_API_BASE}{path}", auth=self._auth(), json=json_body, params=params)
+            resp = await client.request(method, f"{_API_BASE}{path}", auth=self._auth(), json=json_body, params=params, headers=headers)
         try:
             body = resp.json()
         except ValueError:
@@ -87,7 +91,11 @@ class RazorpayProvider(PaymentGatewayProvider):
             "callback_method": "get",
             "notes": {"invoice_id": str(invoice.id)},
         }
-        result = await self._request("POST", "/payment_links", json_body=body)
+        # Deterministic on the invoice — a genuine network-level retry of
+        # this same call reuses the key (Razorpay returns the already-
+        # created link instead of minting a second one for the same
+        # invoice); a random/uuid key would defeat that on every retry.
+        result = await self._request("POST", "/payment_links", json_body=body, idempotency_key=f"payment-link-{invoice.id}")
         return PaymentLinkResult(payment_url=result["short_url"], gateway_reference=result["id"])
 
     async def create_payment_session(self, *, invoice, return_url: str) -> PaymentLinkResult:
@@ -115,10 +123,17 @@ class RazorpayProvider(PaymentGatewayProvider):
         body = {}
         if amount is not None:
             body["amount"] = round(amount * 100)
-        refund = await self._request("POST", f"/payments/{gateway_transaction_id}/refund", json_body=body)
+        idempotency_key = f"refund-{gateway_transaction_id}-{round((amount or 0) * 100)}"
+        refund = await self._request(
+            "POST", f"/payments/{gateway_transaction_id}/refund", json_body=body, idempotency_key=idempotency_key,
+        )
+        # Razorpay's refund-creation response always carries a real status
+        # ("processed" or "pending") — treating a missing/unrecognized
+        # value as a successful refund (the old `in ("processed", None)`
+        # check did) would mask an ambiguous or failed state as success.
+        status = "REFUNDED" if refund.get("status") == "processed" else "PENDING"
         return PaymentStatusResult(
-            status="REFUNDED" if refund.get("status") in ("processed", None) else "PENDING",
-            gateway_transaction_id=gateway_transaction_id, amount=(refund.get("amount") or 0) / 100,
+            status=status, gateway_transaction_id=gateway_transaction_id, amount=(refund.get("amount") or 0) / 100,
             currency=(refund.get("currency") or "INR").upper(), raw_reference=refund,
         )
 
@@ -138,8 +153,18 @@ class RazorpayProvider(PaymentGatewayProvider):
     def parse_webhook_event(self, payload: bytes) -> WebhookEvent:
         data = json.loads(payload)
         event = data.get("event", "")
+        payload_entities = data.get("payload", {}) or {}
         entity_key = "payment_link" if event.startswith("payment_link.") else "payment" if event.startswith("payment.") else "refund"
-        entity = (data.get("payload", {}).get(entity_key, {}) or {}).get("entity", {})
+        entity = (payload_entities.get(entity_key, {}) or {}).get("entity", {})
+        # For payment_link.* events, `entity` is the Payment LINK itself
+        # (id "plink_...") — but Razorpay's real payload for
+        # payment_link.paid also nests the actual Payment (id "pay_...")
+        # under payload.payment.entity. get_payment_status()/
+        # refund_payment() both operate on /payments/{id} and need that
+        # real payment id, not the link id, so prefer it here when present
+        # (notes carrying our invoice_id live on the link entity, so those
+        # are still read from `entity`, not the payment entity).
+        payment_entity = (payload_entities.get("payment", {}) or {}).get("entity", {}) if entity_key == "payment_link" else entity
         # Razorpay does not send a dedicated top-level event id field on
         # every webhook version — build a stable synthetic id from the
         # entity id + event + created_at so PaymentWebhookEvent's
@@ -150,8 +175,8 @@ class RazorpayProvider(PaymentGatewayProvider):
         raw_invoice_id = notes.get("invoice_id")
         return WebhookEvent(
             event_id=synthetic_id, event_type=_EVENT_TYPE_MAP.get(event, event.upper()),
-            gateway_transaction_id=entity.get("id"),
-            amount=(entity.get("amount") / 100) if entity.get("amount") is not None else None,
-            currency=(entity.get("currency") or "").upper() or None,
+            gateway_transaction_id=payment_entity.get("id") or entity.get("id"),
+            amount=(payment_entity.get("amount") / 100) if payment_entity.get("amount") is not None else None,
+            currency=(payment_entity.get("currency") or "").upper() or None,
             raw_payload={**data, "invoice_id": int(raw_invoice_id) if raw_invoice_id and str(raw_invoice_id).isdigit() else None},
         )

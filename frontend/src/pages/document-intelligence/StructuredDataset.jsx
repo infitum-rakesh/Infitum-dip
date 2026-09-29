@@ -36,9 +36,15 @@ function csvEscape(v) {
 /** Real CSV built from the actual extracted field values — one header
  * row + one data row (this stage extracts one record per document). */
 function datasetToCsv(dataset) {
-  const cols = dataset.headerFields.map((f) => f.name);
-  const row = dataset.headerFields.map((f) => f.value);
-  return `${cols.map(csvEscape).join(',')}\n${row.map(csvEscape).join(',')}\n`;
+  const headerCols = dataset.headerFields.map((f) => f.name);
+  const lineCols = Object.keys(dataset.lineItems?.[0] ?? {});
+  const cols = [...headerCols, ...lineCols];
+  const lineItems = dataset.lineItems?.length ? dataset.lineItems : [null];
+  const rows = lineItems.map((line) => [
+    ...dataset.headerFields.map((f) => f.value),
+    ...lineCols.map((c) => line?.[c] ?? ''),
+  ]);
+  return `${cols.map(csvEscape).join(',')}\n${rows.map((row) => row.map(csvEscape).join(',')).join('\n')}\n`;
 }
 
 /**

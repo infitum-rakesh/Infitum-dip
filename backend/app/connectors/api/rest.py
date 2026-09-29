@@ -175,6 +175,16 @@ class RestApiConnector(BaseConnector):
             headers = self._auth_headers()
         except ConnectorValidationError as exc:
             return ConnectionTestResult(False, str(exc))
+        except ConnectorError as exc:
+            # OAuth2 auth type routes through _oauth2_token(), which makes
+            # a real network call to token_url and can raise ConnectorError
+            # (unreachable host, or the token endpoint rejecting the
+            # client credentials) — without this, that error would
+            # propagate uncaught out of test_connection() instead of the
+            # graceful ConnectionTestResult(False, ...) every other
+            # failure path here returns. Same bug class fixed in
+            # oracle_erp.py's test_connection() (Phase 11).
+            return ConnectionTestResult(False, str(exc))
         try:
             with httpx.Client(timeout=DEFAULT_TIMEOUT, auth=self._client_auth()) as client:
                 resp = client.get(self._base_url(), headers=headers)

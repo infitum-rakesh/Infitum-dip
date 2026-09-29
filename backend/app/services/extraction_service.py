@@ -31,7 +31,7 @@ from app.models.document import Document
 from app.services import document_taxonomies
 from app.services.connection_service import build_connector, get_connection
 
-OCR_TEXT_CAP = 8000  # characters of OCR text sent per call — bounds prompt size/cost
+OCR_TEXT_CAP = 60000  # page-aware OCR characters sent per call; bounded but lets every page contribute
 
 # Sentinel passed as connection_id to mean "use the Custom Extraction
 # Engine (custom_engine.py) instead of a real AI Provider connection" —
@@ -154,6 +154,170 @@ def _ocr_text(doc: Document) -> str:
     if not doc.ocr_result or not doc.ocr_result.get("full_text", "").strip():
         raise ExtractionError("This document has no OCR text yet — run OCR first.")
     return doc.ocr_result["full_text"]
+
+
+def _ocr_languages(doc: Document) -> list[str] | None:
+    lang = (doc.ocr_result or {}).get("language") or {}
+    languages = lang.get("detected_languages") or []
+    if not languages and lang.get("primary_language"):
+        languages = [lang["primary_language"]]
+    clean = [str(code).strip().lower() for code in languages if str(code).strip()]
+    return clean or None
+
+
+def _page_aware_ocr_context(doc: Document, *, cap: int = OCR_TEXT_CAP) -> tuple[str, list[int], int]:
+    if not doc.ocr_result:
+        raise ExtractionError("This document has no OCR text yet — run OCR first.")
+    regions = doc.ocr_result.get("regions") or []
+    by_page: dict[int, list[str]] = {}
+    for region in regions:
+        text = str(region.get("text") or "").strip()
+        if text:
+            by_page.setdefault(int(region.get("page") or 1), []).append(text)
+
+    if not by_page:
+        text = _ocr_text(doc)
+        return text[:cap], [1] if text.strip() else [], 1
+
+    total_pages = int(doc.ocr_result.get("page_count") or doc.page_count or max(by_page))
+    page_numbers = list(range(1, total_pages + 1))
+    per_page_cap = max(1000, cap // max(1, len(page_numbers)))
+    parts: list[str] = []
+    pages_used: list[int] = []
+    for page_number in page_numbers:
+        page_text = "\n".join(by_page.get(page_number, [])).strip()
+        if not page_text:
+            parts.append(f"[PAGE {page_number}]\n")
+            continue
+        pages_used.append(page_number)
+        if len(page_text) > per_page_cap:
+            page_text = page_text[:per_page_cap] + "\n[PAGE TEXT TRUNCATED]"
+        parts.append(f"[PAGE {page_number}]\n{page_text}")
+    return "\n\n".join(parts)[:cap], pages_used, total_pages
+
+
+def _page_chunks_for_ocr_context(doc: Document, *, pages_per_chunk: int = 4, per_page_cap: int = 4000) -> list[tuple[str, list[int], int]]:
+    if not doc.ocr_result:
+        raise ExtractionError("This document has no OCR text yet — run OCR first.")
+    regions = doc.ocr_result.get("regions") or []
+    by_page: dict[int, list[str]] = {}
+    for region in regions:
+        text = str(region.get("text") or "").strip()
+        if text:
+            by_page.setdefault(int(region.get("page") or 1), []).append(text)
+    total_pages = int(doc.ocr_result.get("page_count") or doc.page_count or (max(by_page) if by_page else 1))
+    chunks: list[tuple[str, list[int], int]] = []
+    for start in range(1, total_pages + 1, pages_per_chunk):
+        page_numbers = list(range(start, min(total_pages, start + pages_per_chunk - 1) + 1))
+        parts: list[str] = []
+        used: list[int] = []
+        for page_number in page_numbers:
+            page_text = "\n".join(by_page.get(page_number, [])).strip()
+            if page_text:
+                used.append(page_number)
+                if len(page_text) > per_page_cap:
+                    page_text = page_text[:per_page_cap] + "\n[PAGE TEXT TRUNCATED]"
+            parts.append(f"[PAGE {page_number}]\n{page_text}")
+        chunks.append(("\n\n".join(parts), used, total_pages))
+    return chunks
+
+
+def _cell_value(raw):
+    if isinstance(raw, dict) and "value" in raw:
+        return raw.get("value") if raw.get("value") is not None else ""
+    return raw if raw is not None else ""
+
+
+def _fields_from_parsed(schema: list[dict], parsed: dict) -> list[dict]:
+    fields_out = []
+    for f in schema:
+        name = f["name"]
+        entry = parsed.get(name)
+
+        if f.get("type") == "table":
+            columns = [c["name"] for c in f.get("columns", [])]
+            rows_raw = None
+            conf_raw = None
+            if isinstance(entry, dict):
+                rows_raw = entry.get("rows")
+                conf_raw = entry.get("confidence")
+            elif isinstance(entry, list):
+                rows_raw = entry
+
+            rows = []
+            seen_rows = set()
+            if isinstance(rows_raw, list):
+                for r in rows_raw:
+                    if not isinstance(r, dict):
+                        continue
+                    row = {c: _cell_value(r.get(c)) for c in columns}
+                    row_key = tuple(row.get(c) for c in columns)
+                    if row_key in seen_rows:
+                        continue
+                    seen_rows.add(row_key)
+                    rows.append(row)
+            try:
+                confidence = float(conf_raw) if conf_raw is not None else (75.0 if rows else 0.0)
+            except (TypeError, ValueError):
+                confidence = 75.0 if rows else 0.0
+            fields_out.append({"name": name, "type": "table", "columns": columns, "rows": rows, "confidence": round(confidence, 1)})
+            continue
+
+        if not isinstance(entry, dict):
+            entry = {"value": entry} if entry is not None else {}
+        value = entry.get("value")
+        if f.get("type") == "number" and value is not None and not isinstance(value, (int, float)):
+            cleaned = re.sub(r"[^0-9.\-]", "", str(value))
+            try:
+                value = float(cleaned) if cleaned not in ("", "-", ".") else None
+            except ValueError:
+                value = None
+        try:
+            confidence = float(entry.get("confidence")) if entry.get("confidence") is not None else 0.0
+        except (TypeError, ValueError):
+            confidence = 0.0
+        try:
+            page = int(entry.get("page") or 1)
+        except (TypeError, ValueError):
+            page = 1
+        fields_out.append({"name": name, "type": "scalar", "value": value if value is not None else "", "confidence": round(confidence, 1), "page": page})
+    return fields_out
+
+
+def _merge_extraction_fields(schema: list[dict], chunks: list[list[dict]]) -> list[dict]:
+    by_name: dict[str, list[dict]] = {}
+    for fields in chunks:
+        for field in fields:
+            by_name.setdefault(field["name"], []).append(field)
+
+    merged = []
+    for spec in schema:
+        name = spec["name"]
+        fields = by_name.get(name, [])
+        if spec.get("type") == "table":
+            columns = [c["name"] for c in spec.get("columns", [])]
+            rows = []
+            seen = set()
+            confidences = []
+            for field in fields:
+                confidences.append(float(field.get("confidence") or 0.0))
+                for row in field.get("rows") or []:
+                    row_key = tuple(row.get(c) for c in columns)
+                    if row_key in seen:
+                        continue
+                    seen.add(row_key)
+                    rows.append(row)
+            confidence = round(sum(confidences) / len(confidences), 1) if confidences else 0.0
+            merged.append({"name": name, "type": "table", "columns": columns, "rows": rows, "confidence": confidence})
+            continue
+
+        candidates = [f for f in fields if f.get("value") not in (None, "")]
+        chosen = max(candidates, key=lambda f: float(f.get("confidence") or 0.0), default=(fields[0] if fields else None))
+        if chosen is None:
+            merged.append({"name": name, "type": "scalar", "value": "", "confidence": 0.0, "page": 1})
+        else:
+            merged.append(chosen)
+    return merged
 
 
 async def _get_connector(db: AsyncSession, connection_id: int, organization_id: int | None):
@@ -297,9 +461,9 @@ async def detect_schema(
         if seed_schema:
             return seed_schema
 
-    text = _ocr_text(doc)
+    text, pages_used, total_pages = _page_aware_ocr_context(doc)
     connector = await _get_connector(db, connection_id, organization_id)
-    prompt = f"Document type: {doc.doc_type.value}\n\nOCR TEXT:\n{text[:OCR_TEXT_CAP]}"
+    prompt = f"Document type: {doc.doc_type.value}\nPages included: {len(pages_used)} of {total_pages}\n\nOCR TEXT BY PAGE:\n{text}"
     parsed = await _generate_json(connector, prompt, DETECT_SCHEMA_SYSTEM, 2500)
     if not isinstance(parsed, list):
         raise ExtractionError("The AI model's schema proposal wasn't a JSON array.")
@@ -341,10 +505,14 @@ async def extract_fields(
         raise ExtractionError("No fields to extract.")
     if connection_id == CUSTOM_ENGINE_CONNECTION_ID:
         try:
-            return custom_engine.extract_fields(doc, schema)
+            result = custom_engine.extract_fields(doc, schema, languages=_ocr_languages(doc))
+            pages = sorted({int(r.get("page") or 1) for r in (doc.ocr_result or {}).get("regions", [])})
+            result["pages_considered"] = pages
+            result["total_ocr_pages"] = int((doc.ocr_result or {}).get("page_count") or doc.page_count or len(pages) or 1)
+            return result
         except custom_engine.CustomEngineError as exc:
             raise ExtractionError(str(exc)) from exc
-    text = _ocr_text(doc)
+    text, pages_used, total_pages = _page_aware_ocr_context(doc)
     connector = await _get_connector(db, connection_id, organization_id)
 
     def _describe(f: dict) -> str:
@@ -354,7 +522,7 @@ async def extract_fields(
         return f"- {f['name']} ({f.get('type', 'string')}){' [required]' if f.get('required') else ''}: {f.get('instruction', '')}"
 
     schema_desc = "\n".join(_describe(f) for f in schema)
-    prompt = f"FIELDS TO EXTRACT:\n{schema_desc}\n\nOCR TEXT:\n{text[:OCR_TEXT_CAP]}"
+    prompt = f"FIELDS TO EXTRACT:\n{schema_desc}\n\nPages included: {len(pages_used)} of {total_pages}\n\nOCR TEXT BY PAGE:\n{text}"
     # Scales with schema size — a real, observed failure with the comprehensive
     # canonical INVOICE taxonomy (45+ fields): a fixed 3000-token budget let a
     # smaller local model (llama3.2 via Ollama) run out of room mid-response and
@@ -364,98 +532,28 @@ async def extract_fields(
     # plus normal model verbosity, floored at the original 3000 for small
     # ad-hoc schemas and capped so one call can't run away unbounded.
     max_tokens = min(8000, max(3000, len(schema) * 120))
-    parsed = await _generate_json(connector, prompt, EXTRACT_SYSTEM, max_tokens)
-    if not isinstance(parsed, dict):
-        raise ExtractionError("The AI model's extraction response wasn't a JSON object.")
-
-    fields_out = []
-    for f in schema:
-        name = f["name"]
-        entry = parsed.get(name)
-
-        if f.get("type") == "table":
-            # A table field's real value is its rows, not a scalar — kept
-            # as a distinct shape ({name, type, columns, rows, confidence})
-            # rather than forced into the {value,confidence,page} shape
-            # every scalar field uses, since a row list isn't a "value" in
-            # the same sense. build_dataset() (document_service.py) is what
-            # expands these rows into real dataset rows.
-            columns = [c["name"] for c in f.get("columns", [])]
-            rows_raw = None
-            conf_raw = None
-            if isinstance(entry, dict):
-                rows_raw = entry.get("rows")
-                conf_raw = entry.get("confidence")
-            elif isinstance(entry, list):
-                rows_raw = entry  # tolerate a bare array instead of {"rows": [...]}
-            def _cell(raw):
-                # Tolerate a model wrapping a cell the same way it wraps a
-                # top-level scalar field — {"value": x, "confidence": ...,
-                # "page": ...} — instead of the bare value the prompt asks
-                # for per cell. Observed live with llama3.2: it sometimes
-                # applies the scalar-field pattern uniformly, including
-                # inside table rows. Unwrapping here keeps dataset cells as
-                # plain values either way, rather than leaking the wrapper
-                # object into the structured dataset table.
-                if isinstance(raw, dict) and "value" in raw:
-                    return raw.get("value") if raw.get("value") is not None else ""
-                return raw if raw is not None else ""
-
-            rows = []
-            seen_rows = set()
-            if isinstance(rows_raw, list):
-                for r in rows_raw:
-                    if not isinstance(r, dict):
-                        continue
-                    row = {c: _cell(r.get(c)) for c in columns}
-                    # Real, observed small-model failure mode (llama3.2): asked
-                    # to merge wrapped OCR lines into one row, it can instead
-                    # restate the whole table a second time inside the same
-                    # response, or emit a near-duplicate row per source line —
-                    # dropping an exact repeat of an already-accepted row is a
-                    # safe guard (a genuine table never needs the identical
-                    # row twice) without touching legitimately distinct rows.
-                    row_key = tuple(row.get(c) for c in columns)
-                    if row_key in seen_rows:
-                        continue
-                    seen_rows.add(row_key)
-                    rows.append(row)
-            try:
-                confidence = float(conf_raw) if conf_raw is not None else (75.0 if rows else 0.0)
-            except (TypeError, ValueError):
-                confidence = 75.0 if rows else 0.0
-            fields_out.append({
-                "name": name, "type": "table", "columns": columns, "rows": rows,
-                "confidence": round(confidence, 1),
-            })
-            continue
-
-        if not isinstance(entry, dict):
-            entry = {"value": entry} if entry is not None else {}
-        value = entry.get("value")
-        if f.get("type") == "number" and value is not None and not isinstance(value, (int, float)):
-            # A real, observed failure: the model sometimes returns raw OCR
-            # text instead of a parsed number for a "number" field (e.g.
-            # "INRO" for an amount the source prints as "INR O" — an OCR
-            # misread of a zero as the letter O). A non-numeric string in a
-            # number field is worse than missing — it looks like real data
-            # but isn't usable as one — so it's coerced to a real number
-            # (stripping currency symbols/commas/whitespace) or dropped to
-            # null, never surfaced as-is.
-            cleaned = re.sub(r"[^0-9.\-]", "", str(value))
-            try:
-                value = float(cleaned) if cleaned not in ("", "-", ".") else None
-            except ValueError:
-                value = None
-        try:
-            confidence = float(entry.get("confidence")) if entry.get("confidence") is not None else 0.0
-        except (TypeError, ValueError):
-            confidence = 0.0
-        try:
-            page = int(entry.get("page") or 1)
-        except (TypeError, ValueError):
-            page = 1
-        fields_out.append({"name": name, "type": "scalar", "value": value if value is not None else "", "confidence": round(confidence, 1), "page": page})
+    raw_model_response = None
+    if total_pages > 4:
+        chunk_fields = []
+        chunk_payloads = []
+        pages_seen: set[int] = set()
+        for chunk_text, chunk_pages, _total_pages in _page_chunks_for_ocr_context(doc):
+            chunk_prompt = f"FIELDS TO EXTRACT:\n{schema_desc}\n\nPages included: {len(chunk_pages)} of {_total_pages}\n\nOCR TEXT BY PAGE:\n{chunk_text}"
+            parsed = await _generate_json(connector, chunk_prompt, EXTRACT_SYSTEM, max_tokens)
+            if not isinstance(parsed, dict):
+                raise ExtractionError("The AI model's extraction response wasn't a JSON object.")
+            chunk_fields.append(_fields_from_parsed(schema, parsed))
+            chunk_payloads.append({"pages": chunk_pages, "response": parsed})
+            pages_seen.update(chunk_pages)
+        fields_out = _merge_extraction_fields(schema, chunk_fields)
+        pages_used = sorted(pages_seen)
+        raw_model_response = chunk_payloads
+    else:
+        parsed = await _generate_json(connector, prompt, EXTRACT_SYSTEM, max_tokens)
+        if not isinstance(parsed, dict):
+            raise ExtractionError("The AI model's extraction response wasn't a JSON object.")
+        fields_out = _fields_from_parsed(schema, parsed)
+        raw_model_response = parsed
 
     # Real bug found live: this used to score EVERY schema field, including
     # ones the model correctly reported as genuinely absent (value="",
@@ -503,7 +601,9 @@ async def extract_fields(
         # path (CUSTOM_ENGINE_CONNECTION_ID returns before this point) — no
         # AI model was actually called there, so there's honestly nothing to
         # persist under this key.
-        "raw_model_response": parsed,
+        "raw_model_response": raw_model_response,
+        "pages_considered": pages_used,
+        "total_ocr_pages": total_pages,
     }
 
 
@@ -531,10 +631,10 @@ async def find_gap_fields(
     else genuinely present — directly extending recall beyond the fixed
     list rather than being capped by it. Returns a schema-shaped field
     list (possibly empty) suitable for a follow-up extract_fields() call."""
-    text = _ocr_text(doc)
+    text, pages_used, total_pages = _page_aware_ocr_context(doc)
     connector = await _get_connector(db, connection_id, organization_id)
     covered = ", ".join(sorted(covered_field_names))
-    prompt = f"ALREADY COVERED FIELDS:\n{covered}\n\nOCR TEXT:\n{text[:OCR_TEXT_CAP]}"
+    prompt = f"ALREADY COVERED FIELDS:\n{covered}\n\nPages included: {len(pages_used)} of {total_pages}\n\nOCR TEXT BY PAGE:\n{text}"
     try:
         parsed = await _generate_json(connector, prompt, GAP_FILL_SYSTEM, 1200)
     except ExtractionError:

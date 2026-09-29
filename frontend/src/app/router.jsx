@@ -26,6 +26,9 @@ import DatasetDetails  from '@/pages/data-catalog/DatasetDetails.jsx';
 // Connections (implemented)
 import Connections from '@/pages/connections/Connections.jsx';
 
+// Format Conversion (implemented)
+import FormatConversion from '@/pages/format-conversion/FormatConversion.jsx';
+
 // Document Intelligence (implemented)
 import DocumentIntelligence from '@/pages/document-intelligence/DocumentIntelligence.jsx';
 
@@ -86,6 +89,8 @@ import AnomalyConfiguration  from '@/pages/anomaly-detection/AnomalyConfiguratio
 import InvoiceInbox    from '@/pages/invoice-intelligence/InvoiceInbox.jsx';
 import InvoiceDetail   from '@/pages/invoice-intelligence/InvoiceDetail.jsx';
 import InvoiceSettings from '@/pages/invoice-intelligence/InvoiceSettings.jsx';
+import BatchDetail     from '@/pages/batch-upload/BatchDetail.jsx';
+import InvoiceByDocumentRedirect from '@/pages/invoice-intelligence/InvoiceByDocumentRedirect.jsx';
 
 // Payment Approvals (PAY10) — My Approvals worklist is the landing page.
 // Approval Rules (PAY11) — rule configuration + simulate.
@@ -257,6 +262,7 @@ export const router = createBrowserRouter([
           { path: 'catalog',              element: <DataCatalog /> },
           { path: 'catalog/:assetId',     element: <DatasetDetails /> },
           { path: 'connections', element: <Connections /> },
+          { path: 'format-conversion', element: <FormatConversion /> },
           { path: 'sql-workspace', element: <SqlWorkspace /> },
           { path: 'sql', element: <Navigate to="/app/sql-workspace" replace /> }, // old path — kept working
 
@@ -264,6 +270,9 @@ export const router = createBrowserRouter([
           { path: 'doc-intel',                       element: <DocumentIntelligence /> },
           { path: 'doc-intel/documents',              element: <Documents /> },
           { path: 'doc-intel/documents/:documentId',  element: <DocumentDetails /> },
+          // ZIP batch upload (ZB11) — 3 segments after 'doc-intel', never
+          // collides with the 2-segment :documentId catch-all above.
+          { path: 'doc-intel/documents/zip-batches/:batchId', element: <BatchDetail basePath="documents" backTo="/app/doc-intel/documents" backLabel="Documents" viewDocPath={(docId) => `/app/doc-intel/documents/${docId}`} /> },
           { path: 'doc-intel/review',           element: <ReviewQueue /> },
           { path: 'doc-intel/review/:reviewId', element: <ReviewQueueDetail /> },
 
@@ -304,6 +313,16 @@ export const router = createBrowserRouter([
           // stay registered before the :invoiceId catch-all below it.
           { path: 'invoice-intel',            element: <InvoiceInbox /> },
           { path: 'invoice-intel/settings',   element: <InvoiceSettings /> },
+          // ZIP batch upload (ZB11) — 2 segments after 'invoice-intel',
+          // never collides with the 1-segment :invoiceId catch-all below.
+          // Real bug found live: this route had no viewDocPath at all, so
+          // BatchDetail's "View document"/"View existing" columns silently
+          // rendered nothing for every invoice ZIP batch file — InvoiceDetail
+          // is keyed by invoice_id, not document_id, so the plain
+          // `/invoice-intel/{docId}` used on the Document Intelligence route
+          // doesn't work here; resolve through by-document first.
+          { path: 'invoice-intel/zip-batches/:batchId', element: <BatchDetail basePath="invoices" backTo="/app/invoice-intel" backLabel="Invoice Inbox" viewDocPath={(docId) => `/app/invoice-intel/by-document/${docId}`} /> },
+          { path: 'invoice-intel/by-document/:documentId', element: <InvoiceByDocumentRedirect /> },
           { path: 'invoice-intel/:invoiceId', element: <InvoiceDetail /> },
 
           // Payment Approvals — My Approvals worklist (PAY10). Rule

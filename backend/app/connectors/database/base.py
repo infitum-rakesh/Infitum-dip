@@ -322,14 +322,29 @@ class SqlAlchemyDatabaseConnector(BaseConnector):
         engine = self.engine(pool_size=2)
         with engine.begin() as conn:
             if on_session_ready:
-                on_session_ready(self.get_session_id(conn))
+                try:
+                    on_session_ready(self.get_session_id(conn))
+                except Exception:
+                    pass
             if timeout_seconds and self.supports_query_timeout:
                 self.apply_statement_timeout(conn, timeout_seconds)
             result = conn.execute(text(stripped), parameters or {})
             if result.returns_rows:
                 columns = list(result.keys())
-                rows = result.fetchmany(limit + 1)
-                return SqlRunResult(is_result_set=True, columns=columns, rows=[list(r) for r in rows[:limit]], truncated=len(rows) > limit)
+                raw_rows = result.fetchmany(limit + 1)
+                clean_rows = []
+                for r in raw_rows[:limit]:
+                    row_vals = []
+                    for val in r:
+                        if hasattr(val, "read") and callable(val.read):
+                            try:
+                                row_vals.append(val.read())
+                            except Exception:
+                                row_vals.append(str(val))
+                        else:
+                            row_vals.append(val)
+                    clean_rows.append(row_vals)
+                return SqlRunResult(is_result_set=True, columns=columns, rows=clean_rows, truncated=len(raw_rows) > limit)
             rowcount = result.rowcount if (result.rowcount is not None and result.rowcount >= 0) else None
             return SqlRunResult(is_result_set=False, rowcount=rowcount)
 
@@ -473,13 +488,28 @@ class SqlAlchemyDatabaseConnector(BaseConnector):
     def build_select_all_sql(self, object_name: str, schema: str | None = None) -> str:
         return f"SELECT * FROM {self.quote_object(object_name, schema)}"
 
-    def open_sql_stream(self, sql: str, parameters: dict, *, extraction_mode: str | None = None) -> SqlStream:
+    def open_sql_stream(
+        self, sql: str, parameters: dict, *, extraction_mode: str | None = None,
+        log_fn=None, cancel_check=None,
+    ) -> SqlStream:
         # extraction_mode (BULK/AUTO/ROW_BY_ROW) is a Salesforce-only
         # concept (see SalesforceConnector.open_sql_stream) — every SQL
         # dialect connector already streams a real server-side cursor via
         # SQLAlchemy regardless of this setting, so it's accepted for
         # interface compatibility with the generic caller in
-        # pipeline_job_executor.py and simply ignored here.
+        # pipeline_job_executor.py and simply ignored here. log_fn/
+        # cancel_check are accepted the same way: real bug found live
+        # 2026-09-16 — without them here, the executor's genuinely
+        # unbounded interleaved streaming fast path crashed with
+        # `TypeError: open_sql_stream() got an unexpected keyword argument
+        # 'log_fn'` for every plain SQL-database source (Postgres/MySQL/
+        # SQL Server/Oracle/Snowflake/SAP/Vertica/Fabric), falling through
+        # to the older, capped engine instead. Neither is genuinely needed
+        # here: this class's fetchmany()-based fetch_chunk() is one atomic
+        # DBAPI call per invocation (no internal sub-paging of its own to
+        # report progress on or interrupt mid-call), and the executor's own
+        # chunk loop already logs progress and checks cancellation between
+        # fetch_chunk() calls.
         stripped = (sql or "").strip()
         if not stripped:
             raise ConnectorValidationError("SQL text is empty.")

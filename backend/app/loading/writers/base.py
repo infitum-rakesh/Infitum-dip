@@ -23,6 +23,7 @@ from __future__ import annotations
 import abc
 import datetime
 import decimal
+import json
 
 import pandas as pd
 from sqlalchemy import BigInteger, Boolean, Column, Date, DateTime, Float, MetaData, String, Table, Text, inspect, text
@@ -56,56 +57,67 @@ def normalize_identifier(name: str) -> str:
     return (name or "").strip().lower()
 
 
-def write_batch_with_fallback(
+def _write_batch_recursive(
     writer: "BaseBulkWriter", schema: str | None, table: str, columns: list[str], rows: list[dict],
     key_columns: list[str] | None = None,
 ) -> tuple[int, list[dict]]:
-    """Real bulk-then-row-by-row fallback (KK2). Tries the writer's normal
-    write_batch() — the fast bulk path (executemany/execute_values/a real
-    array-bind MERGE) — for the WHOLE batch first, exactly like before.
-    Only if that fails does it retry ONE ROW AT A TIME, so every genuinely
-    good row in the batch still lands instead of the whole batch failing
-    because of one bad one (a constraint violation, a type mismatch, a
-    truncation) — and each row that still fails on its own comes back with
-    its own real database error message (never fabricated), for the
-    caller to persist as a RejectedRecord (see app/services/reject_service.py)
-    so a user can actually see and fix it.
-
-    Circuit breaker: if EVERY row in a multi-row batch fails individually
-    too, that's almost certainly a systemic problem (wrong target schema,
-    a missing column, a dead connection) rather than N genuinely bad
-    records — re-raises the original batch-level exception in that case
-    instead of silently manufacturing N "rejected records" that would
-    just be noise, not something a user could meaningfully fix one at a
-    time.
-
-    Returns (written_count, rejects) where rejects is
-    [{"row": dict, "error": str}, ...] for rows that failed individually."""
     if not rows:
         return 0, []
-    # Normalize table/column identifiers exactly as ensure_table*()/
-    # ensure_unique_key() below independently do on the same original
-    # name strings (see normalize_identifier()'s docstring) — so a batch
-    # write always targets the same lowercase physical table/columns the
-    # create step just made, regardless of what case the source data's
-    # own field names happen to be in.
+    try:
+        written = writer.write_batch(schema, table, columns, rows, key_columns)
+        return written, []
+    except Exception as batch_exc:
+        if len(rows) == 1:
+            return 0, [{"row": rows[0], "error": scrub_secrets(str(batch_exc), writer.connector.secrets)}]
+        mid = len(rows) // 2
+        w1, r1 = _write_batch_recursive(writer, schema, table, columns, rows[:mid], key_columns)
+        w2, r2 = _write_batch_recursive(writer, schema, table, columns, rows[mid:], key_columns)
+        return w1 + w2, r1 + r2
+
+
+def write_batch_with_fallback(
+    writer: "BaseBulkWriter", schema: str | None, table: str, columns: list[str], rows: list[dict],
+    key_columns: list[str] | None = None, cancel_check=None,
+) -> tuple[int, list[dict]]:
+    """Real bulk-then-row-by-row fallback (KK2) with binary-search divide and conquer.
+    Tries the writer's normal write_batch() — the fast bulk path (executemany/execute_values/
+    a real array-bind MERGE) — for the WHOLE batch first, exactly like before.
+    Only if that fails does it split the batch recursively to isolate and record bad rows,
+    so every genuinely good row in the batch still lands instead of the whole batch failing
+    because of one bad one (a constraint violation, a type mismatch, a truncation) — and
+    each row that still fails on its own comes back with its own real database error message
+    (never fabricated), for the caller to persist as a RejectedRecord (see
+    app/services/reject_service.py) so a user can actually see and fix it.
+
+    Circuit breaker: if EVERY row in a multi-row batch fails individually too, that's almost
+    certainly a systemic problem (wrong target schema, a missing column, a dead connection)
+    rather than N genuinely bad records — re-raises the original batch-level exception in
+    that case instead of silently manufacturing N "rejected records" that would just be noise.
+
+    Returns (written_count, rejects) where rejects is [{"row": dict, "error": str}, ...]
+    for rows that failed individually."""
+    if not rows:
+        return 0, []
+    if cancel_check and cancel_check():
+        raise RuntimeError("Target write aborted by user cancellation request.")
+    # Normalize table/column identifiers exactly as ensure_table*()/ensure_unique_key()
+    # below independently do on the same original name strings (see normalize_identifier()'s
+    # docstring) — so a batch write always targets the same lowercase physical table/columns
+    # the create step just made, regardless of what case the source data's own field names happen
+    # to be in. Also convert empty strings to None for SQL NULL safety across drivers.
     norm_table = normalize_identifier(table)
     col_map = {c: normalize_identifier(c) for c in columns}
     norm_columns = [col_map[c] for c in columns]
     norm_key_columns = [col_map.get(k, normalize_identifier(k)) for k in key_columns] if key_columns else key_columns
-    rows = [{col_map.get(k, normalize_identifier(k)): v for k, v in row.items()} for row in rows]
+    rows = [{col_map.get(k, normalize_identifier(k)): (v if v != "" else None) for k, v in row.items()} for row in rows]
     table, columns, key_columns = norm_table, norm_columns, norm_key_columns
     try:
         written = writer.write_batch(schema, table, columns, rows, key_columns)
         return written, []
     except Exception as batch_exc:
-        written = 0
-        rejects: list[dict] = []
-        for row in rows:
-            try:
-                written += writer.write_batch(schema, table, columns, [row], key_columns)
-            except Exception as row_exc:
-                rejects.append({"row": row, "error": scrub_secrets(str(row_exc), writer.connector.secrets)})
+        if cancel_check and cancel_check():
+            raise RuntimeError("Target write aborted by user cancellation request.")
+        written, rejects = _write_batch_recursive(writer, schema, table, columns, rows, key_columns)
         if len(rejects) == len(rows) and len(rows) > 1:
             raise batch_exc
         return written, rejects
@@ -115,39 +127,36 @@ def _sa_type_for_column_info(col: ColumnInfo):
     """Maps a real SOURCE ColumnInfo (get_columns() — reflected SQL types,
     or Salesforce field describe()) to a properly-sized target column
     type. Used by ensure_table_from_columns() below, the KEY_RANGE Run
-    Load path's table-creation step, which streams dict rows straight
-    from a chunked reader and never builds a pandas DataFrame at all (so
-    _sa_type_for_dtype below, which needs one, doesn't apply there).
+    Load path's table-creation step.
 
-    This is the fix for a real bulk-load performance problem: a blanket
-    Text() for every non-numeric column (the DataFrame path below, kept
-    as-is for its own callers) compiles to CLOB on Oracle — CLOB columns
-    are dramatically slower to bulk-insert than a properly sized
-    VARCHAR2, can't be indexed/compared normally, and bloat storage. Most
-    real source fields (Salesforce Name/Email/Phone/picklists, a SQL
-    VARCHAR column, ...) have a real, modest known length; sizing the
-    target column from it turns those into genuine indexable VARCHAR2/
-    VARCHAR instead. Only a string with no known length, or one longer
-    than a real VARCHAR2 can hold (Oracle's un-extended ceiling is 4000
-    bytes; comfortably true of every other dialect here too), falls back
-    to Text()/CLOB — the same safe type as before, never a truncation."""
+    For string/text columns: defaults to String(4000) (which compiles to
+    VARCHAR2(4000) in Oracle) unless col.max_length > 4000 or the type is
+    an explicit long-text LOB field (e.g. longtextarea/nclob/clob). Sizing
+    standard string fields as VARCHAR2(4000) instead of blanket Text()/CLOB
+    ensures Oracle queries can perform WHERE, IN, ORDER BY, GROUP BY, and
+    JOIN operations without ORA-00932 datatype errors."""
     dt = (col.data_type or "").lower()
     if "bool" in dt:
         return Boolean()
-    if "point" not in dt and any(t in dt for t in ("int", "long", "smallint", "bigint")):
-        return BigInteger()
-    if any(t in dt for t in ("double", "float", "decimal", "numeric", "currency", "percent")):
-        return Float()
     if "datetime" in dt or "timestamp" in dt:
         return DateTime()
     if dt == "date":
         return Date()
-    # Everything else is string-ish (string/varchar/text/picklist/email/
-    # phone/id/reference/textarea/...) — size it from the real max_length
-    # when we have one small enough for a real VARCHAR2 column.
+    if any(t in dt for t in ("double", "float", "decimal", "numeric", "currency", "percent")):
+        return Float()
+    if "point" not in dt and "text" not in dt and any(t in dt for t in ("int", "smallint", "bigint", "integer", "number")):
+        return BigInteger()
+    if dt == "long" or dt == "integer":
+        return BigInteger()
+
+    # Explicit LOB or long text fields > 4000 chars
+    if (col.max_length and col.max_length > 4000) or any(t in dt for t in ("longtextarea", "nclob", "clob", "blob")):
+        return Text()
+
+    # Standard string fields (string, varchar, textarea, picklist, email, phone, id, reference, url, combobox, ...)
     if col.max_length and 0 < col.max_length <= 4000:
         return String(col.max_length)
-    return Text()
+    return String(4000)
 
 
 def _sa_type_for_dtype(series: "pd.Series"):
@@ -168,13 +177,7 @@ def _sa_type_for_dtype(series: "pd.Series"):
     become CLOB": NetSuite's NUMBER columns arrive as Decimal objects,
     exactly like a Postgres NUMERIC source column would. Sampling the
     actual non-null values (not the dtype) tells int/decimal/date apart
-    correctly for that whole class of source, not just NetSuite.
-
-    Text (not a length-bound VARCHAR) is the default for anything not
-    confidently numeric/boolean/datetime: it's the one string type valid
-    as DDL on every dialect this codebase supports (MySQL requires a
-    length on VARCHAR; Postgres/SQL Server don't need one for TEXT), so
-    it never truncates real data or fails to compile on any target."""
+    correctly for that whole class of source, not just NetSuite."""
     dtype = series.dtype
     if pd.api.types.is_bool_dtype(dtype):
         return Boolean()
@@ -184,7 +187,7 @@ def _sa_type_for_dtype(series: "pd.Series"):
         return Float()
     if pd.api.types.is_datetime64_any_dtype(dtype):
         return DateTime()
-    if dtype == object:
+    if dtype == object or pd.api.types.is_string_dtype(dtype):
         sample = series.dropna()
         if len(sample):
             values = sample.head(200)
@@ -206,7 +209,16 @@ def _sa_type_for_dtype(series: "pd.Series"):
                 return DateTime()
             if all(isinstance(v, datetime.date) and not isinstance(v, datetime.datetime) for v in values):
                 return Date()
-    return Text()
+            max_len = 0
+            for v in values:
+                str_v = json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v)
+                if len(str_v) > max_len:
+                    max_len = len(str_v)
+            if max_len > 4000:
+                return Text()
+            return String(4000)
+        return String(4000)
+    return String(4000)
 
 
 class BaseBulkWriter(abc.ABC):
@@ -286,6 +298,7 @@ class BaseBulkWriter(abc.ABC):
     def ensure_table_from_columns(
         self, schema: str | None, table: str, columns: list[ColumnInfo], *, recreate: bool = False,
         key_columns: list[str] | None = None, target_column_names: dict[str, str] | None = None,
+        recreate_incompatible: bool = False,
     ) -> str:
         """Same contract/return values as ensure_table() above, but builds
         the DDL from real SOURCE column metadata (a connector's own
@@ -313,7 +326,28 @@ class BaseBulkWriter(abc.ABC):
         insp = inspect(engine)
         exists = insp.has_table(table, schema=schema)
         if exists and not recreate:
-            return "exists"
+            should_recreate = False
+            if recreate_incompatible:
+                try:
+                    existing = {
+                        normalize_identifier(col["name"]): str(col["type"]).upper()
+                        for col in insp.get_columns(table, schema=schema)
+                    }
+                    for c in columns:
+                        target_name = names.get(c.name, normalize_identifier(c.name))
+                        existing_type = existing.get(target_name)
+                        if not existing_type:
+                            should_recreate = True
+                            break
+                        expected_type = _sa_type_for_column_info(c)
+                        if not isinstance(expected_type, Text) and any(t in existing_type for t in ("CLOB", "NCLOB", "BLOB")):
+                            should_recreate = True
+                            break
+                except Exception:
+                    should_recreate = False
+            if not should_recreate:
+                return "exists"
+            recreate = True
         if exists and recreate:
             quoted = self.connector.quote_object(table, schema)
             with engine.begin() as cxn:

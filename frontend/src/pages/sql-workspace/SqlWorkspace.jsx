@@ -672,7 +672,12 @@ export default function SqlWorkspace() {
   };
 
   const insertSql = (sql) => {
-    patchActiveTab({ sqlText: sql });
+    const current = activeTab?.sqlText || '';
+    if (!current.trim()) {
+      patchActiveTab({ sqlText: sql });
+    } else {
+      patchActiveTab({ sqlText: `${current.trim()}\n\n${sql}` });
+    }
   };
 
   // "Preview Data" from the explorer's context menu — generates a real
@@ -680,7 +685,8 @@ export default function SqlWorkspace() {
   // than just inserting it, matching the spec's "Preview Data" action.
   const previewObject = (schemaName, objectName, columns) => {
     const t = activeTab;
-    const sql = generateSelectSql(schemaName, objectName, columns, { includeColumns: true, addLimit: true });
+    const activeConn = connections.find((c) => c.id === t.connectionId);
+    const sql = generateSelectSql(schemaName, objectName, columns, { includeColumns: true, addLimit: true }, activeConn?.connection_type);
     patchTab(t.id, { sqlText: sql, activeSchemaName: schemaName || '' });
     executeSql(t.id, t.connectionId, sql, t.rowLimit);
   };
@@ -922,7 +928,6 @@ export default function SqlWorkspace() {
               onChange={(sql) => patchActiveTab({ sqlText: sql })}
               onRun={runSql}
               onSave={saveQuery}
-              onDropSql={(sql) => patchActiveTab({ sqlText: sql })}
               connectionId={activeTab.connectionId}
             />
             <div className="sqlw-editor-hint">One statement at a time · Ctrl/Cmd + Enter to run · Ctrl/Cmd + S to save · reads and writes both commit for real · each tab is an independent buffer · drag a table in to generate a SELECT</div>

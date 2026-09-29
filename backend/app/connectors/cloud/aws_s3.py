@@ -26,8 +26,13 @@ import hashlib
 import re
 import time
 
-import boto3
-from botocore.exceptions import BotoCoreError, ClientError
+try:
+    import boto3
+    from botocore.exceptions import BotoCoreError, ClientError
+except ImportError:  # pragma: no cover
+    boto3 = None
+    BotoCoreError = Exception
+    ClientError = Exception
 
 from app.connectors.base import ConnectionTestResult, ConnectorError, ConnectorValidationError, FileInfo
 from app.connectors.files.base import FileConnectorBase

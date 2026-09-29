@@ -15,7 +15,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Receipt, Upload, X, FileText } from 'lucide-react';
+import { Receipt, Upload, FileArchive, Layers, X, FileText } from 'lucide-react';
 import {
   Button, StatusBadge, DataTable, SearchBox, EmptyState, Modal, PermissionGate, FileUploader,
 } from '@/components/common/index.js';
@@ -23,9 +23,23 @@ import { PAGINATION, INVOICE_PERMISSIONS } from '@/utils/constants.js';
 import { formatDateTime } from '@/utils/formatters.js';
 import { invoiceApi, INVOICE_STATUSES, INVOICE_STATUS_LABEL, INVOICE_STATUS_VARIANT } from '@/services/api/invoiceApi.js';
 import { documentApi } from '@/services/api/documentApi.js';
+import { invoiceZipBatchApi } from '@/services/api/zipBatchApi.js';
+import { ZipUploadDialog } from '@/components/batch-upload/ZipUploadDialog.jsx';
+import { ZipBatchListModal } from '@/components/batch-upload/ZipBatchListModal.jsx';
+import { LANGUAGE_NAMES } from '@/utils/languageNames.js';
 import './invoice-intelligence.css';
 
 function apiErrorMessage(err, fallback) { return err?.response?.data?.detail || err?.message || fallback; }
+
+const OCR_LANGUAGE_OPTIONS = ['auto', 'en', 'hi', 'kn', 'ta', 'te', 'ml', 'mr', 'bn', 'gu', 'pa', 'or', 'as', 'ur'];
+const AUTO_DETECT_LANGUAGES = OCR_LANGUAGE_OPTIONS.filter((code) => code !== 'auto');
+
+function languageConfigForSelection(language) {
+  if (!language || language === 'auto') {
+    return { mode: 'auto', selected_languages: AUTO_DETECT_LANGUAGES, primary_language: 'auto' };
+  }
+  return { mode: 'explicit', selected_languages: ['en', language], primary_language: language };
+}
 
 // Real bug found live: `processingDocs` used to live ONLY in this
 // component's React state, with nothing backing it — navigating to any
@@ -110,6 +124,9 @@ export default function InvoiceInbox() {
   const [error, setError] = useState(null);
 
   const [uploadModal, setUploadModal] = useState(false);
+  const [zipUploadModal, setZipUploadModal] = useState(false);
+  const [zipBatchListOpen, setZipBatchListOpen] = useState(false);
+  const [ocrLanguage, setOcrLanguage] = useState('auto');
   const [uploadStatuses, setUploadStatuses] = useState([]); // [{ id, filename, stage, error }] — modal-local, only covers the upload POST itself
   // Lives on the page, not inside the Modal's children, so it keeps showing
   // "in progress" in the main table grid after the upload popup closes.
@@ -205,7 +222,7 @@ export default function InvoiceInbox() {
     const entryId = `${file.name}_${file.size}_${Math.random().toString(36).slice(2, 8)}`;
     setUploadStatuses((s) => [...s, { id: entryId, filename: file.name, stage: 'uploading', error: null }]);
     pendingUploadCountRef.current += 1;
-    return invoiceApi.upload(file, { onProgress }).then((res) => {
+    return invoiceApi.upload(file, { onProgress, languageConfig: languageConfigForSelection(ocrLanguage) }).then((res) => {
       // The upload POST itself succeeded — hand tracking off to
       // processingDocs (below) and drop this file from the modal's own
       // transient list; real OCR/AI Extraction progress from here is
@@ -230,7 +247,7 @@ export default function InvoiceInbox() {
       pendingUploadCountRef.current -= 1;
       throw err;
     });
-  }, [trackDocumentUntilDone]);
+  }, [ocrLanguage, trackDocumentUntilDone]);
 
   const columns = [
     {
@@ -296,6 +313,12 @@ export default function InvoiceInbox() {
           </div>
           <div className="inv-actions">
             <PermissionGate {...INVOICE_PERMISSIONS.INVOICE_CREATE} fallback={null}>
+              <Button variant="secondary" icon={<FileArchive size={14} />} onClick={() => setZipUploadModal(true)}>
+                Upload ZIP
+              </Button>
+              <Button variant="ghost" icon={<Layers size={14} />} onClick={() => setZipBatchListOpen(true)}>
+                ZIP Batches
+              </Button>
               <Button variant="primary" icon={<Upload size={14} />} onClick={() => { setUploadStatuses([]); setUploadModal(true); }}>
                 Upload Invoice
               </Button>
@@ -378,6 +401,14 @@ export default function InvoiceInbox() {
           automatically once the upload completes; processing continues in the background and shows
           up as an in-progress row in the table behind it.
         </p>
+        <div style={{ marginBottom: 12 }}>
+          <label className="doc-filter-label" style={{ display: 'block', marginBottom: 6 }}>OCR Language</label>
+          <select className="doc-select" value={ocrLanguage} onChange={(e) => setOcrLanguage(e.target.value)}>
+            {OCR_LANGUAGE_OPTIONS.map((code) => (
+              <option key={code} value={code}>{code === 'auto' ? 'Auto Detect' : LANGUAGE_NAMES[code]}</option>
+            ))}
+          </select>
+        </div>
         <FileUploader
           accept={['.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.bmp']}
           multiple
@@ -393,6 +424,28 @@ export default function InvoiceInbox() {
             </StatusBadge>
           </div>
         ))}
+      </Modal>
+
+      {/* Upload ZIP — chunked upload of a .zip of many invoices, extracted,
+          deduplicated, and processed through this same pipeline in bounded
+          parallel (ZB1-ZB12). Real backend, not a variant of the single-file
+          uploader above. */}
+      <Modal open={zipUploadModal} onClose={() => setZipUploadModal(false)} title="Upload ZIP" size="md">
+        <ZipUploadDialog
+          zipBatchApi={invoiceZipBatchApi}
+          onBatchCreated={refreshAll}
+          onViewBatch={(batch) => { setZipUploadModal(false); navigate(`/app/invoice-intel/zip-batches/${batch.id}`); }}
+          onClose={() => setZipUploadModal(false)}
+        />
+      </Modal>
+
+      {/* ZIP Batches — always-available way back to a batch's live progress
+          page, regardless of whether the upload dialog was closed early. */}
+      <Modal open={zipBatchListOpen} onClose={() => setZipBatchListOpen(false)} title="ZIP Batches" size="lg">
+        <ZipBatchListModal
+          zipBatchApi={invoiceZipBatchApi}
+          onOpenBatch={(batchId) => { setZipBatchListOpen(false); navigate(`/app/invoice-intel/zip-batches/${batchId}`); }}
+        />
       </Modal>
     </PermissionGate>
   );

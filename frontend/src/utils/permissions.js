@@ -141,6 +141,19 @@ export function evaluateAccess(user, organization, { module: moduleKey, action, 
   // Super admin bypasses everything
   if (user.role === ROLES.SUPER_ADMIN) return { granted: true, reason: 'super_admin' };
 
+  // Sellers are structurally org-less (organization_id: null), same as
+  // Super Admin — they manage every customer org's licensing, they aren't
+  // themselves a subject of one org's subscription/module grant. Without
+  // this, any PermissionGate a Seller happens to render (e.g. Data
+  // Catalog, which Sidebar shows to every role since it's an
+  // always-on/foundational page server-side — see api/data_catalog.py's
+  // `module=None` gate) fell through to sellerGranted(null, ...) /
+  // orgHasModule(null, ...), which unconditionally return false for a
+  // null organization — denying Sellers a page the backend never actually
+  // gates for them. Found live 2026-09-12: "Data Catalog access error for
+  // seller admin user."
+  if (user.role === ROLES.SELLER) return { granted: true, reason: 'seller_admin' };
+
   if (moduleKey) {
     // Layer 1 — seller must have granted this module to the org
     if (!sellerGranted(organization, moduleKey))

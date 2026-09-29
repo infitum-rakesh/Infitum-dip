@@ -40,6 +40,9 @@ from app.api.pipeline_mapping import router as pipeline_mapping_router
 from app.api.loads import router as loads_router
 from app.api.validation import router as validation_router
 from app.api.reconciliation import router as reconciliation_router
+from app.api.document_storage import router as document_storage_router
+from app.api.document_webhook import router as document_webhook_router
+from app.api.transformation import router as transformation_router
 from app.api.sql_workspace import router as sql_workspace_router
 from app.api.seller.dashboard import router as seller_dashboard_router
 from app.api.seller.customers import router as seller_customers_router
@@ -89,6 +92,9 @@ from app.models.seller_audit_log import SellerAuditLog  # noqa: F401
 from app.models.query_execution_log import QueryExecutionLog  # noqa: F401 — new table, needs registering before init_db()
 from app.models.sql_export_job import SqlWorkspaceExportJob  # noqa: F401 — new table, needs registering before init_db()
 from app.models.monitoring import SlaDefinition, AlertRule, AlertEvent  # noqa: F401 — new tables, need registering before init_db()
+from app.models.document_storage import DocumentProcessedDataset, ProcessedDataStorageConfig  # noqa: F401 — new tables, need registering before init_db()
+from app.models.document_webhook import DocumentWebhookConfig, DocumentWebhookDelivery  # noqa: F401 — new tables, need registering before init_db()
+from app.models.transformation_job import TransformationJob  # noqa: F401 — new table, needs registering before init_db()
 from app.models.user_session import UserSession  # noqa: F401 — new table, needs registering before init_db()
 from app.models.sso_configuration import SsoConfiguration  # noqa: F401 — new table, needs registering before init_db()
 from app.models.uploaded_dataset_file import UploadedDatasetFile  # noqa: F401 — new table, needs registering before init_db()
@@ -144,6 +150,12 @@ from app.models.approval.workflow import (  # noqa: F401
 # Payment Invoice Approval Workflow (2026, Phase 6) — the real queued/
 # retried email outbox (see services/approval/notification_outbox_service.py).
 from app.models.approval.notification import ApprovalNotificationOutbox  # noqa: F401
+# ZIP Batch Upload (2026, ZB1) — one ZIP = one chunked upload session + one
+# batch run + many per-file claimable tasks, for both Document Intelligence
+# and Invoice Intelligence. New tables, need registering before init_db().
+from app.models.document_batch import (  # noqa: F401
+    BatchUpload, DocumentBatch, DocumentBatchFile, DocumentBatchEvent,
+)
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -158,12 +170,33 @@ async def lifespan(app: FastAPI):
     # Ensure any bundled backup DB is restored if the runtime DB has no users
     await _restore_db_from_backup_if_needed()
     await init_db()
+
+    # Clean up stale/orphaned running or aborting pipeline jobs from previous process restarts
+    try:
+        from app.database import tenant_engine_registry
+        from app.models.pipeline_job import PipelineJob, JobStatus
+        from sqlalchemy import select, update
+        sessionmaker = await tenant_engine_registry.get_background_sessionmaker(None)
+        async with sessionmaker() as db:
+            stale_jobs = (await db.scalars(
+                select(PipelineJob).where(PipelineJob.status.in_([JobStatus.RUNNING, JobStatus.PENDING]))
+            )).all()
+            if stale_jobs:
+                logger.info(f"Cleaning up {len(stale_jobs)} stale running/pending pipeline jobs from previous server restart...")
+                for j in stale_jobs:
+                    j.status = JobStatus.CANCELLED
+                    if not j.error_message:
+                        j.error_message = "Job process interrupted by server restart."
+                await db.commit()
+    except Exception as exc:
+        logger.warning(f"Could not clean up stale jobs on startup: {exc}")
     await _seed_superadmin()
     await _seed_seller_admin()
     await _seed_seller_data()
     await _seed_customer_modules()
     await _recover_document_schedules()
     await _recover_bulk_migration_tasks()
+    await _recover_document_batches()
     scheduler = _start_billing_scheduler()
     yield
     scheduler.shutdown(wait=False)
@@ -192,6 +225,17 @@ async def _recover_bulk_migration_tasks() -> None:
     stats = await recover_stuck_bulk_migration_tasks()
     if stats["recovered_runs"] or stats["requeued_tasks"] or stats["failed_tasks"]:
         logger.info("Bulk migration recovery: %s", stats)
+
+
+async def _recover_document_batches() -> None:
+    """ZIP Batch Upload (2026, ZB8) startup recovery — same place and same
+    shape as _recover_bulk_migration_tasks() above. See
+    document_batch_service.recover_stuck_document_batches()."""
+    from app.services.document_batch_service import recover_stuck_document_batches
+
+    stats = await recover_stuck_document_batches()
+    if stats["recovered_batches"] or stats["requeued_files"] or stats["failed_files"]:
+        logger.info("Document batch recovery: %s", stats)
 
 
 async def _restore_db_from_backup_if_needed() -> None:
@@ -263,6 +307,9 @@ def _start_billing_scheduler():
     from app.services.approval.notification_outbox_service import process_pending_standalone as run_approval_notification_outbox
     from app.services.approval.sla_scheduler_service import run_sla_sweep_standalone as run_approval_sla_sweep
     from app.services.bulk_migration_service import sweep_stale_bulk_migration_tasks as run_bulk_migration_stale_sweep
+    from app.services.document_batch_service import sweep_stale_document_batch_files as run_document_batch_stale_sweep
+    from app.services.document_batch_service import cleanup_expired_document_batches as run_document_batch_retention_cleanup
+    from app.services.batch_upload_service import cleanup_expired_uploads as run_batch_upload_retention_cleanup
 
     async def _run_expiry_sweep_safely():
         try:
@@ -310,6 +357,23 @@ def _start_billing_scheduler():
         except Exception:
             logger.exception("Bulk migration stale-task sweep failed")
 
+    async def _run_document_batch_stale_sweep_safely():
+        try:
+            stats = await run_document_batch_stale_sweep()
+            if stats["requeued_files"] or stats["failed_files"]:
+                logger.info("Document batch stale-file sweep: %s", stats)
+        except Exception:
+            logger.exception("Document batch stale-file sweep failed")
+
+    async def _run_document_batch_retention_cleanup_safely():
+        try:
+            batch_stats = await run_document_batch_retention_cleanup()
+            upload_stats = await run_batch_upload_retention_cleanup()
+            if batch_stats["purged_batches"] or upload_stats["purged_completed_zips"] or upload_stats["marked_abandoned"]:
+                logger.info("Document batch retention cleanup: %s / %s", batch_stats, upload_stats)
+        except Exception:
+            logger.exception("Document batch retention cleanup failed")
+
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(_run_expiry_sweep_safely, "interval", hours=1, id="billing_expiry_sweep")
     scheduler.add_job(_run_billing_sweep_safely, "interval", hours=1, id="billing_cycle_sweep")
@@ -332,6 +396,16 @@ def _start_billing_scheduler():
     # a hung task's heartbeat isn't stale for much longer than the
     # threshold itself before this sweep notices and requeues it.
     scheduler.add_job(_run_bulk_migration_stale_sweep_safely, "interval", minutes=2, id="bulk_migration_stale_sweep")
+    # 2 minutes — same reasoning as the bulk-migration sweep above, sized
+    # against _STALE_FILE_HEARTBEAT_THRESHOLD_SECONDS (180s = 6 missed
+    # heartbeat ticks at document_batch_service._HEARTBEAT_INTERVAL_SECONDS).
+    scheduler.add_job(_run_document_batch_stale_sweep_safely, "interval", minutes=2, id="document_batch_stale_sweep")
+    # Once daily — this is disk housekeeping (expired ZIPs/extracted files,
+    # abandoned uploads), not a correctness-critical recovery path, so it
+    # doesn't need the stale-sweep's tight interval; retention windows are
+    # measured in days (zip_retention_days/extracted_file_retention_days,
+    # default 30) so a day's delay in reclaiming disk space is immaterial.
+    scheduler.add_job(_run_document_batch_retention_cleanup_safely, "interval", hours=24, id="document_batch_retention_cleanup")
     scheduler.start()
     logger.info("Backend scheduler started — billing sweeps hourly, schedule poll + approval notification outbox every 60s, approval SLA sweep every 15min.")
     return scheduler
@@ -455,6 +529,9 @@ app.include_router(pipeline_mapping_router, prefix="/api")
 app.include_router(loads_router, prefix="/api")
 app.include_router(validation_router, prefix="/api")
 app.include_router(reconciliation_router, prefix="/api")
+app.include_router(document_storage_router, prefix="/api")
+app.include_router(document_webhook_router, prefix="/api")
+app.include_router(transformation_router, prefix="/api")
 app.include_router(sql_workspace_router, prefix="/api")
 app.include_router(seller_dashboard_router, prefix="/api")
 app.include_router(seller_customers_router, prefix="/api")

@@ -255,6 +255,11 @@
   width: 100%; flex: 1; min-height: 140px; border: 1px solid var(--border); border-radius: var(--radius-lg);
   overflow: hidden; background: var(--bg-card); transition: border-color 0.15s, box-shadow 0.15s;
 }
+.sqlw-monaco-wrap .monaco-editor,
+.sqlw-monaco-wrap .monaco-editor .margin,
+.sqlw-monaco-wrap .monaco-editor-hover {
+  font-family: Consolas, 'Courier New', monospace !important;
+}
 .sqlw-monaco-wrap:focus-within { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
 
 .sqlw-results-resize-handle {

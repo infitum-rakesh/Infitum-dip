@@ -80,6 +80,10 @@ class Document(TenantBase):
     timeline: Mapped[list] = mapped_column(JSON, default=list)
     # {full_text, confidence, regions: [{page, text, bbox:[x,y,w,h], confidence}]}
     ocr_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # User-selected/per-document OCR language override. Shape:
+    # {mode: "auto"|"explicit", selected_languages: ["kn", "en"], primary_language: "kn"|"auto"}.
+    # Null means use organization Document Intelligence settings.
+    language_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # {fields: [{name, value, confidence, source_page, validation_status}]}
     extraction_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # {schema: [{field,type}], table: {columns:[...], rows:[[...]]}, json: {...}}

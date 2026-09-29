@@ -32,7 +32,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.engine import URL
 
-from app.connectors.base import ConnectorValidationError, ExplainResult
+from app.connectors.base import ConnectorError, ConnectorValidationError, ExplainResult, SqlRunResult
 from app.connectors.database.base import SqlAlchemyDatabaseConnector
 
 
@@ -58,10 +58,17 @@ class OracleConnector(SqlAlchemyDatabaseConnector):
     # genuinely unsupported rather than faked with the wrong mechanism.
 
     def get_session_id(self, conn) -> str | None:
-        row = conn.execute(text(
-            "SELECT sid, serial# FROM v$session WHERE audsid = SYS_CONTEXT('USERENV', 'SESSIONID')"
-        )).first()
-        return f"{row[0]},{row[1]}" if row else None
+        try:
+            row = conn.execute(text(
+                "SELECT sid, serial# FROM v$session WHERE audsid = SYS_CONTEXT('USERENV', 'SESSIONID')"
+            )).first()
+            return f"{row[0]},{row[1]}" if row else None
+        except Exception:
+            try:
+                row = conn.execute(text("SELECT SYS_CONTEXT('USERENV', 'SID') FROM dual")).first()
+                return str(row[0]) if row and row[0] is not None else None
+            except Exception:
+                return None
 
     def cancel_session(self, session_id: str) -> None:
         sid, _, serial = session_id.partition(",")
@@ -69,6 +76,26 @@ class OracleConnector(SqlAlchemyDatabaseConnector):
         with engine.connect() as conn:
             conn.execute(text(f"ALTER SYSTEM KILL SESSION '{int(sid)},{int(serial)}'"))
             conn.commit()
+
+    def run_sql(
+        self, sql: str, parameters: dict, limit: int, *,
+        timeout_seconds: int | None = None, on_session_ready=None,
+    ) -> SqlRunResult:
+        try:
+            return super().run_sql(
+                sql, parameters, limit,
+                timeout_seconds=timeout_seconds, on_session_ready=on_session_ready,
+            )
+        except Exception as exc:
+            err_msg = str(exc)
+            if "ORA-00932" in err_msg:
+                diag = (
+                    "Oracle Datatype Error (ORA-00932: inconsistent datatypes: expected - got CLOB). "
+                    "Direct DISTINCT, ORDER BY, GROUP BY, UNION, or equality (=) operations are prohibited on raw CLOB columns. "
+                    "Use DBMS_LOB.SUBSTR(col, 4000, 1), TO_CHAR(col), or DBMS_LOB.COMPARE(col1, col2) = 0 instead."
+                )
+                raise ConnectorError(self._scrub(diag)) from exc
+            raise
 
     def explain(self, sql: str, parameters: dict) -> ExplainResult:
         """Real Oracle execution plan — the standard two-step process every

@@ -41,6 +41,10 @@ class IncidentSource(str, enum.Enum):
     # real operation" convention as ANOMALY_DETECTION above.
     INVOICE_ERP_POSTING = "INVOICE_ERP_POSTING"
     INVOICE_RECONCILIATION = "INVOICE_RECONCILIATION"
+    # Phase 6 (spec item #7) — filed by document_webhook_service.py's
+    # background retry loop on the same DEAD_LETTER/circuit-open
+    # conditions as INVOICE_ERP_POSTING above.
+    DOCUMENT_WEBHOOK = "DOCUMENT_WEBHOOK"
 
 
 class IncidentSeverity(str, enum.Enum):

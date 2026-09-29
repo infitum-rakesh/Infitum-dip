@@ -40,6 +40,17 @@ async def get_pipeline(db: AsyncSession, pipeline_id: int, organization_id: int 
     return result.scalar_one_or_none()
 
 
+async def get_pipeline_for_document(db: AsyncSession, document_id: int, organization_id: int | None) -> Pipeline | None:
+    """Open Pipeline bug fix — lets the caller check for an existing
+    pipeline before building a new one, so re-clicking "Open Pipeline"
+    for the same document reopens it instead of creating a duplicate."""
+    stmt = select(Pipeline).where(Pipeline.document_id == document_id)
+    if organization_id is not None:
+        stmt = stmt.where(Pipeline.organization_id == organization_id)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
 async def list_pipelines(db: AsyncSession, organization_id: int | None) -> tuple[list[Pipeline], int]:
     stmt = select(Pipeline).order_by(Pipeline.updated_at.desc())
     if organization_id is not None:
@@ -77,10 +88,11 @@ async def list_versions(db: AsyncSession, pipeline_id: int) -> list[PipelineVers
 async def create_pipeline(
     db: AsyncSession, *, organization_id: int | None, user_id: int | None,
     name: str, nodes: list[dict], edges: list[dict], settings: dict,
+    document_id: int | None = None,
 ) -> Pipeline:
     pipeline = Pipeline(
         organization_id=organization_id, name=name, current_version=1,
-        created_by=user_id, updated_by=user_id,
+        created_by=user_id, updated_by=user_id, document_id=document_id,
     )
     db.add(pipeline)
     await db.flush()  # assign pipeline.id

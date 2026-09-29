@@ -149,6 +149,7 @@ async def create_job(
     created_by: int | None, column_mapping: dict[str, str] | None = None,
     source_uploaded_file_id: int | None = None, target_uploaded_file_id: int | None = None,
     source_mapping_id: int | None = None, source_mapping_version: int | None = None,
+    fallback_match_columns: list[str] | None = None, name_normalization: dict | None = None,
 ) -> ReconciliationJob:
     await _assert_name_available(db, organization_id=organization_id, name=name)
     await _verify_connection_owned(db, source_connection_id, organization_id)
@@ -174,6 +175,7 @@ async def create_job(
         target_uploaded_file_id=target_uploaded_file_id,
         key_columns=key_columns, compare_columns=compare_columns, comparison_types=comparison_types,
         column_mapping=column_mapping or {},
+        fallback_match_columns=fallback_match_columns or [], name_normalization=name_normalization or {},
         created_by=created_by, updated_by=created_by,
     )
     db.add(row)
@@ -186,6 +188,7 @@ async def update_job(
     db: AsyncSession, row: ReconciliationJob, *, name: str | None,
     key_columns: list[str] | None, compare_columns: list[str] | None, comparison_types: list[str] | None,
     updated_by: int | None, column_mapping: dict[str, str] | None = None,
+    fallback_match_columns: list[str] | None = None, name_normalization: dict | None = None,
 ) -> ReconciliationJob:
     # Source/target (connection-or-file) are set once at creation and
     # locked in the UI thereafter — same existing convention as
@@ -202,6 +205,10 @@ async def update_job(
         row.comparison_types = comparison_types
     if column_mapping is not None:
         row.column_mapping = column_mapping
+    if fallback_match_columns is not None:
+        row.fallback_match_columns = fallback_match_columns
+    if name_normalization is not None:
+        row.name_normalization = name_normalization
     row.updated_by = updated_by
     await db.commit()
     await db.refresh(row)
@@ -334,16 +341,26 @@ async def run_job(db: AsyncSession, *, organization_id: int | None, job: Reconci
                 outcome.setdefault("target_count", t_n)
             if "KEY_MATCH" in types or "FIELD_LEVEL" in types:
                 compare_cols = job.compare_columns if "FIELD_LEVEL" in types else []
+                fallback_cols = job.fallback_match_columns or []
                 needed_cols = list(job.key_columns or []) + [c for c in compare_cols if c not in (job.key_columns or [])]
+                needed_cols += [c for c in fallback_cols if c not in needed_cols]
                 require_matching_columns(source, needed_cols, target, _map(needed_cols))
                 diff = diff_keys_and_fields(
                     source, target,
                     job.key_columns, compare_cols,
                     target_key_columns=_map(job.key_columns or []), target_compare_columns=_map(compare_cols),
+                    fallback_columns=fallback_cols, target_fallback_columns=_map(fallback_cols),
+                    name_normalization=job.name_normalization or {},
                 )
                 outcome["source_count"] = diff["source_count"]
                 outcome["target_count"] = diff["target_count"]
                 outcome["matched_count"] = diff["matched_count"]
+                outcome["matched_by_id_count"] = diff["matched_by_id_count"]
+                outcome["matched_by_name_count"] = diff["matched_by_name_count"]
+                outcome["matched_by_name"] = diff["matched_by_name"]
+                outcome["ambiguous"] = diff["ambiguous"]
+                outcome["duplicate_target_matches"] = diff["duplicate_target_matches"]
+                outcome["matched_sample"] = diff["matched_sample"]
                 outcome["missing_keys"] = diff["missing_keys"]
                 outcome["extra_keys"] = diff["extra_keys"]
                 outcome["mismatches"] = diff["mismatches"]
@@ -372,16 +389,33 @@ async def run_job(db: AsyncSession, *, organization_id: int | None, job: Reconci
     missing_keys = outcome.get("missing_keys") or set()
     extra_keys = outcome.get("extra_keys") or set()
     mismatches = outcome.get("mismatches") or []
+    matched_by_name = outcome.get("matched_by_name") or []
+    ambiguous = outcome.get("ambiguous") or []
+    duplicate_target_matches = outcome.get("duplicate_target_matches") or []
     if "missing_keys" in outcome:
         run.missing_count = len(missing_keys)
         run.extra_count = len(extra_keys)
         run.mismatched_count = len(mismatches)
+        # Duplicate-target-key detection runs for every KEY_MATCH/FIELD_LEVEL
+        # job regardless of fallback_match_columns — it's a target-data-
+        # quality issue independent of ID->NAME fallback matching.
+        run.duplicate_target_count = len(duplicate_target_matches)
+    # Only meaningful for a job with fallback_match_columns configured —
+    # null (not 0) for every other job, same "not a meaningful split"
+    # reasoning as the model's own docstring for these three columns.
+    if job.fallback_match_columns:
+        run.matched_by_id_count = outcome.get("matched_by_id_count")
+        run.matched_by_name_count = outcome.get("matched_by_name_count")
+        run.ambiguous_count = len(ambiguous)
     run.completed_at = datetime.now(timezone.utc)
 
     persisted = 0
     truncated = False
 
-    def _persist(exc_type: ExceptionType, key_tuple, column=None, source_value=None, target_value=None) -> bool:
+    def _persist(
+        exc_type: ExceptionType, key_tuple, column=None, source_value=None, target_value=None,
+        match_method=None, target_id=None, source_name=None, target_name=None,
+    ) -> bool:
         nonlocal persisted, truncated
         if persisted >= MAX_PERSISTED_EXCEPTIONS:
             truncated = True
@@ -395,9 +429,20 @@ async def run_job(db: AsyncSession, *, organization_id: int | None, job: Reconci
             column=column,
             source_value=str(source_value) if source_value is not None else None,
             target_value=str(target_value) if target_value is not None else None,
+            match_method=match_method,
+            source_id=str(key_tuple[0]) if key_tuple else None,
+            source_name=source_name,
+            target_id=target_id,
+            target_name=target_name,
         ))
         persisted += 1
         return True
+
+    def _name_str(raw_tuple) -> str | None:
+        if not raw_tuple:
+            return None
+        joined = " / ".join(str(v) for v in raw_tuple if v is not None)
+        return joined or None
 
     for k in missing_keys:
         if not _persist(ExceptionType.MISSING, k):
@@ -406,8 +451,63 @@ async def run_job(db: AsyncSession, *, organization_id: int | None, job: Reconci
         if not _persist(ExceptionType.EXTRA, k):
             break
     for m in mismatches:
-        if not _persist(ExceptionType.MISMATCH, m["key"], column=m["column"], source_value=m["source_value"], target_value=m["target_value"]):
+        target_key = m.get("target_key")
+        if not _persist(
+            ExceptionType.MISMATCH, m["key"], column=m["column"], source_value=m["source_value"], target_value=m["target_value"],
+            match_method=m.get("match_method"), target_id=str(target_key[0]) if target_key else None,
+        ):
             break
+    # MATCH_BY_NAME/AMBIGUOUS_MATCH rows — real, auditable "interesting
+    # outcome" rows (same "only store what needs attention" convention as
+    # MISSING/EXTRA/MISMATCH above), never emitted for a job with no
+    # fallback_match_columns configured since matched_by_name/ambiguous
+    # are always empty in that case.
+    for m in matched_by_name:
+        target_key = m.get("target_key")
+        if not _persist(
+            ExceptionType.MATCH_BY_NAME, m["source_key"], match_method="NAME",
+            target_id=str(target_key[0]) if target_key else None,
+            source_name=_name_str(m.get("name")), target_name=_name_str(m.get("target_name")),
+        ):
+            break
+    for a in ambiguous:
+        candidates = a.get("target_keys") or []
+        if not _persist(
+            ExceptionType.AMBIGUOUS_MATCH, a["source_key"],
+            target_id=", ".join(str(tk[0]) for tk in candidates if tk) or None,
+            source_name=_name_str(a.get("name")),
+        ):
+            break
+    # DUPLICATE_TARGET_MATCH — the target object itself has 2+ rows
+    # sharing this key; never counted as a clean id-match (see engine.py).
+    for d in duplicate_target_matches:
+        target_key = d.get("target_key")
+        if not _persist(
+            ExceptionType.DUPLICATE_TARGET_MATCH, d["source_key"],
+            target_id=str(target_key[0]) if target_key else None,
+        ):
+            break
+
+    # MATCHED — a capped sample (engine.py's MAX_MATCHED_SAMPLE, 100) of
+    # records that matched cleanly, so a user can spot-check real matches
+    # too instead of only ever seeing problems. Deliberately its OWN budget,
+    # separate from persisted/truncated above — a run near
+    # MAX_PERSISTED_EXCEPTIONS must never crowd these out, and this sample
+    # must never eat into the budget real exceptions need.
+    for s in (outcome.get("matched_sample") or []):
+        target_key = s.get("target_key")
+        cols = s.get("columns") or {}
+        source_value = ", ".join(f"{c}={v[0]}" for c, v in cols.items()) or None
+        target_value = ", ".join(f"{c}={v[1]}" for c, v in cols.items()) or None
+        db.add(ReconciliationException(
+            run_id=run.id, exception_type=ExceptionType.MATCHED,
+            key_value={col: (str(v) if v is not None else None) for col, v in zip(job.key_columns, s["source_key"])},
+            source_value=source_value, target_value=target_value,
+            match_method=s.get("match_method"),
+            source_id=str(s["source_key"][0]) if s.get("source_key") else None,
+            target_id=str(target_key[0]) if target_key else None,
+            source_name=_name_str(s.get("name")), target_name=_name_str(s.get("target_name")),
+        ))
 
     run.exceptions_truncated = truncated
     await db.commit()

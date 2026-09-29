@@ -23,10 +23,15 @@ from __future__ import annotations
 
 from io import BytesIO
 
-import boto3
-from botocore.exceptions import BotoCoreError, ClientError
+try:
+    import boto3
+    from botocore.exceptions import BotoCoreError, ClientError
+except ImportError:  # pragma: no cover
+    boto3 = None
+    BotoCoreError = Exception
+    ClientError = Exception
 
-from app.connectors.base import BaseConnector, ConnectionTestResult, ConnectorError
+from app.connectors.base import BaseConnector, ConnectionTestResult, ConnectorError, ConnectorValidationError
 
 
 class AwsTextractConnector(BaseConnector):
@@ -65,6 +70,19 @@ class AwsTextractConnector(BaseConnector):
             latency_ms = round((time.monotonic() - start) * 1000, 1)
             return ConnectionTestResult(True, "Connection successful.", latency_ms)
         except (ClientError, BotoCoreError) as exc:
+            return ConnectionTestResult(False, self._scrub(str(exc)), round((time.monotonic() - start) * 1000, 1))
+        except (ConnectorError, ConnectorValidationError) as exc:
+            # _client() wraps a client-construction failure (e.g. a
+            # malformed region raising ValueError) as ConnectorError —
+            # without this, that would propagate uncaught instead of the
+            # graceful ConnectionTestResult(False, ...) every other
+            # failure path here returns. Same bug class just fixed in
+            # oracle_erp.py's test_connection() (Phase 11); Google Vision
+            # and Azure Document Intelligence's sibling connectors in this
+            # package already catch this broadly — this brings AWS
+            # Textract in line with that established local convention.
+            return ConnectionTestResult(False, self._scrub(str(exc)), round((time.monotonic() - start) * 1000, 1))
+        except Exception as exc:
             return ConnectionTestResult(False, self._scrub(str(exc)), round((time.monotonic() - start) * 1000, 1))
 
     def ocr(self, image_bytes: bytes, *, mime_type: str = "image/png") -> dict:

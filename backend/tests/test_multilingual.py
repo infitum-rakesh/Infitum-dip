@@ -34,10 +34,12 @@ from app.ocr.language_detection import (
 )
 from app.ocr.language_detection.document_language_service import detect_document_language, tesseract_lang_string_for_page
 from app.services.settings_service import _effective_values
+from app.services import document_service, extraction_service
 
 KANNADA_TEXT = "ಕನ್ನಡದಲ್ಲಿ ಇರುವ ಪಠ್ಯ"
 TAMIL_TEXT = "தமிழில் உள்ள உரை"
 HINDI_TEXT = "हिंदी में लिखा हुआ पाठ"
+ODIA_TEXT = "ଓଡ଼ିଆ ଭାଷାରେ ଲେଖା ପାଠ୍ୟ"
 ENGLISH_TEXT = "This is plain English text about an invoice"
 
 
@@ -68,6 +70,12 @@ def test_script_block_detects_kannada():
 def test_script_block_detects_tamil():
     result = ScriptBlockLanguageDetector().detect(TAMIL_TEXT)
     assert result.primary_language == "ta"
+
+
+def test_script_block_detects_odia_not_tamil():
+    result = ScriptBlockLanguageDetector().detect(ODIA_TEXT)
+    assert result.primary_language == "or"
+    assert all(c.language != "ta" for c in result.candidates)
 
 
 def test_script_block_detects_devanagari_as_hindi_tentatively():
@@ -356,3 +364,53 @@ def test_default_settings_has_english_only_by_default():
     explicitly adds languages."""
     assert DEFAULT_SETTINGS["document_intelligence"]["supported_languages"] == ["en"]
     assert DEFAULT_SETTINGS["document_intelligence"]["translation_enabled"] is False
+
+
+def test_document_language_config_explicit_kannada_includes_english():
+    cfg = document_service.normalize_ocr_language_config({"mode": "explicit", "primary_language": "kn"})
+    assert cfg == {"mode": "explicit", "selected_languages": ["en", "kn"], "primary_language": "kn"}
+
+
+def test_document_language_config_rejects_unsupported_language():
+    with pytest.raises(document_service.DocumentLanguageConfigError):
+        document_service.normalize_ocr_language_config({"mode": "explicit", "primary_language": "xx"})
+
+
+def test_page_aware_ocr_context_includes_every_page_marker():
+    class Doc:
+        page_count = 3
+        ocr_result = {
+            "page_count": 3,
+            "full_text": "page one\npage two\npage three",
+            "regions": [
+                {"page": 1, "text": "Invoice header", "bbox": [0, 0, 1, 1], "confidence": 90},
+                {"page": 2, "text": "Line item page two", "bbox": [0, 0, 1, 1], "confidence": 90},
+                {"page": 3, "text": "Totals page three", "bbox": [0, 0, 1, 1], "confidence": 90},
+            ],
+        }
+
+    context, pages_used, total_pages = extraction_service._page_aware_ocr_context(Doc())
+
+    assert total_pages == 3
+    assert pages_used == [1, 2, 3]
+    assert "[PAGE 1]" in context
+    assert "[PAGE 2]" in context
+    assert "[PAGE 3]" in context
+    assert "Line item page two" in context
+    assert "Totals page three" in context
+
+
+def test_merge_extraction_fields_preserves_line_items_from_later_pages():
+    schema = [{
+        "name": "line_items", "type": "table",
+        "columns": [{"name": "description"}, {"name": "amount"}],
+    }]
+    page_1 = [{"name": "line_items", "type": "table", "columns": ["description", "amount"], "confidence": 90, "rows": [{"description": "Item 1", "amount": 10}]}]
+    page_20 = [{"name": "line_items", "type": "table", "columns": ["description", "amount"], "confidence": 90, "rows": [{"description": "Item 20", "amount": 200}]}]
+
+    merged = extraction_service._merge_extraction_fields(schema, [page_1, page_20])
+
+    assert merged[0]["rows"] == [
+        {"description": "Item 1", "amount": 10},
+        {"description": "Item 20", "amount": 200},
+    ]

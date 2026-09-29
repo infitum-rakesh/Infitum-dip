@@ -40,8 +40,12 @@ import re
 import time
 from datetime import datetime, timezone
 
-import smbclient
-from smbprotocol.exceptions import SMBException
+try:
+    import smbclient
+    from smbprotocol.exceptions import SMBException
+except ImportError:  # pragma: no cover
+    smbclient = None
+    SMBException = Exception
 
 from app.connectors.base import ConnectionTestResult, ConnectorError, ConnectorValidationError, FileInfo
 from app.connectors.files.base import FileConnectorBase

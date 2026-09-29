@@ -54,7 +54,31 @@ from app.services import tenant_database_service
 _PLATFORM_KEY = None  # organization_id is already None for the Seller row — no separate sentinel needed
 
 _cache: dict[int | None, async_sessionmaker] = {}
-_lock = asyncio.Lock()
+_lock: asyncio.Lock | None = None
+_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_lock() -> asyncio.Lock:
+    """asyncio.Lock binds to whichever event loop is running the first
+    time it's acquired, and stays bound to it for the object's whole
+    lifetime — fine for real deployment (one event loop for the process's
+    entire life), but this module's `_lock` is a process-lifetime
+    singleton, and this project's own test suite runs many short-lived
+    event loops (one per test function) in that same process. Reusing a
+    lock across a stale, already-closed loop raises "bound to a different
+    event loop" (found live via test_document_batch_controls.py running
+    before test_document_batch_task_executor.py, each touching a fresh
+    org id here). Recreate the lock whenever the running loop has changed
+    instead of caching one forever — free in real deployment (the loop
+    never changes there, so this never fires after the first call), and
+    safe here since a loop change means every task that could have been
+    waiting on the old lock is already gone with it."""
+    global _lock, _lock_loop
+    loop = asyncio.get_running_loop()
+    if _lock is None or _lock_loop is not loop:
+        _lock = asyncio.Lock()
+        _lock_loop = loop
+    return _lock
 
 # Orgs currently mid-cutover (Phase 4 — tenant_migration_service.py's
 # CUTTING_OVER step) — checked by database/tenant_routing.get_tenant_db()
@@ -155,7 +179,7 @@ async def get_sessionmaker(db, organization_id: int | None) -> async_sessionmake
     write the final result into `_cache`."""
     if organization_id in _cache:
         return _cache[organization_id]
-    async with _lock:
+    async with _get_lock():
         if organization_id in _cache:
             return _cache[organization_id]
         row = await tenant_database_service.get_row(db, organization_id)
@@ -168,7 +192,7 @@ async def get_sessionmaker(db, organization_id: int | None) -> async_sessionmake
             _cache[organization_id] = sessionmaker
             return sessionmaker
     sessionmaker = await get_sessionmaker(db, None)
-    async with _lock:
+    async with _get_lock():
         _cache[organization_id] = sessionmaker
     return sessionmaker
 

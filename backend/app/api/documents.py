@@ -6,7 +6,7 @@ to the Document Intelligence pipeline. See that module's docstring.
 """
 import asyncio
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
 from fastapi.responses import Response
 from sqlalchemy.exc import OperationalError
@@ -15,11 +15,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import get_current_organization, get_current_user, require_action
 from app.database.tenant_routing import get_tenant_db
 from app.models.document import DocumentStatus
+from app.models.document_batch import BatchUpload, DocumentBatch, DocumentBatchPipelineType, DuplicatePolicy
 from app.models.organization import Organization
 from app.models.user import User, UserRole
 from app.ocr import multilingual_ocr_service
 from app.ocr.engine import OcrEngineError, OcrNotApplicableError
 from app.ocr.language_errors import LanguageProcessingError
+from app.schemas.document_batch import (
+    BatchUploadOut,
+    CompleteZipUploadOut,
+    CompleteZipUploadRequest,
+    DocumentBatchEventListOut,
+    DocumentBatchEventOut,
+    DocumentBatchFileListOut,
+    DocumentBatchFileOut,
+    DocumentBatchListOut,
+    DocumentBatchMetricsOut,
+    DocumentBatchOut,
+    InitZipUploadRequest,
+    RetrySelectedRequest,
+)
 from app.schemas.documents import (
     BulkActionRequest,
     DocumentDetailOut,
@@ -33,11 +48,15 @@ from app.schemas.documents import (
     SendToReviewRequest,
 )
 from app.schemas.review_queue import ReviewItemLookupOut
+from app.services import batch_upload_service as upload_svc
+from app.services import document_batch_service as batch_svc
 from app.services import document_service as svc
 from app.services import document_taxonomies
 from app.services import review_queue_service as review_svc
 from app.services import settings_service as settings_svc
-from app.services.document_service import DocumentValidationError, ManualExtractionError
+from app.services.batch_upload_service import BatchUploadError
+from app.services.document_batch_service import DocumentBatchError
+from app.services.document_service import DocumentLanguageConfigError, DocumentValidationError, ManualExtractionError
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -64,6 +83,17 @@ def _to_out(doc, name_map: dict[int, str]) -> DocumentOut:
     out = DocumentOut.model_validate(doc)
     out.uploaded_by_name = name_map.get(doc.uploaded_by_id) if doc.uploaded_by_id else None
     return out
+
+
+class ProcessDocumentRequest(BaseModel):
+    language_config: dict | None = None
+
+
+def _language_config_from_form(language_mode: str | None, selected_languages: str | None, primary_language: str | None) -> dict | None:
+    if not language_mode and not selected_languages and not primary_language:
+        return None
+    languages = [c.strip() for c in (selected_languages or "").split(",") if c.strip()]
+    return {"mode": language_mode or "auto", "selected_languages": languages, "primary_language": primary_language or "auto"}
 
 
 # ── KPIs / facets ─────────────────────────────────────────────────
@@ -173,6 +203,32 @@ async def ocr_test(
     }
 
 
+# ── ZIP Batch Upload (ZB10) — list route only ───────────────────────
+# GET /zip-batches (no id) is a single-segment path exactly like
+# GET /{document_id} below — declared here, before that catch-all, for
+# the identical route-ordering reason as /document-types and /ocr-health
+# above (a real 422 found live: Starlette matched "zip-batches" against
+# {document_id} and tried to parse it as an int). Every OTHER ZB10 route
+# has 2+ segments after the prefix (/zip-upload/..., /zip-batches/{id},
+# /zip-batches/{id}/...) so none of those can collide with a single-
+# segment catch-all regardless of declaration order — only this one list
+# route needed to move. See the full ZB10 section further down in this
+# file for the rest of the batch-upload/batch-management routes.
+
+@router.get("/zip-batches", response_model=DocumentBatchListOut)
+async def list_zip_batches(
+    status_filter: str | None = Query(None, alias="status"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    user: User = Depends(require_action("VIEW")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    items, total = await batch_svc.list_batches(
+        db, _effective_org_id(user), DocumentBatchPipelineType.DOCUMENT_INTELLIGENCE, status_filter=status_filter, page=page, page_size=page_size,
+    )
+    return DocumentBatchListOut(items=[DocumentBatchOut.model_validate(b) for b in items], total=total, page=page, page_size=page_size)
+
+
 # ── List / get ────────────────────────────────────────────────────
 
 @router.get("", response_model=DocumentListOut)
@@ -230,11 +286,19 @@ async def get_document(
 @router.post("/upload", response_model=DocumentDetailOut, status_code=status.HTTP_201_CREATED)
 async def upload_document(
     file: UploadFile = File(...),
+    language_mode: str | None = Form(None),
+    selected_languages: str | None = Form(None),
+    primary_language: str | None = Form(None),
     user: User = Depends(require_action("CREATE")),
     db: AsyncSession = Depends(get_tenant_db),
 ):
     try:
-        doc, _duplicate_of_id = await svc.save_upload(db, file=file, organization_id=user.organization_id, uploaded_by_id=user.id)
+        doc, _duplicate_of_id = await svc.save_upload(
+            db, file=file, organization_id=user.organization_id, uploaded_by_id=user.id,
+            language_config=_language_config_from_form(language_mode, selected_languages, primary_language),
+        )
+    except DocumentLanguageConfigError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
     except DocumentValidationError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
     except OperationalError as exc:
@@ -353,6 +417,7 @@ async def delete_document(
 @router.post("/{document_id}/process", response_model=DocumentDetailOut)
 async def process_document(
     document_id: int,
+    body: ProcessDocumentRequest | None = Body(None),
     user: User = Depends(require_action("EXECUTE")),
     db: AsyncSession = Depends(get_tenant_db),
 ):
@@ -364,7 +429,10 @@ async def process_document(
     frontend's 30s client timeout). Poll GET /{document_id} until status
     lands on a terminal value (COMPLETED/NEEDS_REVIEW/FAILED)."""
     doc = await _get_or_404(db, document_id, user)
-    doc = await svc.start_processing(db, doc, reprocess=False)
+    try:
+        doc = await svc.start_processing(db, doc, reprocess=False, language_config=(body.language_config if body else None))
+    except DocumentLanguageConfigError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
     name_map = await svc.uploader_name_map(db, {doc.uploaded_by_id} if doc.uploaded_by_id else set())
     out = DocumentDetailOut.model_validate(doc)
     out.uploaded_by_name = name_map.get(doc.uploaded_by_id) if doc.uploaded_by_id else None
@@ -374,13 +442,17 @@ async def process_document(
 @router.post("/{document_id}/reprocess", response_model=DocumentDetailOut)
 async def reprocess_document(
     document_id: int,
+    body: ProcessDocumentRequest | None = Body(None),
     user: User = Depends(require_action("EXECUTE")),
     db: AsyncSession = Depends(get_tenant_db),
 ):
     """Same non-blocking start as /process above, but resets the timeline
     (reprocess=True) — see start_processing()."""
     doc = await _get_or_404(db, document_id, user)
-    doc = await svc.start_processing(db, doc, reprocess=True)
+    try:
+        doc = await svc.start_processing(db, doc, reprocess=True, language_config=(body.language_config if body else None))
+    except DocumentLanguageConfigError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
     name_map = await svc.uploader_name_map(db, {doc.uploaded_by_id} if doc.uploaded_by_id else set())
     out = DocumentDetailOut.model_validate(doc)
     out.uploaded_by_name = name_map.get(doc.uploaded_by_id) if doc.uploaded_by_id else None
@@ -488,6 +560,123 @@ async def get_dataset(
     }
 
 
+@router.get("/{document_id}/ai-raw-response")
+async def get_ai_raw_response(
+    document_id: int,
+    user: User = Depends(require_action("VIEW")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    """Verbatim raw AI model payload from extraction (Document.ai_raw_response
+    — persisted since INV3 for downstream consumers like Invoice
+    Intelligence's canonical materialization) but never exposed to a
+    client until now: a real gap found live during Processed Data Storage
+    research — every other processed-output field already had a
+    dedicated GET route (/ocr, /extraction, /dataset above), this one
+    didn't."""
+    doc = await _get_or_404(db, document_id, user)
+    if not doc.ai_raw_response:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No raw AI response has been recorded for this document yet.")
+    return {"document_id": doc.id, "ai_raw_response": doc.ai_raw_response}
+
+
+@router.get("/{document_id}/metadata")
+async def get_metadata(
+    document_id: int,
+    user: User = Depends(require_action("VIEW")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    """Document-level metadata only — filename/type/status/size/pipeline
+    timestamps, no OCR/extraction/dataset payload. A real gap found during
+    Processed Data Storage spec review (item #6): every processed-output
+    field had its own GET route, but a consumer that only wants to know
+    WHAT a document is (for a catalog listing, a webhook payload preview,
+    etc.) had to fetch the full /ocr or /dataset body to get there."""
+    doc = await _get_or_404(db, document_id, user)
+    return {
+        "document_id": doc.id,
+        "filename": doc.filename,
+        "doc_type": doc.doc_type.value if doc.doc_type else None,
+        "status": doc.status.value if doc.status else None,
+        "confidence": doc.confidence,
+        "pipeline": doc.pipeline,
+        "folder": doc.folder,
+        "mime_type": doc.mime_type,
+        "size_bytes": doc.size_bytes,
+        "page_count": doc.page_count,
+        "uploaded_by_id": doc.uploaded_by_id,
+        "processing_started_at": doc.processing_started_at,
+        "processing_completed_at": doc.processing_completed_at,
+        "processing_time_seconds": doc.processing_time_seconds,
+    }
+
+
+class DocumentExportRequest(BaseModel):
+    """spec item #6's on-demand export — reads from the ALREADY-PERSISTED
+    DocumentProcessedDataset rows (see models/document_storage.py), never
+    triggers a reprocess, which is the "decoupled from reprocessing"
+    requirement: this returns/pushes whatever was captured the last time
+    the document actually finished processing, on demand, as many times
+    as asked, independent of that processing run's own lifecycle."""
+    datasets: list[str] | None = None  # None = every dataset type this document has; else a subset of _EXPORT_DATASET_ALIASES keys
+    destination: str = "inline"  # "inline" (return the JSON body directly) | "connection" (re-push via the org's configured Processed Data Storage target)
+
+
+@router.post("/{document_id}/export")
+async def export_document(
+    document_id: int,
+    body: DocumentExportRequest = Body(default=DocumentExportRequest()),
+    user: User = Depends(require_action("VIEW")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    doc = await _get_or_404(db, document_id, user)
+
+    if body.destination == "connection":
+        from app.services import document_storage_service as storage_svc
+
+        config = await storage_svc.get_or_create_config(db, user.organization_id)
+        if config.mode.value != "EXTERNAL" or not config.target_connection_id:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "No External Processed Data Storage destination is configured for this organization — "
+                "configure one under Settings > Processed Data Storage, or use destination=\"inline\".",
+            )
+        await storage_svc.push_document(db, doc, organization_id=user.organization_id)
+        await db.refresh(config)
+        return {
+            "document_id": doc.id, "destination": "connection", "status": config.last_status.value,
+            "error": config.last_error,
+        }
+
+    if body.destination != "inline":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown destination '{body.destination}' — use \"inline\" or \"connection\".")
+
+    from app.services import document_storage_service as storage_svc
+
+    try:
+        datasets = await storage_svc.export_document_datasets(db, document_id, body.datasets)
+    except storage_svc.DocumentStorageServiceError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+
+    return {"document_id": doc.id, "exported_at": doc.processing_completed_at, "datasets": datasets}
+
+
+@router.get("/{document_id}/pipeline")
+async def get_linked_pipeline(
+    document_id: int,
+    user: User = Depends(require_action("VIEW")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    """Open Pipeline bug fix — lets the frontend check for an existing
+    pipeline before building a new one from this document's dataset, so
+    re-clicking "Open Pipeline" reopens the same pipeline rather than
+    creating a duplicate every time. See pipeline_service.create_pipeline()'s
+    document_id param for where that pipeline gets linked on first Save."""
+    await _get_or_404(db, document_id, user)
+    from app.services import pipeline_service
+    pipeline = await pipeline_service.get_pipeline_for_document(db, document_id, _effective_org_id(user))
+    return {"pipeline_id": pipeline.id if pipeline else None}
+
+
 @router.post("/{document_id}/run-extraction", response_model=DocumentDetailOut)
 async def run_extraction(
     document_id: int,
@@ -584,6 +773,20 @@ async def bulk_action(
     if not required_action:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown bulk action '{body.action}'.")
 
+    # Real bug found live: an empty document_ids list used to sail straight
+    # through this route and the for-loop below simply never ran, returning
+    # HTTP 200 with {"succeeded": [], "failed": []} — a silent no-op even
+    # for a direct API call (not just the now-disabled frontend button).
+    # Structured error detail (not just a plain string) mirrors the
+    # {error, message} shape ApprovalRules.jsx/MyApprovals.jsx's
+    # apiErrorMessage() already knows how to unwrap (err.response.data.
+    # detail.message), so this doesn't invent a new response convention.
+    if not body.document_ids:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail={"error": "NO_JOB_SELECTED", "message": "Please select at least one job to process."},
+        )
+
     from app.core.deps import ROLE_ACTIONS, DOCUMENT_INTELLIGENCE_MODULE
     if user.role != UserRole.SUPER_ADMIN and required_action not in ROLE_ACTIONS.get(user.role, set()):
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"Your role does not have permission to '{body.action}' documents.")
@@ -617,3 +820,282 @@ async def bulk_action(
             results["failed"].append({"id": doc_id, "reason": str(exc)})
 
     return results
+
+
+# ── ZIP Batch Upload (ZB10) ──────────────────────────────────────────────
+# Thin pass-through routes over batch_upload_service.py/document_batch_
+# service.py — no business logic here; see those modules (ZB1-ZB9) for the
+# real chunked-upload/extraction/worker-pool implementation. Fixed to the
+# DOCUMENT_INTELLIGENCE pipeline_type/module for this router; an identical
+# route set exists in api/invoices.py fixed to INVOICE_INTELLIGENCE
+# instead — require_action's module argument is baked in at decoration
+# time (see core/deps.py), so one shared parameterized router can't branch
+# on a path variable the way these two fixed routers can.
+
+_ZIP_PIPELINE_TYPE = DocumentBatchPipelineType.DOCUMENT_INTELLIGENCE
+
+
+def _not_found_zip_batch() -> HTTPException:
+    return HTTPException(status.HTTP_404_NOT_FOUND, "Batch not found")
+
+
+def _not_found_zip_upload() -> HTTPException:
+    return HTTPException(status.HTTP_404_NOT_FOUND, "Upload not found")
+
+
+async def _get_zip_batch_or_404(db: AsyncSession, batch_id: int, user: User) -> DocumentBatch:
+    batch = await batch_svc.get_batch(db, batch_id, _effective_org_id(user))
+    if batch is None or batch.pipeline_type != _ZIP_PIPELINE_TYPE:
+        raise _not_found_zip_batch()
+    return batch
+
+
+async def _get_zip_upload_or_404(db: AsyncSession, upload_id: int, user: User) -> BatchUpload:
+    upload = await upload_svc.get_upload(db, upload_id, _effective_org_id(user))
+    if upload is None:
+        raise _not_found_zip_upload()
+    return upload
+
+
+@router.post("/zip-upload/init", response_model=BatchUploadOut, status_code=status.HTTP_201_CREATED)
+async def init_zip_upload(
+    body: InitZipUploadRequest,
+    user: User = Depends(require_action("CREATE")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    try:
+        upload = await upload_svc.init_upload(
+            db, organization_id=user.organization_id, filename=body.filename, size_bytes=body.size_bytes,
+            chunk_size=body.chunk_size, total_chunks=body.total_chunks, uploaded_by=user.id,
+        )
+    except BatchUploadError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return BatchUploadOut.model_validate(upload)
+
+
+@router.post("/zip-upload/{upload_id}/chunk", response_model=BatchUploadOut)
+async def upload_zip_chunk(
+    upload_id: int,
+    chunk_number: int = Form(...),
+    file: UploadFile = File(...),
+    user: User = Depends(require_action("CREATE")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    upload = await _get_zip_upload_or_404(db, upload_id, user)
+    data = await file.read()
+    try:
+        upload = await upload_svc.receive_chunk(db, upload=upload, chunk_number=chunk_number, data=data)
+    except BatchUploadError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return BatchUploadOut.model_validate(upload)
+
+
+@router.get("/zip-upload/{upload_id}/status")
+async def get_zip_upload_status(
+    upload_id: int,
+    user: User = Depends(require_action("VIEW")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    upload = await _get_zip_upload_or_404(db, upload_id, user)
+    return await upload_svc.get_status(db, upload)
+
+
+@router.post("/zip-upload/{upload_id}/complete", response_model=CompleteZipUploadOut)
+async def complete_zip_upload(
+    upload_id: int,
+    body: CompleteZipUploadRequest = Body(default_factory=CompleteZipUploadRequest),
+    user: User = Depends(require_action("CREATE")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    upload = await _get_zip_upload_or_404(db, upload_id, user)
+    try:
+        upload, is_duplicate, duplicate_of_upload_id = await upload_svc.complete_upload(
+            db, upload=upload, expected_sha256=body.expected_sha256,
+        )
+    except BatchUploadError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    try:
+        duplicate_policy = DuplicatePolicy(body.duplicate_policy)
+    except ValueError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown duplicate_policy '{body.duplicate_policy}'.")
+
+    try:
+        batch = await batch_svc.create_batch_from_upload(
+            db, upload=upload, pipeline_type=_ZIP_PIPELINE_TYPE, duplicate_policy=duplicate_policy,
+            auto_process=body.auto_process, created_by=user.id,
+            storage_type=body.storage_type, storage_target_connection_id=body.storage_target_connection_id,
+            storage_target_schema=body.storage_target_schema, storage_target_table=body.storage_target_table,
+            storage_load_mode=body.storage_load_mode, storage_file_format=body.storage_file_format,
+        )
+    except Exception as exc:  # noqa: BLE001 - create_batch_from_upload() intentionally re-raises the
+        # original ZipSecurityError (after marking the batch FAILED — see that function's own
+        # docstring) for corrupted/oversized/malicious archives; the failed DocumentBatch row is
+        # the durable record of what happened, so surface the real message as a 400 here rather
+        # than a bare, unexplained 500.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    return CompleteZipUploadOut(
+        upload=BatchUploadOut.model_validate(upload), is_duplicate_upload=is_duplicate,
+        duplicate_of_upload_id=duplicate_of_upload_id, batch=DocumentBatchOut.model_validate(batch),
+    )
+
+
+@router.post("/zip-upload/{upload_id}/cancel", response_model=BatchUploadOut)
+async def cancel_zip_upload(
+    upload_id: int,
+    user: User = Depends(require_action("EXECUTE")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    upload = await _get_zip_upload_or_404(db, upload_id, user)
+    upload = await upload_svc.cancel_upload(db, upload)
+    return BatchUploadOut.model_validate(upload)
+
+
+@router.get("/zip-batches/{batch_id}", response_model=DocumentBatchOut)
+async def get_zip_batch(
+    batch_id: int,
+    user: User = Depends(require_action("VIEW")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    batch = await _get_zip_batch_or_404(db, batch_id, user)
+    return DocumentBatchOut.model_validate(batch)
+
+
+@router.post("/zip-batches/{batch_id}/start", response_model=DocumentBatchOut)
+async def start_zip_batch(
+    batch_id: int,
+    user: User = Depends(require_action("EXECUTE")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    """No-op (idempotent) unless the batch is genuinely QUEUED and waiting
+    on this manual trigger — see start_processing_for_batch()'s docstring."""
+    batch = await _get_zip_batch_or_404(db, batch_id, user)
+    await batch_svc.start_processing_for_batch(db, batch)
+    return DocumentBatchOut.model_validate(batch)
+
+
+@router.post("/zip-batches/{batch_id}/pause", response_model=DocumentBatchOut)
+async def pause_zip_batch(
+    batch_id: int,
+    user: User = Depends(require_action("EXECUTE")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    batch = await _get_zip_batch_or_404(db, batch_id, user)
+    try:
+        batch = await batch_svc.request_pause(db, batch)
+    except DocumentBatchError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return DocumentBatchOut.model_validate(batch)
+
+
+@router.post("/zip-batches/{batch_id}/resume", response_model=DocumentBatchOut)
+async def resume_zip_batch(
+    batch_id: int,
+    user: User = Depends(require_action("EXECUTE")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    batch = await _get_zip_batch_or_404(db, batch_id, user)
+    try:
+        batch = await batch_svc.resume_batch(db, batch)
+    except DocumentBatchError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return DocumentBatchOut.model_validate(batch)
+
+
+@router.post("/zip-batches/{batch_id}/cancel", response_model=DocumentBatchOut)
+async def cancel_zip_batch(
+    batch_id: int,
+    user: User = Depends(require_action("EXECUTE")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    batch = await _get_zip_batch_or_404(db, batch_id, user)
+    batch = await batch_svc.request_cancel(db, batch)
+    return DocumentBatchOut.model_validate(batch)
+
+
+@router.post("/zip-batches/{batch_id}/retry-failed", response_model=DocumentBatchOut)
+async def retry_failed_zip_batch(
+    batch_id: int,
+    user: User = Depends(require_action("EXECUTE")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    batch = await _get_zip_batch_or_404(db, batch_id, user)
+    try:
+        batch = await batch_svc.retry_failed(db, batch)
+    except DocumentBatchError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return DocumentBatchOut.model_validate(batch)
+
+
+@router.post("/zip-batches/{batch_id}/retry-selected", response_model=DocumentBatchOut)
+async def retry_selected_zip_batch(
+    batch_id: int,
+    body: RetrySelectedRequest,
+    user: User = Depends(require_action("EXECUTE")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    batch = await _get_zip_batch_or_404(db, batch_id, user)
+    batch = await batch_svc.retry_selected(db, batch, body.file_ids)
+    return DocumentBatchOut.model_validate(batch)
+
+
+@router.get("/zip-batches/{batch_id}/files", response_model=DocumentBatchFileListOut)
+async def list_zip_batch_files(
+    batch_id: int,
+    status_filter: str | None = Query(None, alias="status"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
+    user: User = Depends(require_action("VIEW")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    await _get_zip_batch_or_404(db, batch_id, user)
+    items, total = await batch_svc.list_batch_files_paginated(db, batch_id, status_filter=status_filter, page=page, page_size=page_size)
+    return DocumentBatchFileListOut(items=[DocumentBatchFileOut.model_validate(f) for f in items], total=total, page=page, page_size=page_size)
+
+
+@router.get("/zip-batches/{batch_id}/events", response_model=DocumentBatchEventListOut)
+async def list_zip_batch_events(
+    batch_id: int,
+    since_id: int = Query(0),
+    limit: int = Query(200, ge=1, le=1000),
+    user: User = Depends(require_action("VIEW")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    await _get_zip_batch_or_404(db, batch_id, user)
+    events, new_since_id = await batch_svc.list_batch_events(db, batch_id, since_id=since_id, limit=limit)
+    return DocumentBatchEventListOut(items=[DocumentBatchEventOut.model_validate(e) for e in events], since_id=new_since_id)
+
+
+@router.get("/zip-batches/{batch_id}/metrics", response_model=DocumentBatchMetricsOut)
+async def get_zip_batch_metrics(
+    batch_id: int,
+    user: User = Depends(require_action("VIEW")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    batch = await _get_zip_batch_or_404(db, batch_id, user)
+    return await batch_svc.get_batch_metrics(db, batch)
+
+
+@router.get("/zip-batches/{batch_id}/errors", response_model=DocumentBatchFileListOut)
+async def list_zip_batch_errors(
+    batch_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
+    user: User = Depends(require_action("VIEW")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    await _get_zip_batch_or_404(db, batch_id, user)
+    items, total = await batch_svc.list_batch_errors_paginated(db, batch_id, page=page, page_size=page_size)
+    return DocumentBatchFileListOut(items=[DocumentBatchFileOut.model_validate(f) for f in items], total=total, page=page, page_size=page_size)
+
+
+@router.get("/zip-batches/{batch_id}/errors/download")
+async def download_zip_batch_errors(
+    batch_id: int,
+    user: User = Depends(require_action("VIEW")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    await _get_zip_batch_or_404(db, batch_id, user)
+    content, media_type, filename = await batch_svc.export_batch_errors_csv(db, batch_id)
+    return Response(content=content, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="{filename}"'})

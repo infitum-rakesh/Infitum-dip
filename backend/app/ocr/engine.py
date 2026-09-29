@@ -22,6 +22,8 @@ OcrNotApplicableError.
 """
 from dataclasses import dataclass
 from io import BytesIO
+import os
+from pathlib import Path
 
 from PIL import Image
 import pytesseract
@@ -33,6 +35,23 @@ RENDER_DPI = 220  # good balance of OCR accuracy vs. memory/time for A4-ish page
 
 DEFAULT_LANG = "eng"  # pre-Multilingual-Phase-4 behavior — every existing caller that
 # doesn't pass lang= gets byte-identical output to before this parameter existed.
+
+
+def _configure_tesseract_command() -> str:
+    configured = (os.getenv("TESSERACT_CMD") or "").strip().strip('"')
+    candidates = [
+        configured,
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            pytesseract.pytesseract.tesseract_cmd = candidate
+            return candidate
+    return pytesseract.pytesseract.tesseract_cmd
+
+
+_configure_tesseract_command()
 
 
 class OcrEngineError(Exception):
@@ -50,12 +69,13 @@ class _PageImage:
 
 
 def _check_tesseract_available() -> None:
+    command = _configure_tesseract_command()
     try:
         pytesseract.get_tesseract_version()
     except Exception as exc:  # pragma: no cover - environment issue, not a code bug
         raise OcrEngineError(
-            "The tesseract OCR binary is not available on this server "
-            "(install it, e.g. `brew install tesseract` on macOS, and ensure it's on PATH)."
+            f"The Tesseract OCR binary is not available to this backend process (resolved command: {command!r}). "
+            "Set TESSERACT_CMD to the full tesseract.exe path and ensure the service identity has Read & Execute permission."
         ) from exc
 
 

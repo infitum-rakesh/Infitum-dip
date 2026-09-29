@@ -29,6 +29,13 @@ const FULL_STRATEGIES = [
   { value: 'append', label: 'Append', help: 'Keeps existing rows and inserts the new dataset rows on top.' },
 ];
 
+const CANONICAL_FULL_STRATEGY = {
+  create_if_not_exists: 'CREATE_IF_NOT_EXISTS',
+  truncate_load: 'TRUNCATE_AND_LOAD',
+  drop_recreate: 'DROP_AND_CREATE',
+  append: 'APPEND',
+};
+
 function ChipList({ values, onChange, placeholder, columnOptions }) {
   const add = (v) => {
     const val = (v ?? '').trim();
@@ -72,7 +79,7 @@ function ChipList({ values, onChange, placeholder, columnOptions }) {
 }
 
 export function LoadStrategyConfig({ cfg, set, sourceColumns = [], nodeId, nodes = [], edges = [] }) {
-  const loadType = cfg.loadType ?? 'full';
+  const loadType = cfg.loadMode === 'DELTA' ? 'delta' : 'full';
   const deltaStrategy = cfg.deltaStrategy ?? 'scd1';
   const businessKeys = cfg.businessKeys ?? [];
   const changeDetection = cfg.changeDetection ?? 'auto';
@@ -96,6 +103,32 @@ export function LoadStrategyConfig({ cfg, set, sourceColumns = [], nodeId, nodes
   );
   const [loadingKeys, setLoadingKeys] = useState(false);
   const [keysError, setKeysError] = useState(null);
+
+  const handleFullStrategyChange = (value) => {
+    if (value === 'drop_recreate' && (cfg.fullLoadStrategy ?? 'create_if_not_exists') !== 'drop_recreate') {
+      const ok = window.confirm(
+        'Drop + Recreate will drop the existing target table and rebuild it before loading. Existing rows and table grants/indexes may be lost. Continue?',
+      );
+      if (!ok) return;
+    }
+    set('loadMode', value === 'append' ? 'APPEND' : 'FULL');
+    set('loadStrategy', CANONICAL_FULL_STRATEGY[value]);
+    set('loadType', 'full');
+    set('fullLoadStrategy', value);
+    set('mode', value === 'truncate_load' ? 'replace' : 'append');
+  };
+
+  const handleLoadTypeChange = (value) => {
+    set('loadType', value);
+    if (value === 'delta') {
+      set('loadMode', 'DELTA');
+      set('loadStrategy', (cfg.deltaStrategy ?? 'scd1').toUpperCase());
+    } else {
+      const strategy = cfg.fullLoadStrategy ?? 'create_if_not_exists';
+      set('loadMode', strategy === 'append' ? 'APPEND' : 'FULL');
+      set('loadStrategy', CANONICAL_FULL_STRATEGY[strategy]);
+    }
+  };
 
   const useKeysFromMapping = async () => {
     const mappingId = upstreamMapping?.config?.mappingId;
@@ -125,7 +158,7 @@ export function LoadStrategyConfig({ cfg, set, sourceColumns = [], nodeId, nodes
         <div className="ls-radio-group">
           {[['full', 'Full Load'], ['delta', 'Delta Load']].map(([v, label]) => (
             <label key={v} className="ls-radio">
-              <input type="radio" name="loadType" checked={loadType === v} onChange={() => set('loadType', v)} />
+              <input type="radio" name="loadType" checked={loadType === v} onChange={() => handleLoadTypeChange(v)} />
               {label}
             </label>
           ))}
@@ -143,7 +176,7 @@ export function LoadStrategyConfig({ cfg, set, sourceColumns = [], nodeId, nodes
                     type="radio"
                     name="fullLoadStrategy"
                     checked={(cfg.fullLoadStrategy ?? 'create_if_not_exists') === s.value}
-                    onChange={() => set('fullLoadStrategy', s.value)}
+                    onChange={() => handleFullStrategyChange(s.value)}
                   />
                   {s.label}
                 </div>
@@ -161,7 +194,16 @@ export function LoadStrategyConfig({ cfg, set, sourceColumns = [], nodeId, nodes
             <div className="ls-radio-group">
               {[['scd1', 'SCD Type 1'], ['scd2', 'SCD Type 2']].map(([v, label]) => (
                 <label key={v} className="ls-radio">
-                  <input type="radio" name="deltaStrategy" checked={deltaStrategy === v} onChange={() => set('deltaStrategy', v)} />
+                  <input
+                    type="radio"
+                    name="deltaStrategy"
+                    checked={deltaStrategy === v}
+                    onChange={() => {
+                      set('deltaStrategy', v);
+                      set('loadMode', 'DELTA');
+                      set('loadStrategy', v.toUpperCase());
+                    }}
+                  />
                   {label}
                 </label>
               ))}

@@ -29,6 +29,7 @@ const NAV = [
     items: [
       { to: '/app/catalog',       label: 'Data Catalog',  icon: Database },
       { to: '/app/connections',   label: 'Connections',   icon: Link2 },
+      { to: '/app/format-conversion', label: 'Format Conversion', icon: Shuffle },
       { to: '/app/sql-workspace', label: 'SQL Workspace', icon: Terminal, module: MODULES.SQL_WORKSPACE },
     ],
   },

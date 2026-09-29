@@ -41,9 +41,40 @@ class ReconciliationRunStatus(str, enum.Enum):
 
 
 class ExceptionType(str, enum.Enum):
-    MISSING = "MISSING"    # present in source, absent from target
-    EXTRA = "EXTRA"        # present in target, absent from source
-    MISMATCH = "MISMATCH"  # present in both, differing compare-column value
+    MISSING = "MISSING"    # present in source, absent from target (by ID AND, when fallback_match_columns
+                            # is configured, by normalized name too — see reconciliation/engine.py)
+    EXTRA = "EXTRA"        # present in target, absent from source (by ID and, when configured, by name)
+    MISMATCH = "MISMATCH"  # present in both (matched by ID or name), differing compare-column value
+    # Real bug found live: this engine used to do exact-key-only matching —
+    # a source record whose id changed (e.g. after a migration) but whose
+    # name still matches a target record was reported MISSING even though
+    # it genuinely exists in the target. These two values back the ID->NAME
+    # fallback matching sequence (spec: match by ID first, fall back to
+    # normalized name, never silently guess when a name matches more than
+    # one target record). Both are new "interesting outcome" types, stored
+    # the same way MISMATCH already is — MATCH_BY_ID itself is NOT stored
+    # per-record (same as today: a plain id-match is just counted via
+    # ReconciliationRun.matched_by_id_count), matching this table's existing
+    # "only store what needs attention" design instead of one row per
+    # source record.
+    MATCH_BY_NAME = "MATCH_BY_NAME"              # matched via normalized-name fallback, not ID
+    AMBIGUOUS_MATCH = "AMBIGUOUS_MATCH"          # source name matched 2+ target records — never auto-picked
+    # Real bug found live: the target side having 2+ rows sharing the same
+    # key used to be silently swallowed — _fetch_key_rows just overwrote
+    # the earlier row with the later one, and a source record with that id
+    # was confidently reported as a clean MATCH_BY_ID. Now genuinely
+    # detected and stored as its own exception type instead — see
+    # reconciliation/engine.py's _fetch_key_rows/diff_keys_and_fields.
+    DUPLICATE_TARGET_MATCH = "DUPLICATE_TARGET_MATCH"  # target has 2+ rows sharing this key — never auto-matched
+    # A capped sample (reconciliation/engine.py's MAX_MATCHED_SAMPLE, 100) of
+    # records that matched cleanly — by ID or by name — with no compare-
+    # column differences. Added on top of this table's original "only store
+    # what needs attention" design specifically so a user can spot-check
+    # real matches instead of only ever seeing problems; deliberately
+    # capped and separate from MAX_PERSISTED_EXCEPTIONS so a large exception
+    # count never crowds these out (or vice versa). A matched key that DOES
+    # have a mismatch is excluded here — it already appears under MISMATCH.
+    MATCHED = "MATCHED"
 
 
 class ReconciliationJob(TenantBase):
@@ -86,6 +117,19 @@ class ReconciliationJob(TenantBase):
     key_columns: Mapped[list] = mapped_column(JSON, default=list)
     compare_columns: Mapped[list] = mapped_column(JSON, default=list)
     comparison_types: Mapped[list] = mapped_column(JSON, default=list)  # subset of COUNT/CHECKSUM/KEY_MATCH/FIELD_LEVEL
+    # ID->NAME fallback matching (source-side column names — resolved
+    # through column_mapping for the target side exactly like key_columns/
+    # compare_columns already are). Empty list (the default) means "no
+    # fallback configured" — KEY_MATCH/FIELD_LEVEL then run byte-identical
+    # exact-key-only matching, same as every job created before this
+    # existed. Only non-empty for a job that explicitly opts in.
+    fallback_match_columns: Mapped[list] = mapped_column(JSON, default=list)
+    # {"trim": bool, "case_insensitive": bool, "collapse_spaces": bool,
+    # "unicode_normalize": bool} — only read when fallback_match_columns is
+    # non-empty. Empty dict (the default) means the engine's own sensible
+    # defaults apply (trim + case-insensitive, matching spec's default
+    # fallback normalization) rather than no normalization at all.
+    name_normalization: Mapped[dict] = mapped_column(JSON, default=dict)
     # {source_column: target_column} — only entries where the two sides use
     # a different real column name for the same logical field. A source
     # column with no entry here falls back to the same name on the target
@@ -114,12 +158,25 @@ class ReconciliationRun(TenantBase):
 
     source_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     target_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    matched_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    matched_count: Mapped[int | None] = mapped_column(Integer, nullable=True)  # = matched_by_id_count + matched_by_name_count
     missing_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     extra_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mismatched_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     checksum_match: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     exceptions_truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Breakdown behind matched_count above — null for a run whose job has
+    # no fallback_match_columns configured (matched_count alone is still
+    # correct for those; these two just aren't a meaningful split when
+    # every match is necessarily "by ID"). Spec section 14/36 wants this
+    # breakdown surfaced explicitly, not just a single opaque total.
+    matched_by_id_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    matched_by_name_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ambiguous_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Target-side duplicate-key detection (independent of fallback_match_columns
+    # — this runs for every KEY_MATCH/FIELD_LEVEL job, not just one with name
+    # fallback configured). Null for a run that predates this column;
+    # otherwise always a real, computed count, 0 included.
+    duplicate_target_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -141,6 +198,19 @@ class ReconciliationException(TenantBase):
     column: Mapped[str | None] = mapped_column(String(200), nullable=True)  # MISMATCH only
     source_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     target_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ID->NAME fallback fields — all null for a job with no
+    # fallback_match_columns (i.e. every exception row created before this
+    # existed, and every row from a job that never opts in). match_method
+    # is "ID" or "NAME" only on a MISMATCH row for a name-matched pair;
+    # source_id/target_id mirror key_value's first key column as a plain
+    # string for convenient display; source_name/target_name are the raw
+    # (pre-normalization) fallback-column values, populated on
+    # MATCH_BY_NAME/AMBIGUOUS_MATCH rows per spec section 14's example shape.
+    match_method: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    source_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_name: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     def __repr__(self) -> str:
         return f"<ReconciliationException {self.exception_type} run={self.run_id}>"

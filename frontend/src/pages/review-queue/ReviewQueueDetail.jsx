@@ -159,7 +159,7 @@ export default function ReviewQueueDetail() {
 
         {/* Split screen */}
         <div className="rqd-split">
-          <DocumentPane documentId={detail.document_id} previewAvailable={detail.document_preview_available} selectedField={selectedFieldData} />
+          <DocumentPane documentId={detail.document_id} previewAvailable={detail.document_preview_available} fileType={detail.document_file_type} selectedField={selectedFieldData} />
           <FieldReviewPane
             detail={detail}
             drafts={drafts}
@@ -229,7 +229,7 @@ export default function ReviewQueueDetail() {
 
 // ── Left: document viewer ────────────────────────────────────────
 
-function DocumentPane({ documentId, previewAvailable, selectedField }) {
+function DocumentPane({ documentId, previewAvailable, fileType, selectedField }) {
   const [blobUrl, setBlobUrl] = useState(null);
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
@@ -269,7 +269,11 @@ function DocumentPane({ documentId, previewAvailable, selectedField }) {
 
       <div className="rqd-doc-canvas">
         <div className="rqd-page" style={{ transform: `scale(${zoom}) rotate(${rotation}deg)` }}>
-          {blobUrl ? <img src={blobUrl} alt="Document" /> : <div className="rqd-page-placeholder" />}
+          {blobUrl ? (
+            fileType === 'PDF' ? <iframe title="Document" src={blobUrl} /> : <img src={blobUrl} alt="Document" />
+          ) : (
+            <div className="rqd-page-placeholder" />
+          )}
 
           {/* Bounding-box overlay */}
           {selectedField?.bbox && (

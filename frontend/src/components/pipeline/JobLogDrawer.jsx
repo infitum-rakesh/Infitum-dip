@@ -15,6 +15,69 @@ const STATUS_VARIANT = { PENDING: 'gray', RUNNING: 'info', SUCCEEDED: 'success',
 const LEVEL_CLASS = { INFO: 'jld-log-info', WARN: 'jld-log-warn', ERROR: 'jld-log-error' };
 const TERMINAL = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED']);
 
+function formatElapsed(seconds) {
+  if (seconds == null || isNaN(seconds) || seconds < 0) return '00:00:00';
+  const s = Math.floor(seconds);
+  const hrs = Math.floor(s / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  const secs = s % 60;
+  if (hrs > 0) {
+    return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function formatEta(seconds) {
+  if (seconds == null || isNaN(seconds) || seconds <= 0) return '—';
+  if (seconds < 60) return `${Math.round(seconds)} sec`;
+  return formatElapsed(seconds);
+}
+
+function formatNumber(num) {
+  if (num == null || isNaN(num)) return '0';
+  return Number(num).toLocaleString();
+}
+
+function emptyLogMessage(job) {
+  // logs.length === 0 doesn't always mean "hasn't started yet" — it's also
+  // true for the brief window before the first poll tick resolves (any
+  // status), and can be genuinely true forever for a job that failed
+  // before its first _log() call ran. "Waiting for the job to start…" was
+  // shown unconditionally here regardless of job.status, so it kept
+  // reading as stuck/broken on an already-completed or actively-running
+  // job that simply hadn't rendered its log lines yet on this tick.
+  if (!job) return 'Loading job details…';
+  if (job.status === 'PENDING') return 'Waiting for the job to start…';
+  if (job.status === 'RUNNING') return 'Job is running — waiting for the first log entries…';
+  if (TERMINAL.has(job.status)) return 'This job finished with no log entries recorded.';
+  return 'Loading log entries…';
+}
+
+function formatStageLabel(stage) {
+  if (!stage) return 'Processing...';
+  const map = {
+    PREPARING: 'Preparing pipeline execution...',
+    PREPARING_BULK_QUERY: 'Preparing Salesforce Bulk API query...',
+    DOWNLOADING_BULK_RESULTS: 'Fetching Salesforce Bulk API results...',
+    FETCHING: 'Extracting data from source...',
+    TRANSFORMING: 'Applying transformations...',
+    PREPARING_TARGET: 'Preparing target table...',
+    LOADING_TARGET: 'Loading data into target database...',
+    COMPLETED: 'Pipeline execution completed',
+    FAILED: 'Pipeline execution failed',
+    ABORTED: 'Pipeline execution aborted',
+    CANCELLED: 'Pipeline execution cancelled',
+  };
+  return map[stage] || stage.replace(/_/g, ' ');
+}
+
+function progressSubject(stage) {
+  if (stage === 'PREPARING_TARGET') return 'extracted';
+  if (stage === 'LOADING_TARGET') return 'loaded';
+  if (stage === 'FETCHING' || stage === 'DOWNLOADING_BULK_RESULTS') return 'extracted';
+  return 'processed';
+}
+
 export function JobLogDrawer({ jobId, onClose, onStatusChange }) {
   const [job, setJob] = useState(null);
   const [logs, setLogs] = useState([]);
@@ -40,7 +103,11 @@ export function JobLogDrawer({ jobId, onClose, onStatusChange }) {
         onStatusChange?.(jobData);
         if (logData.items.length) {
           lastLogId.current = logData.items[logData.items.length - 1].id;
-          setLogs((prev) => [...prev, ...logData.items]);
+          setLogs((prev) => {
+            const existingIds = new Set(prev.map((l) => l.id));
+            const newItems = logData.items.filter((l) => !existingIds.has(l.id));
+            return newItems.length ? [...prev, ...newItems] : prev;
+          });
         }
         if (TERMINAL.has(jobData.status) && pollRef.current) {
           clearInterval(pollRef.current);
@@ -72,7 +139,15 @@ export function JobLogDrawer({ jobId, onClose, onStatusChange }) {
   };
 
   const isRunning = job && !TERMINAL.has(job.status);
-  const nodeEntries = job ? Object.entries(job.node_stats || {}) : [];
+  const progressLabel = progressSubject(job?.stage);
+  const progressValue = progressLabel === 'loaded'
+    ? job?.records?.loaded
+    : progressLabel === 'extracted'
+      ? (job?.records?.extracted ?? job?.progress?.processed)
+      : (job?.progress?.processed ?? job?.records?.processed);
+  const nodeEntries = job
+    ? Object.entries(job.node_stats || {}).filter(([k]) => k !== '__metrics__')
+    : [];
   const [downloadingNode, setDownloadingNode] = useState(null);
   const [rejectsNode, setRejectsNode] = useState(null); // {nodeId, label} — which node's rejects modal is open
 
@@ -97,8 +172,15 @@ export function JobLogDrawer({ jobId, onClose, onStatusChange }) {
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             {isRunning && (
-              <Button variant="danger" size="sm" icon={<Square size={12} fill="currentColor" />} loading={cancelling} onClick={handleCancel}>
-                Abort
+              <Button
+                variant="danger"
+                size="sm"
+                icon={<Square size={12} fill="currentColor" />}
+                loading={cancelling}
+                disabled={cancelling}
+                onClick={handleCancel}
+              >
+                {cancelling ? 'Aborting...' : 'Abort'}
               </Button>
             )}
             <button className="jld-close" onClick={onClose}><X size={16} /></button>
@@ -107,6 +189,81 @@ export function JobLogDrawer({ jobId, onClose, onStatusChange }) {
 
         {job?.error_message && (
           <div className="jld-error-banner">{job.error_message}</div>
+        )}
+
+        {job && (
+          <div className="jld-dashboard">
+            <div className="jld-stage-row">
+              <div className="jld-stage-info">
+                <span className="jld-stage-label">Current Stage</span>
+                <span className="jld-stage-val">{formatStageLabel(job.stage)}</span>
+              </div>
+              <div className="jld-progress-badge">
+                {job.progress?.percentage != null
+                  ? `${job.progress.percentage.toFixed(1)}%`
+                  : (isRunning ? 'Calculating...' : '100%')}
+              </div>
+            </div>
+
+            <div className="jld-progress-track">
+              <div
+                className={`jld-progress-fill ${job.progress?.percentage == null && isRunning ? 'indeterminate' : ''}`}
+                style={{ width: `${job.progress?.percentage != null ? Math.min(100, Math.max(0, job.progress.percentage)) : 100}%` }}
+              />
+            </div>
+
+            <div className="jld-progress-sub">
+              <span>
+                {formatNumber(progressValue)}
+                {job.progress?.total != null ? ` / ${formatNumber(job.progress.total)}` : ''} rows
+                {` ${progressLabel}`}
+              </span>
+              {(job.bulk_api?.chunks_processed > 0 || job.bulk_api?.current_chunk > 0) && (
+                <span className="jld-chunk-meta">
+                  Chunk {job.bulk_api.current_chunk || job.bulk_api.chunks_processed}
+                  {job.bulk_api.total_chunks ? ` / ${job.bulk_api.total_chunks}` : ''}
+                </span>
+              )}
+            </div>
+
+            <div className="jld-metrics-grid">
+              <div className="jld-metric-box">
+                <span className="jld-metric-title">Throughput</span>
+                <span className="jld-metric-value">{formatNumber(job.throughput?.rows_per_second ?? 0)} <small>rows/s</small></span>
+              </div>
+              <div className="jld-metric-box">
+                <span className="jld-metric-title">ETA</span>
+                <span className="jld-metric-value">{formatEta(job.timing?.eta_seconds)}</span>
+              </div>
+              <div className="jld-metric-box">
+                <span className="jld-metric-title">Elapsed</span>
+                <span className="jld-metric-value">{formatElapsed(job.timing?.elapsed_seconds)}</span>
+              </div>
+              <div className="jld-metric-box">
+                <span className="jld-metric-title">Extraction Rate</span>
+                <span className="jld-metric-value">{formatNumber(job.throughput?.extraction_rate ?? 0)} <small>rows/s</small></span>
+              </div>
+            </div>
+
+            <div className="jld-counters-bar">
+              <div className="jld-counter-item">
+                <span className="jld-counter-lbl">Extracted</span>
+                <span className="jld-counter-num">{formatNumber(job.records?.extracted)}</span>
+              </div>
+              <div className="jld-counter-item">
+                <span className="jld-counter-lbl">Processed</span>
+                <span className="jld-counter-num">{formatNumber(job.records?.processed)}</span>
+              </div>
+              <div className="jld-counter-item">
+                <span className="jld-counter-lbl">Loaded</span>
+                <span className="jld-counter-num success">{formatNumber(job.records?.loaded)}</span>
+              </div>
+              <div className={`jld-counter-item ${job.records?.rejected > 0 ? 'has-rejected' : ''}`}>
+                <span className="jld-counter-lbl">Rejected</span>
+                <span className="jld-counter-num danger">{formatNumber(job.records?.rejected)}</span>
+              </div>
+            </div>
+          </div>
         )}
 
         {nodeEntries.length > 0 && (
@@ -155,7 +312,7 @@ export function JobLogDrawer({ jobId, onClose, onStatusChange }) {
 
         <div className="jld-log-body">
           {logs.length === 0 ? (
-            <div className="jld-log-empty">Waiting for the job to start…</div>
+            <div className="jld-log-empty">{emptyLogMessage(job)}</div>
           ) : (
             logs.map((l) => (
               <div key={l.id} className={`jld-log-line ${LEVEL_CLASS[l.level] ?? ''}`}>

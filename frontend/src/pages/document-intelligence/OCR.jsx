@@ -86,6 +86,7 @@ export function OCR({ scanData, onComplete, onBack }) {
   const [processing, setProcessing]   = useState(false);
   const [processingStatus, setProcessingStatus] = useState(''); // live backend status while polling — see runOCR()
   const [ocrResult, setOcrResult]     = useState(null);
+  const [activePageIndex, setActivePageIndex] = useState(0);
   const [activeBbox, setActiveBbox]   = useState(null);
   const [zoom, setZoom]               = useState(1);
   const [error, setError]             = useState('');
@@ -97,6 +98,7 @@ export function OCR({ scanData, onComplete, onBack }) {
   // instead of showing whatever the previous image's result was.
   useEffect(() => {
     setOcrResult(null);
+    setActivePageIndex(0);
     runOCR();
   }, [doc.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -122,6 +124,7 @@ export function OCR({ scanData, onComplete, onBack }) {
       const raw = await documentApi.getOcr(doc.id);
       if (myRequestId !== requestIdRef.current) return;
       setOcrResult(adaptOcrResponse(raw));
+      setActivePageIndex(0);
     } catch (err) {
       if (myRequestId !== requestIdRef.current) return;
       setError(err?.response?.data?.detail || err?.message || 'OCR failed. Please try again.');
@@ -136,7 +139,7 @@ export function OCR({ scanData, onComplete, onBack }) {
     textPanelRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const page = ocrResult?.pages?.[0];
+  const page = ocrResult?.pages?.[activePageIndex];
   const isImage = doc?.type?.startsWith('image/');
 
   return (
@@ -209,6 +212,13 @@ export function OCR({ scanData, onComplete, onBack }) {
           <div className="di-panel-header">
             <span className="di-panel-title">Document Preview — Bounding Boxes</span>
             <div style={{ display: 'flex', gap: 4 }}>
+              {ocrResult?.pages?.length > 1 && (
+                <>
+                  <Button variant="ghost" size="sm" onClick={() => setActivePageIndex((i) => Math.max(0, i - 1))} disabled={activePageIndex === 0}><ArrowLeft size={13} /></Button>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)', alignSelf: 'center', minWidth: 72, textAlign: 'center' }}>Page {activePageIndex + 1} / {ocrResult.pages.length}</span>
+                  <Button variant="ghost" size="sm" onClick={() => setActivePageIndex((i) => Math.min(ocrResult.pages.length - 1, i + 1))} disabled={activePageIndex >= ocrResult.pages.length - 1}><ArrowRight size={13} /></Button>
+                </>
+              )}
               <Button variant="ghost" size="sm" onClick={() => setZoom((z) => Math.max(0.5, z - 0.2))}><ZoomOut size={13} /></Button>
               <span style={{ fontSize: 12, color: 'var(--text-muted)', alignSelf: 'center', minWidth: 36, textAlign: 'center' }}>{Math.round(zoom * 100)}%</span>
               <Button variant="ghost" size="sm" onClick={() => setZoom((z) => Math.min(2, z + 0.2))}><ZoomIn size={13} /></Button>

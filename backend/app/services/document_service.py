@@ -38,6 +38,7 @@ import datetime as _dt
 import decimal
 import hashlib
 import json
+import mimetypes
 import os
 import random
 import time
@@ -46,7 +47,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import UploadFile
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -59,10 +60,13 @@ from app.models.connection import Connection, ConnectionCategory, ConnectionStat
 from app.models.document import Document, DocumentStatus, DocumentType
 from app.models.user import User
 from app.ocr.engine import OcrEngineError, OcrNotApplicableError, render_pages_as_png
-from app.ocr.language_errors import LanguageProcessingError
+from app.ocr.language_config import LANGUAGE_CONFIG
+from app.ocr.language_errors import LanguageErrorCode, LanguageProcessingError
 from app.ocr.multilingual_ocr_service import detect_language_only, evaluate_ocr_quality, run_multilingual_ocr
 from app.services import extraction_service
 from app.services import document_taxonomies
+from app.services import document_storage_service
+from app.services import document_webhook_service
 from app.services import evidence_service
 from app.services import settings_service
 from app.services.connection_service import build_connector, get_connection
@@ -90,6 +94,46 @@ PROCESSING_STATUSES = {DocumentStatus.SCANNING, DocumentStatus.OCR_PROCESSING, D
 
 class DocumentValidationError(Exception):
     """Raised for invalid uploads (bad extension, too large)."""
+
+
+class DocumentLanguageConfigError(Exception):
+    """Raised when a caller sends an unsupported OCR language selection."""
+
+
+def normalize_ocr_language_config(language_config: dict | None) -> dict | None:
+    if not language_config:
+        return None
+    mode = str(language_config.get("mode") or "auto").lower()
+    selected = language_config.get("selected_languages") or language_config.get("languages") or []
+    if isinstance(selected, str):
+        selected = [c.strip() for c in selected.split(",") if c.strip()]
+    selected = list(dict.fromkeys(str(c).strip().lower() for c in selected if str(c).strip()))
+    primary = str(language_config.get("primary_language") or language_config.get("language") or "auto").lower()
+
+    if mode not in ("auto", "explicit"):
+        raise DocumentLanguageConfigError("Unsupported OCR language mode. Use 'auto' or 'explicit'.")
+    if primary != "auto" and primary not in LANGUAGE_CONFIG:
+        raise DocumentLanguageConfigError(f"Unsupported OCR language '{primary}'.")
+    unsupported = [c for c in selected if c not in LANGUAGE_CONFIG]
+    if unsupported:
+        raise DocumentLanguageConfigError(f"Unsupported OCR language(s): {', '.join(unsupported)}.")
+    if mode == "explicit" and primary == "auto" and len(selected) == 1:
+        primary = selected[0]
+    if mode == "explicit" and primary != "auto" and primary not in selected:
+        selected.insert(0, primary)
+    selected = list(dict.fromkeys(["en", *selected]))
+    return {"mode": mode, "selected_languages": selected, "primary_language": primary}
+
+
+def resolve_document_language_config(doc: Document, di_settings: dict) -> tuple[list[str], str, dict]:
+    stored = normalize_ocr_language_config(doc.language_config) if doc.language_config else None
+    if stored:
+        supported = stored["selected_languages"] or ["en"]
+        primary = stored["primary_language"] or "auto"
+        return supported, primary, stored
+    supported = di_settings.get("supported_languages") or ["en"]
+    primary = di_settings.get("primary_language") or "auto"
+    return supported, primary, {"mode": "org_default", "selected_languages": supported, "primary_language": primary}
 
 
 def _ext(filename: str) -> str:
@@ -120,6 +164,7 @@ async def save_upload(
     file: UploadFile,
     organization_id: int | None,
     uploaded_by_id: int | None,
+    language_config: dict | None = None,
 ) -> tuple[Document, int | None]:
     """Returns (doc, duplicate_of_id). duplicate_of_id is the id of an
     existing document in the same organization with byte-identical content
@@ -130,6 +175,7 @@ async def save_upload(
     getting a second, unexplained row."""
     content = await file.read()
     _validate_upload(file.filename, len(content))
+    normalized_language_config = normalize_ocr_language_config(language_config)
     content_hash = hashlib.sha256(content).hexdigest()
 
     duplicate_of_id = None
@@ -156,6 +202,7 @@ async def save_upload(
         page_count=1,
         storage_path=str(dest),
         content_hash=content_hash,
+        language_config=normalized_language_config,
         status=DocumentStatus.UPLOADED,
         timeline=[_stage_record("Uploaded", "completed", datetime.now(timezone.utc), datetime.now(timezone.utc))],
     )
@@ -167,7 +214,7 @@ async def save_upload(
 
 async def save_from_source(
     db: AsyncSession, *, content: bytes, filename: str, organization_id: int | None,
-    source_connection_id: int, source_path: str, source_schedule_id: int | None,
+    source_connection_id: int | None = None, source_path: str | None = None, source_schedule_id: int | None = None,
 ) -> Document:
     """Scheduled Document Intelligence Workflow's counterpart to
     save_upload() above — same validation/storage/content-hash logic,
@@ -180,7 +227,14 @@ async def save_from_source(
     one layer up, against DocumentSourceRegistry (see needs_processing()),
     which is the durable per-SOURCE-identity ledger the spec actually asks
     for; by the time this function is called the caller has already decided
-    this file needs a real Document row."""
+    this file needs a real Document row.
+
+    source_connection_id/source_path are optional (ZB6) — a ZIP-batch-
+    originated document has no real Connection at all, so these stay NULL
+    rather than being stamped with a fake sentinel connection id, which
+    would misrepresent Document Processing History. DocumentBatchFile.
+    document_id is the real reverse-join for "which batch produced this
+    Document" in that case."""
     _validate_upload(filename, len(content))
     content_hash = hashlib.sha256(content).hexdigest()
 
@@ -196,7 +250,16 @@ async def save_from_source(
         uploaded_by_id=None,
         filename=filename,
         doc_type=guess_doc_type(filename),
-        mime_type=None,
+        # Real bug found live: this used to hardcode None (there's no
+        # UploadFile.content_type available on this bytes-based path), which
+        # left GET /documents/{id}/file falling back to
+        # "application/octet-stream" — browsers force-download an
+        # octet-stream response instead of rendering it inline, so every
+        # document created via a ZIP batch or a document schedule (both of
+        # which only ever call save_from_source(), never save_upload())
+        # downloaded instead of previewing. mimetypes.guess_type() derives
+        # the same thing save_upload() gets for free from the browser.
+        mime_type=mimetypes.guess_type(filename)[0],
         size_bytes=len(content),
         page_count=1,
         storage_path=str(dest),
@@ -542,6 +605,33 @@ async def update_document(db: AsyncSession, doc: Document, *, filename: str | No
 
 
 async def delete_document(db: AsyncSession, doc: Document) -> None:
+    """Hard-deletes the Document row and its physical file. Real bug found
+    live: this used to leave dangling references behind in two other
+    tables — `ReviewQueueItem.document_id` and `DocumentBatchFile.
+    document_id`/`duplicate_of_document_id` are plain FK columns with no
+    ON DELETE behavior configured (and SQLite doesn't enforce FKs by
+    default anyway), so a deleted document's review item stayed forever,
+    and any ZIP batch that had processed it kept a "view" link pointing at
+    a document that no longer existed (404) — including a batch's
+    duplicate-detection record, which could look like a phantom "existing"
+    match for a later re-upload even though the exact match was actually
+    the deleted document that the same later content just happens not to
+    equal (the dedup query itself is fine; the confusion is from BatchDetail
+    silently offering a dead link with nothing to explain it). Cleaned up
+    explicitly here rather than adding DB-level cascade, since TenantBase
+    models make no assumption about which DB engine enforces FKs.
+    """
+    from app.models.review_queue import ReviewQueueItem
+    from app.models.document_batch import DocumentBatchFile
+
+    await db.execute(delete(ReviewQueueItem).where(ReviewQueueItem.document_id == doc.id))
+    await db.execute(
+        update(DocumentBatchFile).where(DocumentBatchFile.document_id == doc.id).values(document_id=None)
+    )
+    await db.execute(
+        update(DocumentBatchFile).where(DocumentBatchFile.duplicate_of_document_id == doc.id)
+        .values(duplicate_of_document_id=None)
+    )
     delete_file(doc)
     await db.delete(doc)
     await db.commit()
@@ -926,7 +1016,7 @@ def _reshape_extraction_fields(raw_fields: list[dict], doc: Document | None = No
     return fields
 
 
-async def _run_custom_engine_extraction(db: AsyncSession, doc: Document, *, document_type: str | None = None) -> tuple[list[dict], float | None, str | None]:
+async def _run_custom_engine_extraction(db: AsyncSession, doc: Document, *, document_type: str | None = None) -> tuple[list[dict], float | None, str | None, dict]:
     """Real, zero-configuration fallback extraction via the Custom
     Extraction Engine (app/extraction/custom_engine.py) — a deterministic
     rule-based extractor, NOT a language model. Called whenever no AI
@@ -943,14 +1033,17 @@ async def _run_custom_engine_extraction(db: AsyncSession, doc: Document, *, docu
             db, doc, schema, extraction_service.CUSTOM_ENGINE_CONNECTION_ID, doc.organization_id,
         )
     except extraction_service.ExtractionError as exc:
-        return [], None, f"Custom Extraction Engine: {exc}"
+        return [], None, f"Custom Extraction Engine: {exc}", {}
     fields = _reshape_extraction_fields(result["fields"], doc)
-    return fields, result.get("overallConfidence"), None
+    return fields, result.get("overallConfidence"), None, {
+        "pages_considered": result.get("pages_considered") or [],
+        "total_ocr_pages": result.get("total_ocr_pages"),
+    }
 
 
 async def _run_ai_extraction(
     db: AsyncSession, doc: Document, *, document_type: str | None = None,
-) -> tuple[list[dict], float | None, str | None, dict | None, str | None]:
+) -> tuple[list[dict], float | None, str | None, dict | None, str | None, dict]:
     """Real AI Extraction for the Documents module's automatic pipeline —
     the same LLM engine as the Document Intelligence wizard
     (extraction_service.py): auto-detects a schema from the document's
@@ -1013,13 +1106,13 @@ async def _run_ai_extraction(
     Extraction Engine (see _run_custom_engine_extraction below) instead
     of skipping the stage outright."""
     if not doc.ocr_result or not (doc.ocr_result.get("full_text") or "").strip():
-        return [], None, "No OCR text available for AI Extraction.", None, None
+        return [], None, "No OCR text available for AI Extraction.", None, None, {}
 
     with db.no_autoflush:
         candidates = await _pick_ai_connections(db, doc.organization_id)
         if not candidates:
-            fields, conf, skip_reason = await _run_custom_engine_extraction(db, doc, document_type=document_type)
-            return fields, conf, skip_reason, None, "CUSTOM_ENGINE"
+            fields, conf, skip_reason, extraction_meta = await _run_custom_engine_extraction(db, doc, document_type=document_type)
+            return fields, conf, skip_reason, None, "CUSTOM_ENGINE", extraction_meta
 
         last_error: str | None = None
         for conn in candidates:
@@ -1069,10 +1162,14 @@ async def _run_ai_extraction(
                     # NEEDS_REVIEW upstream since extraction_percent will be low/None.
 
             fields = _reshape_extraction_fields(result["fields"], doc)
-            return fields, result.get("overallConfidence"), None, result.get("raw_model_response"), result.get("model")
+            extraction_meta = {
+                "pages_considered": result.get("pages_considered") or [],
+                "total_ocr_pages": result.get("total_ocr_pages"),
+            }
+            return fields, result.get("overallConfidence"), None, result.get("raw_model_response"), result.get("model"), extraction_meta
 
         # Every configured AI Provider connection genuinely failed.
-        return [], None, last_error or "AI Extraction failed on every configured AI Provider connection.", None, None
+        return [], None, last_error or "AI Extraction failed on every configured AI Provider connection.", None, None, {}
 
 
 MAX_MINED_FIELD_NAMES = 20  # hard cap — see discover_known_field_names() docstring
@@ -1379,6 +1476,8 @@ async def process_document(
     invoice_auto_post: bool = False, invoice_erp_connection_id: int | None = None,
     skip_invoice_pipeline: bool = False,
     preextracted_fields: list[dict] | None = None,
+    language_config: dict | None = None,
+    storage_override: dict | None = None,
 ) -> Document:
     """Runs the Document Intelligence pipeline synchronously and persists
     timeline/OCR/extraction/dataset results onto the document. OCR (stage 2)
@@ -1420,7 +1519,14 @@ async def process_document(
     "CUSTOM_ENGINE" for the rule-based OCR-text fallback). Every stage
     from Structured Dataset onward is completely unchanged — the same
     validation/business-rule/invoice-materialization chain runs
-    regardless of where the fields came from."""
+    regardless of where the fields came from.
+
+    storage_override (Part 21 — ZIP Batch Upload's per-batch Storage
+    config) is passed straight through to document_storage_service.
+    push_document()'s own `override` param — None (every caller except
+    document_batch_service.py) means the org-wide Processed Data Storage
+    config applies exactly as before this feature existed; see that
+    function's docstring for the override dict's shape."""
     doc_id = doc.id  # saved before anything can fail — used to re-fetch a clean instance if the except block below needs to recover from a broken session
     rnd = random.Random()
     now = datetime.now(timezone.utc)
@@ -1429,6 +1535,8 @@ async def process_document(
         timeline.append(_stage_record("Uploaded", "completed", now, now))
 
     try:
+        if language_config is not None:
+            doc.language_config = normalize_ocr_language_config(language_config)
         cursor = now
         # Multilingual Document Processing, Phase 6 — real OCR quality/
         # script-mismatch flags (see multilingual_ocr_service.evaluate_
@@ -1437,6 +1545,7 @@ async def process_document(
         # runs; stays [] for the structured-source/no-OCR path and the
         # OcrNotApplicableError path — there's no OCR result to evaluate.
         ocr_quality_flags: list[dict] = []
+        extraction_meta: dict = {}
         if preextracted_fields is not None:
             # PAY18 — structured, non-file source: no image, no OCR, no AI
             # model. Image Scanner/OCR are recorded as genuinely skipped
@@ -1515,6 +1624,7 @@ async def process_document(
                 # an org row that predates this feature; see
                 # settings_service.effective_document_intelligence_settings()).
                 di_settings = settings_service.effective_document_intelligence_settings(org_settings)
+                supported_languages, primary_language, effective_language_config = resolve_document_language_config(doc, di_settings)
                 provider_setting = di_settings.get("ocr_provider")
                 cloud_connection_type = OCR_PROVIDER_CONNECTION_TYPES.get(provider_setting or "")
                 if cloud_connection_type:
@@ -1525,15 +1635,14 @@ async def process_document(
                             f"active {cloud_connection_type.replace('_', ' ').title()} connection is configured — add "
                             "one on the Connections page, or switch the OCR Provider setting back to Tesseract."
                         )
-                    ocr_result = await _run_cloud_ocr(doc, file_bytes, ocr_conn)
+                    async with _ocr_semaphore:
+                        ocr_result = await _run_cloud_ocr(doc, file_bytes, ocr_conn)
                     # Cloud providers (Textract/Vision/Form Recognizer) already do
                     # their own multilingual recognition — we don't re-OCR, only
                     # report what language the result came back in (see
                     # multilingual_ocr_service.detect_language_only's docstring).
                     ocr_result["language"] = detect_language_only(ocr_result)
                 else:
-                    supported_languages = di_settings.get("supported_languages") or ["en"]
-                    primary_language = di_settings.get("primary_language") or "auto"
                     try:
                         # Real multilingual OCR — see ocr/multilingual_ocr_service.py's
                         # own docstring for the two-pass "lightweight combined pass,
@@ -1542,20 +1651,31 @@ async def process_document(
                         # Tesseract pass (byte-identical to the old run_ocr() call
                         # this replaces) for every org that hasn't opted into another
                         # language yet — the shipped default.
-                        ocr_result = await asyncio.to_thread(
-                            run_multilingual_ocr, file_bytes, doc.doc_type,
-                            supported_languages=supported_languages, primary_language=primary_language,
-                        )
+                        async with _ocr_semaphore:
+                            ocr_result = await asyncio.to_thread(
+                                run_multilingual_ocr, file_bytes, doc.doc_type,
+                                supported_languages=supported_languages, primary_language=primary_language,
+                            )
                         if not (ocr_result["full_text"] or "").strip():
                             # Tesseract ran without error but genuinely found no
                             # readable text (handwriting, an unsupported script, a
                             # photo of a mostly-blank/graphic page, ...) — try the
                             # real AI-vision fallback before giving up on this page.
-                            vision_result = await _run_vision_ocr_fallback(db, doc, file_bytes)
+                            async with _ocr_semaphore:
+                                vision_result = await _run_vision_ocr_fallback(db, doc, file_bytes)
                             if vision_result is not None:
                                 vision_result["language"] = detect_language_only(vision_result)
                                 ocr_result = vision_result
-                    except (OcrEngineError, LanguageProcessingError):
+                    except LanguageProcessingError as exc:
+                        if exc.code == LanguageErrorCode.OCR_LANGUAGE_MODEL_MISSING:
+                            raise
+                        async with _ocr_semaphore:
+                            vision_result = await _run_vision_ocr_fallback(db, doc, file_bytes)
+                        if vision_result is None:
+                            raise
+                        vision_result["language"] = detect_language_only(vision_result)
+                        ocr_result = vision_result
+                    except OcrEngineError:
                         # Tesseract itself failed for real (missing binary, corrupt
                         # render, a configured language's model genuinely not
                         # installed, ...) — this is exactly the "if OCR not work, try
@@ -1564,7 +1684,8 @@ async def process_document(
                         # configured) or also genuinely fails — a real
                         # OCR_LANGUAGE_MODEL_MISSING error must still surface (not
                         # be silently swallowed) when there's no fallback to try.
-                        vision_result = await _run_vision_ocr_fallback(db, doc, file_bytes)
+                        async with _ocr_semaphore:
+                            vision_result = await _run_vision_ocr_fallback(db, doc, file_bytes)
                         if vision_result is None:
                             raise
                         vision_result["language"] = detect_language_only(vision_result)
@@ -1583,8 +1704,8 @@ async def process_document(
                     ocr_result,
                     ocr_confidence_threshold=di_settings.get("ocr_confidence_threshold", 85),
                     language_mismatch_threshold=di_settings.get("language_mismatch_threshold", 80),
-                    supported_languages=di_settings.get("supported_languages") or ["en"],
-                    primary_language=di_settings.get("primary_language") or "auto",
+                    supported_languages=supported_languages,
+                    primary_language=primary_language,
                 )
                 doc.ocr_result = {
                     "full_text": ocr_result["full_text"],
@@ -1597,6 +1718,7 @@ async def process_document(
                     # ocr/multilingual_ocr_service.py). Stored in this existing JSON
                     # column, no migration needed.
                     "language": ocr_result.get("language"),
+                    "language_config": effective_language_config,
                     # Phase 6 — real named quality issues (see evaluate_ocr_quality()
                     # above); [] when the OCR result is genuinely clean.
                     "quality_flags": ocr_quality_flags,
@@ -1641,9 +1763,10 @@ async def process_document(
             # tens of seconds.
             await db.commit()
             real_ai_start = time.monotonic()
-            fields, extraction_conf, ai_skip_reason, ai_raw_response, ai_model_name = await _run_ai_extraction(
-                db, doc, document_type=document_type,
-            )
+            async with _ai_semaphore:
+                fields, extraction_conf, ai_skip_reason, ai_raw_response, ai_model_name, extraction_meta = await _run_ai_extraction(
+                    db, doc, document_type=document_type,
+                )
             doc.ai_raw_response = ai_raw_response
             doc.extraction_model = ai_model_name
             real_ai_elapsed = time.monotonic() - real_ai_start
@@ -1694,9 +1817,13 @@ async def process_document(
         accuracy_score = round(100 * sum(1 for f in scoreable_fields if f.get("validation_status") != "invalid") / len(scoreable_fields), 1) \
             if scoreable_fields else 100.0
         doc.extraction_result = (
-            {"fields": fields, "business_rule_flag": business_rule_flag, "accuracy_score": accuracy_score, "document_type": document_type}
+            {"fields": fields, "business_rule_flag": business_rule_flag, "accuracy_score": accuracy_score, "document_type": document_type, "page_coverage": extraction_meta}
             if fields else None
         )
+
+        pages_considered = set((extraction_meta or {}).get("pages_considered") or [])
+        total_ocr_pages = (extraction_meta or {}).get("total_ocr_pages") or (doc.ocr_result or {}).get("page_count") or doc.page_count
+        extraction_incomplete = bool(fields and total_ocr_pages and len(pages_considered) < int(total_ocr_pages))
 
         conf_components = [c for c in (scan_conf, ocr_conf, extraction_conf) if c is not None]
         overall_conf = round(sum(conf_components) / len(conf_components), 1)
@@ -1711,6 +1838,7 @@ async def process_document(
             or (fields and accuracy_score < accuracy_threshold)
             or any(f["validation_status"] == "invalid" for f in fields)
             or business_rule_flag
+            or extraction_incomplete
         )
         # Multilingual Document Processing, Phase 6 — a real OCR quality/
         # language issue (low confidence, mismatch, empty/unicode error)
@@ -1720,7 +1848,8 @@ async def process_document(
         # success.
         needs_review = extraction_needs_review or bool(ocr_quality_flags)
         val_status = "completed" if not needs_review else "failed"
-        validation_error = "Low confidence on one or more fields — flagged for manual review." if extraction_needs_review \
+        validation_error = "Extraction did not consider every OCR page — flagged for manual review." if extraction_incomplete \
+            else "Low confidence on one or more fields — flagged for manual review." if extraction_needs_review \
             else (ocr_quality_flags[0]["message"] if ocr_quality_flags else None)
         rec, cursor = _stage("Validation", val_status, cursor, rnd.uniform(0.2, 0.8), overall_conf, error=validation_error)
         timeline.append(rec)
@@ -1796,6 +1925,25 @@ async def process_document(
         except Exception:  # noqa: BLE001 - see comment above; never fail document processing over this
             pass
 
+    # Processed Data Storage (Phase 3) — a real, auditable EXTERNAL push of
+    # this document's OCR/extraction/dataset output, configured per org
+    # (see services/document_storage_service.py's module docstring for how
+    # this differs from Bring-Your-Own-Database). No-ops instantly for the
+    # default (and overwhelmingly common) case where no org has opted in.
+    # Only COMPLETED/NEEDS_REVIEW carry real processed output worth
+    # pushing — a FAILED document has nothing new to export. Never fails
+    # this function: push_document() itself catches everything.
+    if doc.status in (DocumentStatus.COMPLETED, DocumentStatus.NEEDS_REVIEW):
+        await document_storage_service.push_document(db, doc, organization_id=doc.organization_id, override=storage_override)
+
+        # External API / webhook push (Phase 6, spec item #7) — a
+        # genuinely separate destination from the DB/file push above
+        # (see document_webhook_service.py's module docstring). Runs
+        # independently: a webhook failure never affects the DB/file
+        # push's own outcome, and vice versa. No-ops instantly when no
+        # org has configured/enabled a webhook.
+        await document_webhook_service.push_document(db, doc, organization_id=doc.organization_id)
+
     return doc
 
 
@@ -1820,13 +1968,30 @@ async def process_document(
 # status instead of awaiting one long call.
 
 _running_tasks: dict[int, asyncio.Task] = {}
+# Overall document-worker bound — SQLite's single-writer limit always wins
+# regardless of DOCUMENT_WORKER_COUNT (see the "database is locked" note
+# above); non-SQLite deployments use the configured value directly (default
+# 4, same as this semaphore's previous hardcoded value).
+_background_processing_semaphore = asyncio.Semaphore(
+    1 if settings.database_url.startswith("sqlite") else settings.document_worker_count
+)
+# ZIP Batch Upload (ZB5) — finer sub-limits ACQUIRED INSIDE process_document()
+# around just the OCR calls and just the AI-extraction call respectively, in
+# ADDITION to the outer _background_processing_semaphore above. Lets an
+# operator express "8 documents processing but only 4 concurrent AI
+# requests" (spec section 57/58) instead of one single all-or-nothing cap.
+# Process-wide and fixed at import time — a Semaphore can't be resized
+# per-request, so these read the env-backed Settings, never the per-org
+# runtime-editable settings blob.
+_ocr_semaphore = asyncio.Semaphore(max(1, settings.ocr_concurrency))
+_ai_semaphore = asyncio.Semaphore(max(1, settings.ai_concurrency))
 
 
 def is_processing(document_id: int) -> bool:
     return document_id in _running_tasks
 
 
-async def start_processing(db: AsyncSession, doc: Document, *, reprocess: bool, document_type: str | None = None) -> Document:
+async def start_processing(db: AsyncSession, doc: Document, *, reprocess: bool, document_type: str | None = None, language_config: dict | None = None) -> Document:
     """Kicks off process_document() as a background task and returns
     immediately — the route handler awaits THIS, not the pipeline itself.
     If this document is already being processed, does not start a second
@@ -1844,19 +2009,21 @@ async def start_processing(db: AsyncSession, doc: Document, *, reprocess: bool, 
     caller's original auto-detect behavior unchanged."""
     if is_processing(doc.id):
         return doc
+    if language_config is not None:
+        doc.language_config = normalize_ocr_language_config(language_config)
     doc.status = DocumentStatus.SCANNING
     doc.error_message = None
     await db.commit()
     await db.refresh(doc)
 
     document_id = doc.id
-    task = asyncio.create_task(_process_in_background(document_id, reprocess, doc.organization_id, document_type))
+    task = asyncio.create_task(_process_in_background(document_id, reprocess, doc.organization_id, document_type, doc.language_config))
     _running_tasks[document_id] = task
     task.add_done_callback(lambda _t, did=document_id: _running_tasks.pop(did, None))
     return doc
 
 
-async def _process_in_background(document_id: int, reprocess: bool, organization_id: int | None, document_type: str | None = None) -> None:
+async def _process_in_background(document_id: int, reprocess: bool, organization_id: int | None, document_type: str | None = None, language_config: dict | None = None) -> None:
     """Runs detached from the request that triggered it, so it needs its
     own DB session — the request's session is gone by the time this
     actually executes. process_document() already catches everything it
@@ -1866,38 +2033,39 @@ async def _process_in_background(document_id: int, reprocess: bool, organization
     left stuck showing an in-progress status forever. organization_id
     comes from the doc row the caller (start_processing) already has in
     hand — see tenant_engine_registry.get_background_sessionmaker."""
-    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
-    async with sessionmaker() as db:
-        doc = await db.get(Document, document_id)
-        if doc is None:
-            return
-        try:
-            doc = await process_document(db, doc, reprocess=reprocess, document_type=document_type)
-        except Exception as exc:  # noqa: BLE001 - see docstring
+    async with _background_processing_semaphore:
+        sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+        async with sessionmaker() as db:
+            doc = await db.get(Document, document_id)
+            if doc is None:
+                return
+            try:
+                doc = await process_document(db, doc, reprocess=reprocess, document_type=document_type, language_config=language_config)
+            except Exception as exc:  # noqa: BLE001 - see docstring
             # process_document() already recovers from a broken session
             # internally (see its own except block) — this only runs if
             # something STILL escapes that, so roll back defensively here
             # too before writing anything; a bare commit on an already-
             # broken session just raises PendingRollbackError again and
             # leaves the row stuck silently instead of marked FAILED.
-            await db.rollback()
-            doc = await db.get(Document, document_id)
-            if doc is None:
+                await db.rollback()
+                doc = await db.get(Document, document_id)
+                if doc is None:
+                    return
+                doc.status = DocumentStatus.FAILED
+                doc.error_message = friendly_db_error(exc)[:2000]
+                await db.commit()
                 return
-            doc.status = DocumentStatus.FAILED
-            doc.error_message = friendly_db_error(exc)[:2000]
-            await db.commit()
-            return
 
         # Review Queue sync — previously done by the API route right after
         # awaiting process_document() inline; moved here since the route
         # no longer waits for the pipeline to finish. Local import avoids
         # a module-load-time dependency for the (much more common) code
         # paths in this file that never touch the review queue.
-        from app.services import review_queue_service as review_svc
-        if doc.status == DocumentStatus.NEEDS_REVIEW:
-            item = await review_svc.create_from_document(db, doc)
-            if item is None:
+            from app.services import review_queue_service as review_svc
+            if doc.status == DocumentStatus.NEEDS_REVIEW:
+                item = await review_svc.create_from_document(db, doc)
+                if item is None:
                 # Multilingual Document Processing, Phase 6 — create_from_document()
                 # only sees extraction-field issues; a document flagged for
                 # review purely over a real OCR quality/language problem (see
@@ -1905,8 +2073,8 @@ async def _process_in_background(document_id: int, reprocess: bool, organization
                 # a visible Review Queue entry rather than none at all. Same
                 # "returns None if an open item already exists" idempotency
                 # guard as create_from_document() itself.
-                ocr_flags = (doc.ocr_result or {}).get("quality_flags") or []
-                if ocr_flags:
-                    await review_svc.create_from_ocr_quality(db, doc, ocr_flags)
-        else:
-            await review_svc.auto_resolve_for_document(db, doc.id)
+                    ocr_flags = (doc.ocr_result or {}).get("quality_flags") or []
+                    if ocr_flags:
+                        await review_svc.create_from_ocr_quality(db, doc, ocr_flags)
+            else:
+                await review_svc.auto_resolve_for_document(db, doc.id)

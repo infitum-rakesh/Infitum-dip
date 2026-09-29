@@ -221,10 +221,16 @@ def run_multilingual_ocr(
 
         # Individual single-language attempts (not the joined multi-
         # language string) — a lone script-appropriate model reads its
-        # own script far more reliably than a combined model does.
+        # own script far more reliably than a combined model does. Try
+        # detected candidates first, then every configured installed
+        # non-English model. This matters for Odia: a noisy combined pass
+        # can misread Oriya glyphs as Tamil, so relying only on the first
+        # pass' detected languages would never even try `ori`.
+        candidate_languages = [c.language for c in sorted(page_lang.languages, key=lambda c: c.confidence, reverse=True)]
+        candidate_languages.extend(code for code in effective_codes if code != "en")
         tried_codes: set[str] = set()
-        for candidate in sorted(page_lang.languages, key=lambda c: c.confidence, reverse=True)[:2]:
-            tcode = tesseract_code_for(candidate.language)
+        for language in candidate_languages:
+            tcode = tesseract_code_for(language)
             if not tcode or tcode in tried_codes or tcode not in installed:
                 continue
             tried_codes.add(tcode)

@@ -53,7 +53,13 @@ export const extractionApi = {
    * built directly from the real extraction result (no fabricated stats).
    */
   async createDataset(extractionResult) {
-    const profile = extractionResult.fields.map((f) => ({
+    const tableField = extractionResult.fields.find((f) => f.type === 'table' && Array.isArray(f.rows));
+    const headerFields = extractionResult.fields.filter((f) => f !== tableField);
+    const lineItems = tableField?.rows ?? [];
+    const profileSource = tableField
+      ? [...headerFields, ...(tableField.columns ?? []).map((name) => ({ name, value: lineItems[0]?.[name] ?? '' }))]
+      : headerFields;
+    const profile = profileSource.map((f) => ({
       column: f.name,
       type: typeof f.value === 'number' ? 'number' : 'string',
       nullable: f.value === '' || f.value == null,
@@ -64,11 +70,11 @@ export const extractionApi = {
     return {
       id: `ds_${extractionResult.id}`,
       name: `EXTRACTED_${extractionResult.documentId}_${Date.now().toString(36).toUpperCase()}`,
-      rows: 1,
-      columns: extractionResult.fields.length,
+      rows: lineItems.length || 1,
+      columns: profile.length,
       qualityScore: Math.round(extractionResult.overallConfidence ?? 0),
-      headerFields: extractionResult.fields,
-      lineItems: [],
+      headerFields,
+      lineItems,
       profile,
       createdAt: new Date().toISOString(),
     };

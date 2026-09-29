@@ -49,6 +49,9 @@ _STATUS_MAP = {
     "VOIDED": "FAILED", "DECLINED": "FAILED",
 }
 
+# PayPal Refund resource `status` -> this codebase's normalized status
+_REFUND_STATUS_MAP = {"COMPLETED": "REFUNDED", "PENDING": "PENDING", "CANCELLED": "FAILED", "FAILED": "FAILED"}
+
 
 class PayPalProvider(PaymentGatewayProvider):
     _token_cache: dict | None = None  # {"access_token": ..., "expires_at": <epoch>} — per-instance, not persisted
@@ -78,10 +81,17 @@ class PayPalProvider(PaymentGatewayProvider):
         self._token_cache = {"access_token": body["access_token"], "expires_at": time.time() + body.get("expires_in", 3600)}
         return self._token_cache["access_token"]
 
-    async def _request(self, method: str, path: str, json_body: dict | None = None) -> dict:
+    async def _request(self, method: str, path: str, json_body: dict | None = None, idempotency_key: str | None = None) -> dict:
         token = await self._access_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        if idempotency_key:
+            # PayPal's real idempotency mechanism for Orders/Captures/
+            # Refunds — a genuine network-level retry of the same call
+            # reuses this key so PayPal returns the already-created
+            # resource instead of creating a second one.
+            headers["PayPal-Request-Id"] = idempotency_key
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.request(method, f"{self._api_base()}{path}", headers={"Authorization": f"Bearer {token}"}, json=json_body)
+            resp = await client.request(method, f"{self._api_base()}{path}", headers=headers, json=json_body)
         try:
             body = resp.json() if resp.content else {}
         except ValueError:
@@ -116,7 +126,7 @@ class PayPalProvider(PaymentGatewayProvider):
                 "user_action": "PAY_NOW",
             },
         }
-        return await self._request("POST", "/v2/checkout/orders", json_body=body)
+        return await self._request("POST", "/v2/checkout/orders", json_body=body, idempotency_key=f"order-{invoice.id}")
 
     async def create_payment_link(self, *, invoice, return_url: str) -> PaymentLinkResult:
         order = await self._create_order(invoice, return_url)
@@ -131,11 +141,28 @@ class PayPalProvider(PaymentGatewayProvider):
         # Stripe distinguishes Checkout Sessions from Payment Links.
         return await self.create_payment_link(invoice=invoice, return_url=return_url)
 
+    async def capture_order(self, order_id: str) -> dict:
+        """The real, mandatory second step of PayPal's Orders API v2 with
+        intent=CAPTURE: buyer approval (CHECKOUT.ORDER.APPROVED) does NOT
+        move any money on its own — unlike Stripe's Checkout Sessions or
+        Razorpay's Payment Links, which both auto-capture on completion.
+        Without this call, an order sits at status=APPROVED forever and
+        PAYMENT.CAPTURE.COMPLETED (this codebase's PAYMENT_SUCCESS signal)
+        never fires. Wired from the webhook route's PAYMENT_PENDING
+        handling (api/payments/webhook.py) — the CHECKOUT.ORDER.APPROVED
+        delivery is the real, correct trigger point for it server-side."""
+        return await self._request(
+            "POST", f"/v2/checkout/orders/{order_id}/capture", json_body={}, idempotency_key=f"capture-{order_id}",
+        )
+
     async def verify_payment(self, gateway_reference: str) -> PaymentStatusResult:
         order = await self._request("GET", f"/v2/checkout/orders/{gateway_reference}")
         unit = (order.get("purchase_units") or [{}])[0]
         capture = ((unit.get("payments") or {}).get("captures") or [{}])[0]
-        amount = unit.get("amount", {})
+        # Prefer the capture's own amount/currency (the money that actually
+        # moved) over the purchase unit's originally ordered amount — they
+        # diverge on a partial capture.
+        amount = capture.get("amount") or unit.get("amount", {})
         return PaymentStatusResult(
             status=_STATUS_MAP.get(order.get("status"), "PENDING"), gateway_transaction_id=capture.get("id") or order.get("id"),
             amount=float(amount.get("value", 0)) if amount.get("value") else None, currency=amount.get("currency_code"),
@@ -156,13 +183,25 @@ class PayPalProvider(PaymentGatewayProvider):
         capture_id = capture.get("id")
         if not capture_id:
             raise PaymentGatewayError("No captured payment found on this PayPal order to refund.")
+        currency_code = capture.get("amount", {}).get("currency_code", "USD")
         body = {}
         if amount is not None:
-            body["amount"] = {"value": f"{amount:.2f}", "currency_code": capture.get("amount", {}).get("currency_code", "USD")}
-        refund = await self._request("POST", f"/v2/payments/captures/{capture_id}/refund", json_body=body)
+            body["amount"] = {"value": f"{amount:.2f}", "currency_code": currency_code}
+        idempotency_key = f"refund-{capture_id}-{round((amount or 0) * 100)}"
+        refund = await self._request(
+            "POST", f"/v2/payments/captures/{capture_id}/refund", json_body=body, idempotency_key=idempotency_key,
+        )
+        refund_amount = refund.get("amount") or {}
         return PaymentStatusResult(
-            status="REFUNDED" if refund.get("status") == "COMPLETED" else "PENDING",
-            gateway_transaction_id=gateway_transaction_id, raw_reference=refund,
+            # PayPal's real Refund resource status is COMPLETED, PENDING,
+            # CANCELLED, or FAILED — the old check collapsed CANCELLED/
+            # FAILED into PENDING, masking a genuinely failed refund as
+            # merely in-progress.
+            status=_REFUND_STATUS_MAP.get(refund.get("status"), "PENDING"),
+            gateway_transaction_id=gateway_transaction_id,
+            amount=float(refund_amount.get("value")) if refund_amount.get("value") else amount,
+            currency=refund_amount.get("currency_code") or currency_code,
+            raw_reference=refund,
         )
 
     async def cancel_payment(self, gateway_reference: str) -> PaymentStatusResult:

@@ -40,7 +40,14 @@ export const NODE_TYPES = {
     bg: '#ECFDF5',
     hasInput: true,
     hasOutput: false,
-    defaultConfig: { datasetName: 'output_dataset', mode: 'replace' },
+    defaultConfig: {
+      datasetName: 'output_dataset',
+      loadMode: 'FULL',
+      loadStrategy: 'CREATE_IF_NOT_EXISTS',
+      loadType: 'full',
+      fullLoadStrategy: 'create_if_not_exists',
+      mode: 'append',
+    },
   },
 
   // ── Transformation nodes ───────────────────────────────────

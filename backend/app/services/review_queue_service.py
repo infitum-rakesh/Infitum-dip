@@ -510,7 +510,15 @@ async def get_assignable_users(db: AsyncSession, organization_id: int | None) ->
 
 
 async def get_count(db: AsyncSession, organization_id: int | None) -> int:
-    stmt = select(ReviewQueueItem).where(ReviewQueueItem.status == ReviewStatus.PENDING)
+    """Backs the sidebar's Review Queue badge. Real bug found live: this
+    used to filter on status == PENDING only, while OPEN_STATUSES (PENDING/
+    IN_PROGRESS/ESCALATED) is the definition used everywhere else in this
+    file for "still needs attention" (high_priority/overdue/assigned_to_me
+    above). An item already picked up (IN_PROGRESS) or escalated is open
+    work by every one of those definitions, appears in the default list
+    view, yet was invisible to this badge — count and list disagreeing on
+    what "open" means. Now uses the same OPEN_STATUSES set."""
+    stmt = select(ReviewQueueItem).where(ReviewQueueItem.status.in_(OPEN_STATUSES))
     if organization_id is not None:
         stmt = stmt.where(ReviewQueueItem.organization_id == organization_id)
     result = await db.execute(stmt)
@@ -557,6 +565,7 @@ async def get_detail(db: AsyncSession, item: ReviewQueueItem) -> dict:
         "document_type": item.document_type,
         "document_status": doc.status.value if doc else "UNKNOWN",
         "document_preview_available": doc is not None,
+        "document_file_type": doc.doc_type.value if doc else None,
         "review_type": item.review_type.value, "issue": item.issue,
         "field_name": item.field_name, "extracted_value": item.extracted_value,
         "expected_value": item.expected_value, "confidence": item.confidence,

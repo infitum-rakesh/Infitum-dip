@@ -505,7 +505,11 @@ class TestPauseCancel:
         assert finished.success_objects == 2
         assert finished.failed_objects == 0
         assert finished.pending_objects == 0
-        assert set(calls) == {".a->.a", ".b->.b"}
+        # No schema was given for either object — build_object_key() must
+        # never splice in a leading '.' for a schema-less source/target
+        # (a real bug found live via SFDC/NetSuite, see _qualify()'s own
+        # docstring); "a->a" is the correct key, not ".a->.a".
+        assert set(calls) == {"a->a", "b->b"}
 
     async def test_cancel_mid_flight_finalizes_as_cancelled_not_completed(self, db, pipeline, make_object, fake_pool):
         """Regression test for a real bug found live during BM7: if

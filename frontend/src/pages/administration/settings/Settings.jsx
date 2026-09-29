@@ -18,7 +18,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   Building2, Database, FileScan, Sparkles, Bell, ShieldCheck, ScrollText,
   Workflow, Save, Plus, X, Lock, RefreshCcw, Fingerprint, Copy, Check,
-  CheckCircle2, ExternalLink, Server,
+  CheckCircle2, ExternalLink, Server, UploadCloud, Webhook, Eye, EyeOff,
 } from 'lucide-react';
 import { Button, PermissionGate, FullPageSpinner, EmptyState, StatusBadge } from '@/components/common/index.js';
 import { SETTINGS_PERMISSIONS, SSO_PERMISSIONS, DATABASE_PERMISSIONS } from '@/utils/constants.js';
@@ -28,6 +28,9 @@ import { ssoApi } from '@/services/api/ssoApi.js';
 import { tenantDatabaseApi } from '@/services/api/tenantDatabaseApi.js';
 import { tenantMigrationApi } from '@/services/api/tenantMigrationApi.js';
 import { documentApi } from '@/services/api/documentApi.js';
+import { documentStorageApi } from '@/services/api/documentStorageApi.js';
+import { documentWebhookApi } from '@/services/api/documentWebhookApi.js';
+import { connectionApi } from '@/services/api/connectionApi.js';
 import { TenantDatabaseTab } from '@/components/settings/TenantDatabaseTab.jsx';
 import { LANGUAGE_NAMES, languageName } from '@/utils/languageNames.js';
 import './settings.css';
@@ -37,6 +40,8 @@ const TABS = [
   { id: 'data', label: 'Data', icon: Database },
   { id: 'database', label: 'Database', icon: Server },
   { id: 'document_intelligence', label: 'Document Intelligence', icon: FileScan },
+  { id: 'processed_data_storage', label: 'Processed Data Storage', icon: UploadCloud },
+  { id: 'document_webhook', label: 'External API / Webhook', icon: Webhook },
   { id: 'ai', label: 'AI', icon: Sparkles },
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'security', label: 'Security', icon: ShieldCheck },
@@ -136,6 +141,8 @@ export default function Settings() {
         {tab === 'data' && <DataTab settings={settings} onSave={save} />}
         {tab === 'database' && <TenantDatabaseTab api={tenantDatabaseApi} migrationApi={tenantMigrationApi} editPermission={DATABASE_PERMISSIONS.DATABASE_EDIT} />}
         {tab === 'document_intelligence' && <DocumentIntelligenceTab settings={settings} onSave={save} />}
+        {tab === 'processed_data_storage' && <ProcessedDataStorageTab />}
+        {tab === 'document_webhook' && <DocumentWebhookTab />}
         {tab === 'ai' && <AITab settings={settings} onSave={save} />}
         {tab === 'notifications' && <NotificationsTab settings={settings} onSave={save} />}
         {tab === 'security' && <SecurityTab settings={settings} onSave={save} />}
@@ -510,6 +517,575 @@ function OcrDiagnosticsCard({ supportedLanguages, primaryLanguage }) {
           <pre className="docd-ocr-text" style={{ marginTop: 10, maxHeight: 200 }}>{testResult.full_text || '(no text recognized)'}</pre>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Processed Data Storage ───────────────────────────────────────
+// Independent of the OrganizationSettings JSON blob (own model/table —
+// see services/document_storage_service.py's module docstring), same
+// reasoning as SsoTab/TenantDatabaseTab above. Configures where a
+// document's processed output (OCR text, extraction fields, dataset,
+// raw AI response) gets pushed after each document finishes — separate
+// from and additive to Bring-Your-Own-Database (the Database tab),
+// which migrates the org's entire operational schema, not just
+// processed-document output.
+
+const STORAGE_MODES = [
+  { value: 'DEFAULT', label: 'Default (this app\'s own database only)' },
+  { value: 'EXTERNAL', label: 'External (also push to a connection below)' },
+];
+
+// Load Mode only applies to a DATABASE-type target (a real TABLE) — a
+// FILE target has no equivalent concept beyond "append", which
+// append_csv_row()/append_jsonl()/write_parquet_record() already do
+// unconditionally. See models/document_storage.py's ProcessedDataStorageLoadMode.
+const LOAD_MODES = [
+  { value: 'CREATE_IF_NOT_EXISTS', label: 'Create if not exists (upsert by document)' },
+  { value: 'APPEND', label: 'Append (insert only — a reprocessed document lands as a new row)' },
+  { value: 'TRUNCATE_AND_LOAD', label: 'Truncate and load (clears the table once, then upserts)' },
+  { value: 'DROP_AND_RECREATE', label: 'Drop and recreate (drops the table once, then upserts)' },
+];
+
+// File Format only applies to a FILE-type target (a Local File connection).
+const FILE_FORMATS = [
+  { value: 'JSONL', label: 'JSON Lines (.jsonl)' },
+  { value: 'CSV', label: 'CSV' },
+  { value: 'PARQUET', label: 'Parquet (one file per document)' },
+  { value: 'XML', label: 'XML (one file per document)' },
+];
+
+function ProcessedDataStorageTab() {
+  const [cfg, setCfg] = useState(null);
+  const [connections, setConnections] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+
+  const load = useCallback(() => {
+    setLoading(true); setLoadError('');
+    Promise.all([
+      documentStorageApi.get(),
+      // Every destination this feature can write to: real database
+      // connectors (Postgres/MySQL/SQL Server/Oracle/Snowflake) plus
+      // Local File for the flat-file destination — fetched separately
+      // since they're two different categories, then merged for the picker.
+      connectionApi.list({ category: 'DATABASE', page_size: 200 }),
+      connectionApi.list({ category: 'STORAGE', connection_type: 'LOCAL_FILE', page_size: 200 }),
+    ])
+      .then(([config, dbList, fileList]) => {
+        setCfg(config);
+        setConnections([...(dbList.items ?? []), ...(fileList.items ?? [])]);
+      })
+      .catch((err) => setLoadError(err?.message ?? 'Failed to load Processed Data Storage configuration.'))
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  if (loading) return <div className="stg-card"><div className="stg-card-title">Processed Data Storage</div><p className="stg-field-hint">Loading…</p></div>;
+  if (loadError || !cfg) return <div className="stg-card"><div className="stg-form-error">{loadError || 'Could not load Processed Data Storage configuration.'}</div></div>;
+
+  return <ProcessedDataStorageForm cfg={cfg} connections={connections} onSaved={setCfg} />;
+}
+
+function ProcessedDataStorageForm({ cfg, connections, onSaved }) {
+  const initial = {
+    mode: cfg.mode,
+    target_connection_id: cfg.target_connection_id,
+    target_schema: cfg.target_schema ?? '',
+    target_table: cfg.target_table,
+    load_mode: cfg.load_mode ?? 'CREATE_IF_NOT_EXISTS',
+    file_format: cfg.file_format ?? 'JSONL',
+    include_ocr_text: cfg.include_ocr_text,
+    include_extraction_fields: cfg.include_extraction_fields,
+    include_dataset: cfg.include_dataset,
+    include_ai_raw_response: cfg.include_ai_raw_response,
+  };
+  const { draft, set, dirty, reset } = useSectionDraft(initial);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+
+  const selectedConnection = connections.find((c) => c.id === draft.target_connection_id);
+
+  const handleSave = async () => {
+    setSaving(true); setError(''); setTestResult(null);
+    try {
+      const updated = await documentStorageApi.update({
+        mode: draft.mode,
+        target_connection_id: draft.target_connection_id,
+        clear_target_connection: draft.target_connection_id == null,
+        target_schema: draft.target_schema || null,
+        clear_target_schema: !draft.target_schema,
+        target_table: draft.target_table,
+        load_mode: draft.load_mode,
+        file_format: draft.file_format,
+        include_ocr_text: draft.include_ocr_text,
+        include_extraction_fields: draft.include_extraction_fields,
+        include_dataset: draft.include_dataset,
+        include_ai_raw_response: draft.include_ai_raw_response,
+      });
+      onSaved(updated);
+    } catch (err) {
+      setError(err?.response?.data?.detail ?? err?.message ?? 'Could not save Processed Data Storage settings.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const runTest = async () => {
+    setTesting(true); setTestResult(null); setError('');
+    try {
+      const result = await documentStorageApi.testConnection();
+      setTestResult(result);
+    } catch (err) {
+      setError(err?.response?.data?.detail ?? err?.message ?? 'Could not test the target connection.');
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <div className="stg-card">
+      <div className="stg-card-title">Processed Data Storage</div>
+      <p className="stg-field-hint" style={{ marginBottom: 14 }}>
+        Controls where a document's processed output (OCR text, extraction fields, dataset, raw AI response) lands
+        after it finishes processing. <strong>Default</strong> keeps it only on the document itself, in whatever
+        database this app's tenant data already lives in (see the Database tab for that). <strong>External</strong>{' '}
+        additionally pushes a flattened copy to the connection below every time a document completes — independent
+        of Bring-Your-Own-Database, which migrates this app's entire schema rather than just processed output.
+      </p>
+
+      <div className="stg-grid">
+        <Field label="Mode">
+          <Select options={STORAGE_MODES} value={draft.mode} onChange={(e) => set('mode')(e.target.value)} />
+        </Field>
+      </div>
+
+      {draft.mode === 'EXTERNAL' && (
+        <>
+          <div className="stg-subsection-title" style={{ marginTop: 0, paddingTop: 0, borderTop: 'none' }}>Target</div>
+          <div className="stg-grid">
+            <Field label="Connection" hint="A database connection (Postgres, MySQL, SQL Server, Oracle, Snowflake) or a Local File connection, configured on the Connections page.">
+              <Select
+                options={[
+                  { value: '', label: '— Select a connection —' },
+                  ...connections.map((c) => ({ value: String(c.id), label: `${c.name} (${c.connection_type})` })),
+                ]}
+                value={draft.target_connection_id != null ? String(draft.target_connection_id) : ''}
+                onChange={(e) => set('target_connection_id')(e.target.value ? Number(e.target.value) : null)}
+              />
+            </Field>
+            {selectedConnection?.connection_type !== 'LOCAL_FILE' && (
+              <Field label="Schema" hint="Optional — leave blank to use the connection's default schema.">
+                <TextInput value={draft.target_schema} onChange={(e) => set('target_schema')(e.target.value)} placeholder="e.g. public" />
+              </Field>
+            )}
+            <Field
+              label={selectedConnection?.connection_type === 'LOCAL_FILE' ? 'File path' : 'Table name'}
+              hint={selectedConnection?.connection_type === 'LOCAL_FILE'
+                ? 'Relative to the connection\'s base path.'
+                : 'Created automatically on first push if it doesn\'t already exist.'}
+            >
+              <TextInput value={draft.target_table} onChange={(e) => set('target_table')(e.target.value)} />
+            </Field>
+            {selectedConnection?.connection_type === 'LOCAL_FILE' ? (
+              <Field label="File Format" hint="JSON Lines/CSV append to the file; Parquet writes one file per document under this path.">
+                <Select options={FILE_FORMATS} value={draft.file_format} onChange={(e) => set('file_format')(e.target.value)} />
+              </Field>
+            ) : selectedConnection && (
+              <Field label="Load Mode" hint="Truncate/Drop only run ONCE, the next time a document pushes after being selected — not on every push.">
+                <Select options={LOAD_MODES} value={draft.load_mode} onChange={(e) => set('load_mode')(e.target.value)} />
+              </Field>
+            )}
+          </div>
+
+          <div className="stg-add-row" style={{ marginBottom: 4 }}>
+            <Button variant="secondary" size="sm" disabled={!draft.target_connection_id} loading={testing} onClick={runTest}>
+              Test Connection
+            </Button>
+            {testResult && (
+              <StatusBadge variant={testResult.success ? 'success' : 'danger'} dot>
+                {testResult.message}{testResult.latency_ms != null ? ` (${testResult.latency_ms}ms)` : ''}
+              </StatusBadge>
+            )}
+          </div>
+
+          <div className="stg-subsection-title">Fields to include</div>
+          <div className="stg-checkbox-list">
+            <CheckboxRow label="OCR text" description="Full recognized text and OCR confidence." checked={draft.include_ocr_text} onChange={set('include_ocr_text')} />
+            <CheckboxRow label="Extraction fields" description="AI/Custom-Engine extracted fields." checked={draft.include_extraction_fields} onChange={set('include_extraction_fields')} />
+            <CheckboxRow label="Dataset" description="The structured dataset built from this document." checked={draft.include_dataset} onChange={set('include_dataset')} />
+            <CheckboxRow label="Raw AI response" description="Verbatim raw AI model payload — larger and vendor-shaped; off by default." checked={draft.include_ai_raw_response} onChange={set('include_ai_raw_response')} />
+          </div>
+        </>
+      )}
+
+      <div className="stg-subsection-title">Last push</div>
+      <div className="stg-lang-health-row">
+        <StatusBadge variant={cfg.last_status === 'SUCCESS' ? 'success' : cfg.last_status === 'FAILED' ? 'danger' : 'gray'} dot>
+          {cfg.last_status === 'NEVER_RUN' ? 'Never run' : cfg.last_status}
+        </StatusBadge>
+        {cfg.last_pushed_document_id != null && (
+          <span className="text-muted text-sm">Document #{cfg.last_pushed_document_id}{cfg.last_pushed_at ? ` · ${formatDateTime(cfg.last_pushed_at)}` : ''}</span>
+        )}
+      </div>
+      {cfg.last_error && <p className="stg-form-error" style={{ marginTop: 8 }}>{cfg.last_error}</p>}
+
+      <SaveBar permission={SETTINGS_PERMISSIONS.SETTINGS_EDIT} dirty={dirty} saving={saving} error={error} onSave={handleSave} onReset={reset} />
+    </div>
+  );
+}
+
+// ── Document Webhook ─────────────────────────────────────────────
+// Genuinely separate feature from Processed Data Storage above — pushes
+// the same kind of processed-document payload to a customer-owned
+// external HTTP endpoint instead of a database/file, with real
+// idempotency/retry/circuit-breaker on the backend (see services/
+// document_webhook_service.py's module docstring for why this isn't a
+// third mode bolted onto Processed Data Storage).
+
+const WEBHOOK_AUTH_TYPES = [
+  { value: 'NONE', label: 'None' },
+  { value: 'API_KEY', label: 'API Key (custom header)' },
+  { value: 'BEARER', label: 'Bearer Token' },
+  { value: 'BASIC', label: 'Basic Auth (user:pass)' },
+  { value: 'OAUTH2', label: 'OAuth2 (client credentials)' },
+];
+
+const WEBHOOK_HTTP_METHODS = [
+  { value: 'POST', label: 'POST' },
+  { value: 'PUT', label: 'PUT' },
+  { value: 'PATCH', label: 'PATCH' },
+];
+
+/** Parses a textarea's "key: value" lines (one per line) into a flat
+ * object — the simplest real editor for custom_headers/field_mapping
+ * without building a dedicated repeatable-row component. Blank lines and
+ * lines without a colon are ignored; returns null (not {}) when the
+ * result would be empty, matching the backend's "no custom headers"
+ * default. Throws a descriptive Error on a genuinely malformed line
+ * (colon-less, non-blank) so the caller can surface it before saving. */
+function parseKeyValueLines(text) {
+  const result = {};
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const idx = line.indexOf(':');
+    if (idx === -1) throw new Error(`"${line}" is missing a colon — use "Key: Value" per line.`);
+    const key = line.slice(0, idx).trim();
+    const value = line.slice(idx + 1).trim();
+    if (!key) throw new Error(`"${line}" has no key before the colon.`);
+    result[key] = value;
+  }
+  return Object.keys(result).length ? result : null;
+}
+
+function keyValueLinesFromObject(obj) {
+  if (!obj) return '';
+  return Object.entries(obj).map(([k, v]) => `${k}: ${v}`).join('\n');
+}
+
+function DocumentWebhookTab() {
+  const [cfg, setCfg] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+
+  const load = useCallback(() => {
+    setLoading(true); setLoadError('');
+    documentWebhookApi.get()
+      .then(setCfg)
+      .catch((err) => setLoadError(err?.message ?? 'Failed to load webhook configuration.'))
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  if (loading) return <div className="stg-card"><div className="stg-card-title">External API / Webhook</div><p className="stg-field-hint">Loading…</p></div>;
+  if (loadError || !cfg) return <div className="stg-card"><div className="stg-form-error">{loadError || 'Could not load webhook configuration.'}</div></div>;
+
+  return <DocumentWebhookForm cfg={cfg} onSaved={setCfg} />;
+}
+
+function DocumentWebhookForm({ cfg, onSaved }) {
+  const initial = {
+    enabled: cfg.enabled,
+    url: cfg.url ?? '',
+    http_method: cfg.http_method ?? 'POST',
+    auth_type: cfg.auth_type,
+    auth_header_name: cfg.auth_header_name,
+    oauth_token_url: cfg.oauth_token_url ?? '',
+    oauth_client_id: cfg.oauth_client_id ?? '',
+    oauth_scope: cfg.oauth_scope ?? '',
+    custom_headers_text: keyValueLinesFromObject(cfg.custom_headers),
+    field_mapping_text: keyValueLinesFromObject(cfg.field_mapping),
+    timeout_seconds: cfg.timeout_seconds ?? 15,
+    include_ocr_text: cfg.include_ocr_text,
+    include_extraction_fields: cfg.include_extraction_fields,
+    include_dataset: cfg.include_dataset,
+    include_ai_raw_response: cfg.include_ai_raw_response,
+  };
+  const { draft, set, dirty: fieldsDirty, reset: resetFields } = useSectionDraft(initial);
+  const [secretInput, setSecretInput] = useState(''); // blank = leave stored secret unchanged
+  const [oauthSecretInput, setOauthSecretInput] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const [signingSecret, setSigningSecret] = useState(null);
+  const [revealingSecret, setRevealingSecret] = useState(false);
+  const [deliveries, setDeliveries] = useState(null);
+  const [deliveriesError, setDeliveriesError] = useState('');
+
+  const dirty = fieldsDirty || secretInput.trim().length > 0 || oauthSecretInput.trim().length > 0;
+  const reset = () => { resetFields(); setSecretInput(''); setOauthSecretInput(''); };
+
+  const handleSave = async () => {
+    setSaving(true); setError(''); setTestResult(null);
+    let customHeaders, fieldMapping;
+    try {
+      customHeaders = parseKeyValueLines(draft.custom_headers_text);
+      fieldMapping = parseKeyValueLines(draft.field_mapping_text);
+    } catch (err) {
+      setError(err.message);
+      setSaving(false);
+      return;
+    }
+    try {
+      const body = {
+        enabled: draft.enabled, url: draft.url || null, http_method: draft.http_method, auth_type: draft.auth_type,
+        auth_header_name: draft.auth_header_name,
+        oauth_token_url: draft.oauth_token_url || null, oauth_client_id: draft.oauth_client_id || null,
+        oauth_scope: draft.oauth_scope || null,
+        custom_headers: customHeaders, field_mapping: fieldMapping,
+        timeout_seconds: Number(draft.timeout_seconds) || 15,
+        include_ocr_text: draft.include_ocr_text, include_extraction_fields: draft.include_extraction_fields,
+        include_dataset: draft.include_dataset, include_ai_raw_response: draft.include_ai_raw_response,
+      };
+      if (secretInput.trim()) body.secret = secretInput.trim();
+      if (oauthSecretInput.trim()) body.oauth_client_secret = oauthSecretInput.trim();
+      const updated = await documentWebhookApi.update(body);
+      onSaved(updated);
+      setSecretInput('');
+      setOauthSecretInput('');
+    } catch (err) {
+      setError(err?.response?.data?.detail ?? err?.message ?? 'Could not save webhook settings.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const runTest = async () => {
+    setTesting(true); setTestResult(null); setError('');
+    try {
+      const result = await documentWebhookApi.test();
+      setTestResult(result);
+    } catch (err) {
+      setError(err?.response?.data?.detail ?? err?.message ?? 'Could not send a test delivery.');
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const revealSigningSecret = async () => {
+    if (signingSecret) { setSigningSecret(null); return; }
+    setRevealingSecret(true);
+    try {
+      const result = await documentWebhookApi.getSigningSecret();
+      setSigningSecret(result.signing_secret ?? '(none yet — enable the webhook once to generate one)');
+    } catch (err) {
+      setError(err?.message ?? 'Could not load the signing secret.');
+    } finally {
+      setRevealingSecret(false);
+    }
+  };
+
+  const loadDeliveries = async () => {
+    setDeliveriesError('');
+    try {
+      const result = await documentWebhookApi.listDeliveries({ limit: 20 });
+      setDeliveries(result.items);
+    } catch (err) {
+      setDeliveriesError(err?.message ?? 'Could not load delivery history.');
+    }
+  };
+
+  return (
+    <div className="stg-card">
+      <div className="stg-card-title">External API / Webhook</div>
+      <p className="stg-field-hint" style={{ marginBottom: 14 }}>
+        Pushes a document's processed output (OCR text, extraction fields, dataset, raw AI response) to a URL you
+        control, right after each document finishes — a real HTTP POST with automatic retry and a circuit breaker if
+        your endpoint is down, distinct from Processed Data Storage above (which writes to a database or file).
+        Every delivery is signed with HMAC-SHA256 (see the signing secret below) so your endpoint can verify it
+        genuinely came from this platform.
+      </p>
+
+      <div className="stg-checkbox-list" style={{ marginBottom: 4 }}>
+        <CheckboxRow
+          label="Enable webhook delivery" checked={draft.enabled} onChange={set('enabled')}
+          description="Sends a real HTTP POST to the URL below after every document that finishes processing."
+        />
+      </div>
+
+      <div className="stg-grid">
+        <Field label="Webhook URL">
+          <TextInput value={draft.url} onChange={(e) => set('url')(e.target.value)} placeholder="https://your-app.example.com/webhooks/documents" />
+        </Field>
+        <Field label="HTTP Method">
+          <Select options={WEBHOOK_HTTP_METHODS} value={draft.http_method} onChange={(e) => set('http_method')(e.target.value)} />
+        </Field>
+        <Field label="Auth Type">
+          <Select options={WEBHOOK_AUTH_TYPES} value={draft.auth_type} onChange={(e) => set('auth_type')(e.target.value)} />
+        </Field>
+        {draft.auth_type === 'API_KEY' && (
+          <Field label="Header Name">
+            <TextInput value={draft.auth_header_name} onChange={(e) => set('auth_header_name')(e.target.value)} placeholder="X-API-Key" />
+          </Field>
+        )}
+        <Field label="Timeout (seconds)" hint="How long to wait for the endpoint to respond before treating the attempt as failed.">
+          <input
+            type="number" min="1" className="stg-input" value={draft.timeout_seconds}
+            onChange={(e) => set('timeout_seconds')(e.target.value)}
+          />
+        </Field>
+      </div>
+
+      {draft.auth_type !== 'NONE' && draft.auth_type !== 'OAUTH2' && (
+        <Field
+          label={draft.auth_type === 'BASIC' ? 'Secret (user:pass)' : draft.auth_type === 'BEARER' ? 'Bearer Token' : 'API Key Value'}
+          hint={cfg.has_secret ? 'Leave blank to keep the current secret, or type a new one to replace it.' : 'Required before enabling this auth type.'}
+        >
+          <input
+            type="password" className="stg-input" value={secretInput} onChange={(e) => setSecretInput(e.target.value)}
+            placeholder={cfg.has_secret ? '••••••••••••' : 'Enter secret'}
+          />
+        </Field>
+      )}
+
+      {draft.auth_type === 'OAUTH2' && (
+        <>
+          <div className="stg-subsection-title" style={{ marginTop: 0, paddingTop: 0, borderTop: 'none' }}>OAuth2 client credentials</div>
+          <div className="stg-grid">
+            <Field label="Token URL">
+              <TextInput value={draft.oauth_token_url} onChange={(e) => set('oauth_token_url')(e.target.value)} placeholder="https://auth.example.com/oauth/token" />
+            </Field>
+            <Field label="Client ID">
+              <TextInput value={draft.oauth_client_id} onChange={(e) => set('oauth_client_id')(e.target.value)} />
+            </Field>
+            <Field
+              label="Client Secret"
+              hint={cfg.has_oauth_client_secret ? 'Leave blank to keep the current secret, or type a new one to replace it.' : 'Required before enabling OAuth2.'}
+            >
+              <input
+                type="password" className="stg-input" value={oauthSecretInput} onChange={(e) => setOauthSecretInput(e.target.value)}
+                placeholder={cfg.has_oauth_client_secret ? '••••••••••••' : 'Enter client secret'}
+              />
+            </Field>
+            <Field label="Scope" hint="Optional — space-separated OAuth2 scopes, if the token endpoint requires one.">
+              <TextInput value={draft.oauth_scope} onChange={(e) => set('oauth_scope')(e.target.value)} />
+            </Field>
+          </div>
+        </>
+      )}
+
+      <div className="stg-add-row" style={{ marginBottom: 4 }}>
+        <Button variant="secondary" size="sm" disabled={!draft.url} loading={testing} onClick={runTest}>
+          Test Webhook
+        </Button>
+        {testResult && (
+          <StatusBadge variant={testResult.success ? 'success' : 'danger'} dot>
+            {testResult.success ? 'Delivered' : 'Failed'}{testResult.status_code != null ? ` (HTTP ${testResult.status_code})` : ''}
+          </StatusBadge>
+        )}
+      </div>
+      {testResult && !testResult.success && testResult.response_body && (
+        <p className="stg-form-error" style={{ marginTop: 4 }}>{testResult.response_body}</p>
+      )}
+
+      <div className="stg-subsection-title">Custom headers</div>
+      <p className="stg-field-hint" style={{ marginTop: 0 }}>
+        One header per line, as <code>Name: Value</code>. Applied to every delivery — can never override the
+        idempotency key, content type, auth, or signature headers this feature sets itself.
+      </p>
+      <textarea
+        className="stg-textarea" rows={3} value={draft.custom_headers_text}
+        onChange={(e) => set('custom_headers_text')(e.target.value)}
+        placeholder={'X-Tenant-Id: acme\nX-Source: dip-platform'}
+      />
+
+      <div className="stg-subsection-title">Field mapping</div>
+      <p className="stg-field-hint" style={{ marginTop: 0 }}>
+        Renames outbound JSON keys before sending, as <code>original_key: renamed_key</code> — one per line. A key
+        not listed here is sent under its original name.
+      </p>
+      <textarea
+        className="stg-textarea" rows={3} value={draft.field_mapping_text}
+        onChange={(e) => set('field_mapping_text')(e.target.value)}
+        placeholder={'document_id: docId\nfilename: fileName'}
+      />
+
+      <div className="stg-subsection-title">Fields to include</div>
+      <div className="stg-checkbox-list">
+        <CheckboxRow label="OCR text" description="Full recognized text and OCR confidence." checked={draft.include_ocr_text} onChange={set('include_ocr_text')} />
+        <CheckboxRow label="Extraction fields" description="AI/Custom-Engine extracted fields." checked={draft.include_extraction_fields} onChange={set('include_extraction_fields')} />
+        <CheckboxRow label="Dataset" description="The structured dataset built from this document." checked={draft.include_dataset} onChange={set('include_dataset')} />
+        <CheckboxRow label="Raw AI response" description="Verbatim raw AI model payload — larger and vendor-shaped; off by default." checked={draft.include_ai_raw_response} onChange={set('include_ai_raw_response')} />
+      </div>
+
+      <div className="stg-subsection-title">Signing secret</div>
+      <p className="stg-field-hint" style={{ marginTop: 0 }}>
+        Every delivery carries an <code>X-Signature</code> header — HMAC-SHA256 of the request body, using this
+        secret. Verify it on your endpoint to confirm a delivery genuinely came from this platform.
+      </p>
+      <div className="stg-add-row">
+        <Button variant="secondary" size="sm" loading={revealingSecret} onClick={revealSigningSecret}>
+          {signingSecret ? <><EyeOff size={14} /> Hide</> : <><Eye size={14} /> Reveal signing secret</>}
+        </Button>
+      </div>
+      {signingSecret && <div className="stg-cert-status set" style={{ marginTop: 8, wordBreak: 'break-all' }}>{signingSecret}</div>}
+
+      <div className="stg-subsection-title">Last delivery</div>
+      <div className="stg-lang-health-row">
+        <StatusBadge variant={cfg.last_status === 'SUCCESS' ? 'success' : cfg.last_status === 'FAILED' ? 'danger' : 'gray'} dot>
+          {cfg.last_status === 'NEVER_RUN' ? 'Never run' : cfg.last_status}
+        </StatusBadge>
+        {cfg.last_pushed_document_id != null && (
+          <span className="text-muted text-sm">Document #{cfg.last_pushed_document_id}{cfg.last_pushed_at ? ` · ${formatDateTime(cfg.last_pushed_at)}` : ''}</span>
+        )}
+      </div>
+      {cfg.last_error && <p className="stg-form-error" style={{ marginTop: 8 }}>{cfg.last_error}</p>}
+
+      <div className="stg-subsection-title">Delivery history</div>
+      {deliveries === null ? (
+        <Button variant="secondary" size="sm" onClick={loadDeliveries}>Load delivery history</Button>
+      ) : (
+        <>
+          {deliveriesError && <p className="stg-form-error">{deliveriesError}</p>}
+          {deliveries.length === 0 ? (
+            <p className="stg-field-hint">No delivery attempts yet.</p>
+          ) : (
+            <table className="stg-table">
+              <thead>
+                <tr><th>Document</th><th>Attempt</th><th>Status</th><th>HTTP</th><th>Error</th><th>When</th></tr>
+              </thead>
+              <tbody>
+                {deliveries.map((d) => (
+                  <tr key={d.id}>
+                    <td>#{d.document_id}</td>
+                    <td>{d.attempt_number}</td>
+                    <td><StatusBadge variant={d.status === 'SUCCEEDED' ? 'success' : d.status === 'DEAD_LETTER' ? 'danger' : d.status === 'RETRYING' ? 'warning' : 'gray'} dot>{d.status}</StatusBadge></td>
+                    <td>{d.http_status_code ?? '—'}</td>
+                    <td className="text-muted text-sm">{d.error_message ?? '—'}</td>
+                    <td className="text-muted text-sm">{formatDateTime(d.created_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
+
+      <SaveBar permission={SETTINGS_PERMISSIONS.SETTINGS_EDIT} dirty={dirty} saving={saving} error={error} onSave={handleSave} onReset={reset} />
     </div>
   );
 }

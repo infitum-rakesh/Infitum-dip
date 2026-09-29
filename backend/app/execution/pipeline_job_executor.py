@@ -13,9 +13,19 @@ connections (Postgres/MySQL/SQL Server/Oracle/Snowflake/SAP/Vertica/
 Fabric/NetSuite SuiteQL) AND for Salesforce, a TABLE/VIEW/QUERY source now
 reads EXHAUSTIVELY via the same chunked open_sql_stream()/fetch_chunk()
 primitive execution/worker.py's "Run Extraction" engine uses — no silent
-row truncation — up to SOURCE_ROW_HARD_CAP as an in-memory safety ceiling
-(this engine still isn't a distributed/spilling engine, so *some* ceiling
-has to exist, but it's 40x the old cap). Streaming is a generic capability
+row truncation. A plain [source, *row-wise transforms, target] shape runs
+through the real interleaved streaming fast path below (_execute_streaming_
+chain) instead, which is genuinely O(chunk size) memory — extract and load
+happen chunk-by-chunk, nothing ever accumulates — so it has NO row cap at
+all; SOURCE_ROW_HARD_CAP only still applies to the older, full-buffering
+per-node engine (used when the pipeline needs a whole-dataset operation —
+sort/aggregate/dedupe/join — or a non-streaming target), where it remains
+a real in-memory safety ceiling since that engine still isn't a
+distributed/spilling engine (real bug found+fixed live 2026-09-16: this
+cap used to also apply inside the streaming fast path itself, silently
+truncating a genuinely unbounded SFDC -> Oracle extraction at exactly
+2,000,000 rows even though nothing was actually being buffered — removed
+there entirely). Streaming is a generic capability
 check (connector.build_select_all_sql() — see connectors/base.py), NOT
 gated on the SQL-only quote_object()/quote_identifier() concept the way an
 earlier version of this engine mistakenly was — that earlier gate silently
@@ -35,8 +45,9 @@ Node types executed for real:
                        (see _stream_all_rows), or the connector's bounded
                        preview_object/preview_sql for connectors that
                        don't support streaming — or an uploaded
-                       PipelineSourceFile (CSV/TSV/Excel/JSON read
-                       directly with pandas).
+                       PipelineSourceFile (CSV/TSV/Excel/JSON/XML/Parquet
+                       read directly with pandas, or via
+                       connectors/files/xml_format.py for XML).
   filter, select, rename, cast, sort, deduplicate, calculated,
   conditional, mapping, aggregate                 real pandas transforms.
   join, lookup         real pandas merge — the right-hand dataset is
@@ -160,6 +171,8 @@ from __future__ import annotations
 import asyncio
 import io
 import re
+import threading
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -169,7 +182,8 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.connectors.base import ConnectorError, ConnectorUnsupportedError
+import app.models  # ensure all ORM mappers are initialized
+from app.connectors.base import ColumnInfo, ConnectorError, ConnectorUnsupportedError
 from app.database import tenant_engine_registry
 from app.execution import mapping_execution
 from app.loading import scd
@@ -179,16 +193,25 @@ from app.models.connection import Connection
 from app.models.pipeline import PipelineVersion
 from app.models.pipeline_job import JobStatus, PipelineJob, PipelineJobLog
 from app.models.rejected_record import RejectSourceType
-from app.services import pipeline_file_service, reject_service
+from app.services import pipeline_file_service, pipeline_job_service, reject_service
 from app.services.connection_service import build_connector, get_connection
 
 SOURCE_ROW_CAP = 50_000  # bounded single-shot preview cap — only still used as a
 # fallback for connectors that don't support open_sql_stream (Salesforce, generic
 # SOAP/REST, files); see _stream_all_rows below for the real path.
-SOURCE_ROW_HARD_CAP = 2_000_000  # in-memory safety ceiling for the streamed path —
-# this engine loads a whole source into one pandas DataFrame (it isn't a
-# spilling/distributed engine), so some ceiling has to exist, but this one is
-# 40x SOURCE_ROW_CAP and disclosed via the same WARN log line if it's ever hit.
+SOURCE_ROW_HARD_CAP = 25_000_000  # in-memory safety ceiling for the OLDER,
+# full-buffering per-node engine only (_run_source/_stream_all_rows below) —
+# used when a pipeline needs a whole-dataset node (sort/aggregate/dedupe/join)
+# or a non-DB target, so it genuinely still loads one source into one pandas
+# DataFrame and needs *some* ceiling. The real streaming fast path
+# (_execute_streaming_chain — a plain [source, *row-wise transforms, target]
+# pipeline, e.g. a straightforward SFDC -> Oracle extraction) is O(chunk
+# size) memory and has NO cap at all as of 2026-09-16 — see that function's
+# own comment for the real production bug this fixed (a genuinely unbounded
+# extraction was silently truncated at exactly 2,000,000 rows even though
+# nothing was ever actually buffered). Raised from 2,000,000 to 25,000,000
+# here too, for the pipelines that still do need real buffering, disclosed
+# via the same WARN log line if it's ever hit.
 SOURCE_STREAM_CHUNK_SIZE = 20_000
 OUTPUT_BASE_PATH = "pipeline_outputs"  # relative to the backend process cwd
 
@@ -196,6 +219,7 @@ DI_NODE_TYPES = {"doc_input", "image_scanner", "ocr_engine", "ai_extraction", "s
 
 _running_tasks: dict[int, asyncio.Task] = {}
 _cancelled: set[int] = set()
+_cancel_events: dict[int, threading.Event] = {}
 # job_id -> organization_id, set once in start_job() (before the task even
 # starts) and read by every _log/_update_node_stats/_finish call below —
 # avoids threading organization_id through all ~47 of those call sites
@@ -208,18 +232,107 @@ class NodeExecutionError(Exception):
     """A node failed in a way that should stop the whole job."""
 
 
+@dataclass(frozen=True)
+class TargetLoadConfig:
+    load_mode: str
+    load_strategy: str
+    create_table: bool
+    drop_existing: bool
+    truncate_first: bool
+    write_mode: str
+
+    def as_log_dict(self) -> dict:
+        return {
+            "loadMode": self.load_mode,
+            "loadStrategy": self.load_strategy,
+            "createTable": self.create_table,
+            "dropExisting": self.drop_existing,
+            "truncateFirst": self.truncate_first,
+            "writeMode": self.write_mode,
+        }
+
+
+def normalize_target_load_config(cfg: dict | None) -> TargetLoadConfig:
+    cfg = cfg or {}
+    canonical_mode = str(cfg.get("loadMode") or "").upper()
+    canonical_strategy = str(cfg.get("loadStrategy") or "").upper()
+
+    if canonical_mode:
+        if canonical_mode == "APPEND":
+            return TargetLoadConfig("APPEND", "APPEND", False, False, False, "insert")
+        if canonical_mode == "FULL":
+            if canonical_strategy in ("DROP_AND_CREATE", "DROP_RECREATE"):
+                return TargetLoadConfig("FULL", "DROP_AND_CREATE", True, True, False, "insert")
+            if canonical_strategy in ("TRUNCATE_AND_LOAD", "TRUNCATE_LOAD"):
+                return TargetLoadConfig("FULL", "TRUNCATE_AND_LOAD", True, False, True, "insert")
+            if canonical_strategy in ("CREATE_IF_NOT_EXISTS", "CREATE_IF_MISSING"):
+                return TargetLoadConfig("FULL", "CREATE_IF_NOT_EXISTS", True, False, False, "insert")
+            raise NodeExecutionError("Invalid target load configuration: FULL load requires a valid loadStrategy.")
+        if canonical_mode == "DELTA":
+            return TargetLoadConfig("DELTA", canonical_strategy or str(cfg.get("deltaStrategy") or "scd1").upper(), False, False, False, "merge")
+        raise NodeExecutionError(f"Invalid target load configuration: unknown loadMode '{canonical_mode}'.")
+
+    load_type = str(cfg.get("loadType") or "full").lower()
+    full_strategy = str(cfg.get("fullLoadStrategy") or "").lower()
+
+    if load_type == "delta":
+        return TargetLoadConfig(
+            load_mode="DELTA",
+            load_strategy=str(cfg.get("deltaStrategy") or "scd1").upper(),
+            create_table=False,
+            drop_existing=False,
+            truncate_first=False,
+            write_mode="merge",
+        )
+
+    if full_strategy:
+        if full_strategy == "drop_recreate":
+            return TargetLoadConfig("FULL", "DROP_AND_CREATE", True, True, False, "insert")
+        if full_strategy == "truncate_load":
+            return TargetLoadConfig("FULL", "TRUNCATE_AND_LOAD", True, False, True, "insert")
+        if full_strategy == "append":
+            return TargetLoadConfig("APPEND", "APPEND", False, False, False, "insert")
+        if full_strategy == "create_if_not_exists":
+            return TargetLoadConfig("FULL", "CREATE_IF_NOT_EXISTS", True, False, False, "insert")
+        raise NodeExecutionError(f"Invalid target load configuration: unknown full-load strategy '{full_strategy}'.")
+
+    mode = str(cfg.get("mode") or "replace").lower()
+    if bool(cfg.get("dropAndRecreate")):
+        return TargetLoadConfig("FULL", "DROP_AND_CREATE", True, True, False, "insert")
+    if mode in ("replace", "truncate", "truncate_load"):
+        return TargetLoadConfig(
+            "FULL", "TRUNCATE_AND_LOAD",
+            bool(cfg.get("createIfNotExists", True)), False, True, "insert",
+        )
+    if mode in ("append", "insert"):
+        return TargetLoadConfig(
+            "APPEND", "APPEND",
+            bool(cfg.get("createIfNotExists", False)), False, False, "insert",
+        )
+    if mode in ("upsert", "merge"):
+        return TargetLoadConfig("DELTA", "SCD1", False, False, False, "merge")
+    raise NodeExecutionError(f"Invalid target load configuration: unknown mode '{mode}'.")
+
+
 def is_running(job_id: int) -> bool:
     return job_id in _running_tasks
 
 
 def is_cancelled(job_id: int) -> bool:
-    return job_id in _cancelled
+    if job_id in _cancelled:
+        return True
+    evt = _cancel_events.get(job_id)
+    return evt.is_set() if evt else False
 
 
 def request_cancel(job_id: int) -> bool:
-    if job_id not in _running_tasks:
-        return False
     _cancelled.add(job_id)
+    evt = _cancel_events.get(job_id)
+    if evt:
+        evt.set()
+    task = _running_tasks.get(job_id)
+    if task and not task.done():
+        task.cancel()
     return True
 
 
@@ -229,26 +342,49 @@ def start_job(job_id: int, organization_id: int | None) -> None:
     organization_id comes from the job row the caller already has in hand —
     recorded here (see _job_org_cache above) before the task even starts."""
     _job_org_cache[job_id] = organization_id
+    _cancel_events[job_id] = threading.Event()
     task = asyncio.create_task(_execute(job_id, organization_id))
     _running_tasks[job_id] = task
-    task.add_done_callback(lambda _t: _running_tasks.pop(job_id, None))
+    def _cleanup(_t):
+        _running_tasks.pop(job_id, None)
+        _cancel_events.pop(job_id, None)
+    task.add_done_callback(_cleanup)
 
 
 # ── Logging / stats helpers ─────────────────────────────────────────
 
 async def _log(job_id: int, level: str, message: str, node_id: str | None = None) -> None:
-    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(_job_org_cache.get(job_id))
-    async with sessionmaker() as db:
-        db.add(PipelineJobLog(job_id=job_id, level=level, node_id=node_id, message=str(message)[:2000]))
-        await db.commit()
+    try:
+        sessionmaker = await tenant_engine_registry.get_background_sessionmaker(_job_org_cache.get(job_id))
+        async with sessionmaker() as db:
+            db.add(PipelineJobLog(job_id=job_id, level=level, node_id=node_id, message=str(message)[:2000]))
+            await db.commit()
+    except Exception as exc:
+        print(f"[pipeline_job_executor] Log error for job {job_id}: {exc}", flush=True)
 
 
 async def _update_node_stats(job_id: int, node_id: str, patch: dict) -> None:
     sessionmaker = await tenant_engine_registry.get_background_sessionmaker(_job_org_cache.get(job_id))
     async with sessionmaker() as db:
         job = await db.get(PipelineJob, job_id)
+        if job is None:
+            return
         stats = dict(job.node_stats or {})
         stats[node_id] = {**stats.get(node_id, {}), **patch}
+        job.node_stats = stats
+        flag_modified(job, "node_stats")
+        await db.commit()
+
+
+async def _update_job_metrics(job_id: int, patch: dict) -> None:
+    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(_job_org_cache.get(job_id))
+    async with sessionmaker() as db:
+        job = await db.get(PipelineJob, job_id)
+        if job is None:
+            return
+        stats = dict(job.node_stats or {})
+        metrics = dict(stats.get("__metrics__") or {})
+        stats["__metrics__"] = {**metrics, **patch}
         job.node_stats = stats
         flag_modified(job, "node_stats")
         await db.commit()
@@ -258,13 +394,26 @@ async def _finish(job_id: int, status: JobStatus, *, error_message: str | None =
     sessionmaker = await tenant_engine_registry.get_background_sessionmaker(_job_org_cache.get(job_id))
     async with sessionmaker() as db:
         job = await db.get(PipelineJob, job_id)
-        job.status = status
-        job.completed_at = datetime.now(timezone.utc)
-        if error_message is not None:
-            job.error_message = error_message
-        if records_out is not None:
-            job.records_out = records_out
-        await db.commit()
+        if job is not None:
+            job.status = status
+            job.completed_at = datetime.now(timezone.utc)
+            if error_message is not None:
+                job.error_message = error_message
+            if records_out is not None:
+                job.records_out = records_out
+
+            stats = dict(job.node_stats or {})
+            metrics = dict(stats.get("__metrics__") or {})
+            if status == JobStatus.SUCCEEDED:
+                metrics["stage"] = "COMPLETED"
+            elif status == JobStatus.FAILED:
+                metrics["stage"] = "FAILED"
+            elif status == JobStatus.CANCELLED:
+                metrics["stage"] = "ABORTED"
+            stats["__metrics__"] = metrics
+            job.node_stats = stats
+            flag_modified(job, "node_stats")
+            await db.commit()
 
     # Monitoring integration seam — SLA evaluation, alert rules, and
     # auto-Incident-on-failure all hang off this one call. Runs in its own
@@ -405,6 +554,16 @@ async def _run_source(job_id, node_id, cfg, organization_id, cache):
                 df = pd.read_json(io.BytesIO(content))
             elif ext == "jsonl":
                 df = pd.read_json(io.BytesIO(content), lines=True)
+            elif ext == "xml":
+                # Reuses connectors/files/xml_format.py's iter_rows — same
+                # record-boundary convention (root's direct children are
+                # records, attributes become "@attr" columns) an XML file
+                # already gets when read via a connection instead of an
+                # upload, so both paths produce identically-shaped rows.
+                from app.connectors.files.xml_format import iter_rows as _xml_iter_rows
+                df = pd.DataFrame(list(_xml_iter_rows(io.BytesIO(content))))
+            elif ext == "parquet":
+                df = pd.read_parquet(io.BytesIO(content))
             else:
                 raise NodeExecutionError(f"Uploaded file type '.{ext}' isn't readable by the pipeline engine.")
         except NodeExecutionError:
@@ -422,6 +581,7 @@ async def _run_source(job_id, node_id, cfg, organization_id, cache):
     conn, connector = await _resolve_connector(connection_id, organization_id, cache)
 
     cap_note = SOURCE_ROW_CAP
+    source_columns = None
     try:
         if cfg.get("objectType") == "API":
             endpoint = cfg.get("apiEndpoint")
@@ -457,6 +617,11 @@ async def _run_source(job_id, node_id, cfg, organization_id, cache):
             if not object_name:
                 raise NodeExecutionError("Source Dataset node has no object/table selected.")
             schema = cfg.get("schema") or None
+            if hasattr(connector, "get_columns"):
+                try:
+                    source_columns = await asyncio.to_thread(connector.get_columns, object_name, schema)
+                except Exception:
+                    source_columns = None
             # build_select_all_sql() (connectors/base.py) is the generic
             # capability check for "can this connector genuinely stream
             # this object exhaustively" — SQL-dialect connectors quote the
@@ -501,6 +666,8 @@ async def _run_source(job_id, node_id, cfg, organization_id, cache):
     if truncated:
         await _log(job_id, "WARN", f"Source has more than {cap_note} rows — truncated to the first {cap_note} (this engine's per-source cap).", node_id)
     df = pd.DataFrame(rows, columns=columns)
+    if source_columns:
+        df.attrs["source_columns"] = source_columns
     return df, connection_id
 
 
@@ -1259,27 +1426,104 @@ async def _run_invoice_reconciliation(job_id, node_id, df, organization_id) -> t
     return out, ("warning" if mismatches else "success")
 
 
+def _dataframe_to_xml_bytes(df: pd.DataFrame) -> bytes:
+    """Hand-rolled via stdlib xml.etree.ElementTree, not pandas.to_xml() —
+    to_xml()'s default parser is lxml, which isn't a project dependency
+    (unlike pyarrow for parquet below); ElementTree needs nothing extra
+    and matches services/sql_export_writers.py's XmlChunkWriter root/row
+    element convention (root="rows", row="row") used by the standalone
+    Format Conversion page, for a consistent look across both features."""
+    import xml.etree.ElementTree as ET
+
+    root = ET.Element("rows")
+    for _, row in df.iterrows():
+        row_el = ET.SubElement(root, "row")
+        for col, val in row.items():
+            child = ET.SubElement(row_el, str(col))
+            if val is not None and not (isinstance(val, float) and pd.isna(val)):
+                child.text = val.isoformat() if isinstance(val, (date, datetime)) else str(val)
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
 def _serialize_dataframe(df: pd.DataFrame, file_type: str, delimiter: str = ",") -> bytes:
     """Shared by the 'file' (local disk) and 'sftp' (remote upload) target
     branches below — same real pandas serialization either way, only the
     destination differs. Whole-file-in-memory, same disclosed bound as
     every other in-memory target in this engine (SOURCE_ROW_CAP-sized
-    DataFrames, not a streaming writer)."""
+    DataFrames, not a streaming writer).
+
+    Real gap found live: this only ever emitted CSV/Excel/JSON — a user
+    building a pipeline in Transform Workspace had no way to write XML or
+    Parquet output, even though the standalone Format Conversion page
+    (services/sql_export_writers.py) already writes both. XML reuses that
+    page's root/row element convention (not its ChunkWriter class, since
+    this function serializes an already-materialized DataFrame rather than
+    a RowSource's chunk stream); Parquet reuses the same pyarrow dependency
+    via pandas.DataFrame.to_parquet() — same Decimal/datetime->float/string
+    lossiness disclosed in ParquetChunkWriter's own docstring applies here
+    too, since pandas' pyarrow engine has the same underlying limitation."""
     buf = io.BytesIO()
     if file_type == "excel":
         df.to_excel(buf, index=False)
     elif file_type == "json":
         buf.write(df.to_json(orient="records", indent=2).encode())
+    elif file_type == "xml":
+        buf.write(_dataframe_to_xml_bytes(df))
+    elif file_type == "parquet":
+        df.to_parquet(buf, index=False)
     else:
         buf.write(df.to_csv(index=False, sep=delimiter).encode())
     return buf.getvalue()
 
 
 def _file_ext(file_type: str) -> str:
-    return {"csv": "csv", "excel": "xlsx", "json": "json"}.get(file_type, "csv")
+    return {"csv": "csv", "excel": "xlsx", "json": "json", "xml": "xml", "parquet": "parquet"}.get(file_type, "csv")
 
 
-async def _run_target(job_id, node_id, df, cfg, organization_id, primary_connection_id, cache, pipeline_id, job_id_for_path):
+def _metadata_columns_for_dataframe(source_columns: list[ColumnInfo] | None, df: pd.DataFrame) -> list[ColumnInfo] | None:
+    if not source_columns or df is None or len(df.columns) == 0:
+        return None
+    by_name = {str(c.name).lower(): c for c in source_columns}
+    resolved: list[ColumnInfo] = []
+    for name in df.columns:
+        col = by_name.get(str(name).lower())
+        if col is None:
+            return None
+        resolved.append(col)
+    return resolved
+
+
+async def _log_effective_target_config(
+    job_id: int,
+    node_id: str,
+    target_conn: Connection,
+    schema: str | None,
+    table: str,
+    load_config: TargetLoadConfig,
+    *,
+    batch_size: int,
+    insert_method: str,
+) -> None:
+    env = target_conn.environment.value if hasattr(target_conn.environment, "value") else str(target_conn.environment or "Default")
+    target_name = f"{schema}.{table}" if schema else table
+    await _log(job_id, "INFO", "=" * 60, node_id)
+    await _log(job_id, "INFO", "EFFECTIVE TARGET CONFIGURATION", node_id)
+    await _log(job_id, "INFO", "=" * 60, node_id)
+    await _log(job_id, "INFO", f"Connection: {target_conn.name}", node_id)
+    await _log(job_id, "INFO", f"Database Type: {target_conn.connection_type.value}", node_id)
+    await _log(job_id, "INFO", f"Environment: {env}", node_id)
+    await _log(job_id, "INFO", f"Target: {target_name}", node_id)
+    await _log(job_id, "INFO", f"Load Mode: {load_config.load_mode}", node_id)
+    await _log(job_id, "INFO", f"Load Strategy: {load_config.load_strategy}", node_id)
+    await _log(job_id, "INFO", f"Drop Existing: {'YES' if load_config.drop_existing else 'NO'}", node_id)
+    await _log(job_id, "INFO", f"Create Table: {'YES' if load_config.create_table else 'NO'}", node_id)
+    await _log(job_id, "INFO", f"Truncate First: {'YES' if load_config.truncate_first else 'NO'}", node_id)
+    await _log(job_id, "INFO", f"Batch Size: {batch_size:,}", node_id)
+    await _log(job_id, "INFO", f"Insert Method: {insert_method.upper()}", node_id)
+    await _log(job_id, "INFO", "=" * 60, node_id)
+
+
+async def _run_target(job_id, node_id, df, cfg, organization_id, primary_connection_id, cache, pipeline_id, job_id_for_path, source_columns=None):
     """Returns (df, output_file, rejected) — output_file is the path of
     the file just written, RELATIVE to OUTPUT_BASE_PATH (e.g.
     '3/node_xyz/out.csv'), for file targets; None for dataset/sftp/api
@@ -1365,7 +1609,7 @@ async def _run_target(job_id, node_id, df, cfg, organization_id, primary_connect
     # intended target, and the fallback is what let a file-sourced
     # pipeline — e.g. Document Intelligence's "Continue to Transformation"
     # output — end up with literally no way to choose a database).
-    dataset_name = cfg.get("datasetName")
+    dataset_name = (cfg.get("datasetName") or "").strip().strip('"\'')
     if not dataset_name:
         raise NodeExecutionError("Dataset target has no dataset/table name configured.")
     target_connection_id = cfg.get("connectionId") or primary_connection_id
@@ -1428,26 +1672,11 @@ async def _run_target(job_id, node_id, df, cfg, organization_id, primary_connect
             raise NodeExecutionError(f"SCD merge failed for target table '{dataset_name}': {connector._scrub(str(exc))}") from exc
         return df, None, []
 
-    # ── Full load ──────────────────────────────────────────────────
-    # fullLoadStrategy (new Load Strategy panel) maps onto the same two
-    # internal levers (create_if_missing/drop_recreate + append-vs-
-    # truncate mode) the engine already had — see §5 of the load-strategy
-    # spec. Pipelines saved before that panel existed have no
-    # fullLoadStrategy field at all and keep running exactly as before,
-    # straight off their raw `mode`/`createIfNotExists`/`dropAndRecreate`
-    # config (never silently reinterpreted).
-    full_strategy = cfg.get("fullLoadStrategy")
-    if full_strategy:
-        create_if_missing = full_strategy in ("create_if_not_exists", "truncate_load", "append")
-        drop_recreate = full_strategy == "drop_recreate"
-        mode = "replace" if full_strategy == "truncate_load" else "append"
-    else:
-        mode = cfg.get("mode", "replace")
-        if mode in ("upsert", "merge"):
-            await _log(job_id, "WARN", "Dataset target has no key-column configuration on this node type — treating upsert/merge as append.", node_id)
-            mode = "append"
-        create_if_missing = cfg.get("createIfNotExists", True)
-        drop_recreate = bool(cfg.get("dropAndRecreate", False))
+    load_config = normalize_target_load_config(cfg)
+    await _log_effective_target_config(
+        job_id, node_id, conn, None, dataset_name, load_config,
+        batch_size=5000, insert_method="bulk",
+    )
 
     # Create/recreate the target table from the real DataFrame's dtypes
     # (loading/writers/base.py's ensure_table — generic across every
@@ -1458,8 +1687,29 @@ async def _run_target(job_id, node_id, df, cfg, organization_id, primary_connect
     # dropAndRecreate fields directly.
     table_status = "exists"
     try:
-        if create_if_missing or drop_recreate:
-            table_status = await asyncio.to_thread(writer.ensure_table, None, dataset_name, df, recreate=drop_recreate)
+        if load_config.create_table or load_config.drop_existing:
+            await _update_job_metrics(job_id, {
+                "stage": "PREPARING_TARGET",
+                "processed": len(df),
+                "loaded": 0,
+            })
+            if load_config.drop_existing:
+                await _log(job_id, "WARN", f"Drop + Recreate selected for target table '{dataset_name}' — existing table will be dropped before load if it exists.", node_id)
+            source_cols = _metadata_columns_for_dataframe(source_columns, df)
+
+            if source_cols:
+                await _log(job_id, "INFO", f"Preparing target table '{dataset_name}' from source metadata ({len(source_cols)} column definitions).", node_id)
+                table_status = await asyncio.to_thread(
+                    writer.ensure_table_from_columns,
+                    None,
+                    dataset_name,
+                    source_cols,
+                    recreate=load_config.drop_existing,
+                    recreate_incompatible=load_config.truncate_first,
+                )
+            else:
+                await _log(job_id, "WARN", f"Source metadata was not available for all output columns; preparing target table '{dataset_name}' from DataFrame sample types.", node_id)
+                table_status = await asyncio.to_thread(writer.ensure_table, None, dataset_name, df, recreate=load_config.drop_existing)
             if table_status != "exists":
                 await _log(job_id, "INFO", f"Target table '{dataset_name}' {table_status} from the pipeline's output columns.", node_id)
         elif not await asyncio.to_thread(writer.table_exists, None, dataset_name):
@@ -1473,7 +1723,7 @@ async def _run_target(job_id, node_id, df, cfg, organization_id, primary_connect
 
     # A table that was just created/recreated is already empty — only
     # truncate one that already existed coming into this run.
-    if mode == "replace" and table_status == "exists":
+    if load_config.truncate_first and table_status == "exists":
         try:
             await asyncio.to_thread(writer.truncate, None, dataset_name)
         except ConnectorError as exc:
@@ -1486,6 +1736,8 @@ async def _run_target(job_id, node_id, df, cfg, organization_id, primary_connect
     try:
         for i in range(0, len(rows), 5000):
             batch = rows[i:i + 5000]
+            batch_id = (i // 5000) + 1
+            await _log(job_id, "INFO", f"[TARGET] Insert started: batch={batch_id}, rows={len(batch):,}, table={dataset_name}", node_id)
             # write_batch_with_fallback (KK2/KK3): tries the writer's real
             # bulk insert for the whole batch first, exactly as before;
             # only on failure does it retry row-by-row, so one bad row in
@@ -1497,7 +1749,16 @@ async def _run_target(job_id, node_id, df, cfg, organization_id, primary_connect
             )
             written += batch_written
             rejected.extend(batch_rejects)
+            await _log(
+                job_id,
+                "INFO",
+                f"[TARGET] Commit completed: batch={batch_id}, successful={batch_written:,}, rejected={len(batch_rejects):,}, loaded_total={written:,}",
+                node_id,
+            )
     except ConnectorError as exc:
+        raise NodeExecutionError(f"Could not write to target table '{dataset_name}': {connector._scrub(str(exc))}") from exc
+    except Exception as exc:
+        await _log(job_id, "ERROR", f"[TARGET] Insert failed for '{dataset_name}': {connector._scrub(str(exc))}", node_id)
         raise NodeExecutionError(f"Could not write to target table '{dataset_name}': {connector._scrub(str(exc))}") from exc
     if rejected:
         await reject_service.record_rejects(
@@ -1505,11 +1766,12 @@ async def _run_target(job_id, node_id, df, cfg, organization_id, primary_connect
             node_id=node_id, target_object=dataset_name, rejects=rejected,
         )
         await _log(
-            job_id, "WARN",
+            job_id, "ERROR",
             f"{len(rejected)} row(s) rejected writing to '{dataset_name}' — see Rejected Records for each row and its real error.",
             node_id,
         )
-    await _log(job_id, "INFO", f"Wrote {written} row(s) to '{dataset_name}' ({mode}).", node_id)
+        raise NodeExecutionError(f"Target load failed: {len(rejected)} row(s) were rejected writing to '{dataset_name}'.")
+    await _log(job_id, "INFO", f"Wrote {written} row(s) to '{dataset_name}' ({load_config.load_mode} / {load_config.load_strategy}).", node_id)
     return df, None, rejected
 
 
@@ -1649,24 +1911,7 @@ async def _execute_streaming_chain(
     params = {p["name"]: p["value"] for p in scfg.get("parameters", []) if p.get("name")} if custom_sql else {}
     extraction_mode = scfg.get("loadType") if conn.connection_type.value == "SALESFORCE" else None
 
-    if custom_sql:
-        select_sql = custom_sql
-    elif object_name:
-        try:
-            select_sql = connector.build_select_all_sql(object_name, schema)
-        except ConnectorUnsupportedError:
-            return None
-    else:
-        raise NodeExecutionError("Source Dataset node has no object/table selected.")
-
-    try:
-        stream = await asyncio.to_thread(connector.open_sql_stream, select_sql, params, extraction_mode=extraction_mode)
-    except ConnectorUnsupportedError:
-        return None
-    except ConnectorError as exc:
-        raise NodeExecutionError(connector._scrub(str(exc))) from exc
-
-    dataset_name = tcfg.get("datasetName")
+    dataset_name = (tcfg.get("datasetName") or "").strip().strip('"\'')
     if not dataset_name:
         raise NodeExecutionError("Dataset target has no dataset/table name configured.")
     target_connection_id = tcfg.get("connectionId") or scfg["connectionId"]
@@ -1676,20 +1921,116 @@ async def _execute_streaming_chain(
     except ConnectorError as exc:
         raise NodeExecutionError(str(exc)) from exc
 
-    full_strategy = tcfg.get("fullLoadStrategy")
-    if full_strategy:
-        create_if_missing = full_strategy in ("create_if_not_exists", "truncate_load", "append")
-        drop_recreate = full_strategy == "drop_recreate"
-        mode = "replace" if full_strategy == "truncate_load" else "append"
-    else:
-        mode = tcfg.get("mode", "replace")
-        if mode in ("upsert", "merge"):
-            await _log(job_id, "WARN", "Dataset target has no key-column configuration on this node type — treating upsert/merge as append.", target_id)
-            mode = "append"
-        create_if_missing = tcfg.get("createIfNotExists", True)
-        drop_recreate = bool(tcfg.get("dropAndRecreate", False))
+    load_config = normalize_target_load_config(tcfg)
 
-    table_ready = False
+    src_info = {
+        'type': 'database',
+        'dbType': conn.connection_type.value,
+        'env': conn.environment.value if hasattr(conn.environment, 'value') else str(conn.environment or 'Default'),
+        'table': object_name or 'CustomQuery',
+        'query': (custom_sql.replace('\n', ' ')[:80] + '...') if custom_sql and len(custom_sql) > 80 else (custom_sql or None),
+        'useBulkApi': extraction_mode or 'auto'
+    }
+    tgt_info = {
+        'type': 'database',
+        'dbType': target_conn.connection_type.value,
+        'env': target_conn.environment.value if hasattr(target_conn.environment, 'value') else str(target_conn.environment or 'Default'),
+        'table': dataset_name,
+        **load_config.as_log_dict(),
+        'batchSize': SOURCE_STREAM_CHUNK_SIZE,
+        'insertMethod': 'bulk'
+    }
+    target_label = target_conn.connection_type.value.replace('_', ' ').title()
+
+    await _log(job_id, "INFO", f"Source Config: {src_info}", source_id)
+    await _log(job_id, "INFO", f"Target Config: {tgt_info}", target_id)
+    await _log_effective_target_config(
+        job_id, target_id, target_conn, None, dataset_name, load_config,
+        batch_size=SOURCE_STREAM_CHUNK_SIZE, insert_method="bulk",
+    )
+    target_prepared = False
+    if object_name and not transform_ids:
+        await _update_job_metrics(job_id, {
+            "stage": "PREPARING_TARGET",
+            "extracted": 0,
+            "processed": 0,
+            "loaded": 0,
+            "rejected": 0,
+        })
+        await _log(job_id, "INFO", "Target preparation started before source extraction.", target_id)
+        table_status = "exists"
+        try:
+            if load_config.create_table or load_config.drop_existing:
+                if load_config.drop_existing:
+                    await _log(job_id, "WARN", f"Drop-and-create strategy selected. Dropping target '{dataset_name}' before load if it exists.", target_id)
+                source_cols = await asyncio.to_thread(connector.get_columns, object_name, schema) if hasattr(connector, "get_columns") else None
+                if source_cols and hasattr(connector, "_queryable_field_names"):
+                    queryable_names = set(await asyncio.to_thread(connector._queryable_field_names, object_name))
+                    source_cols = [c for c in source_cols if c.name in queryable_names]
+                if source_cols:
+                    await _log(job_id, "INFO", f"Creating target table '{dataset_name}' from source metadata ({len(source_cols)} column definitions).", target_id)
+                    table_status = await asyncio.to_thread(
+                        writer.ensure_table_from_columns,
+                        None,
+                        dataset_name,
+                        source_cols,
+                        recreate=load_config.drop_existing,
+                        recreate_incompatible=load_config.truncate_first,
+                    )
+                else:
+                    raise NodeExecutionError("Target preparation failed: source metadata is required before extraction for this load strategy.")
+                await _log(job_id, "INFO", f"Target table '{dataset_name}' {table_status}.", target_id)
+            elif not await asyncio.to_thread(writer.table_exists, None, dataset_name):
+                raise NodeExecutionError(f"Target table '{dataset_name}' does not exist. Append mode requires an existing target unless create-table is explicitly enabled.")
+
+            if load_config.truncate_first and table_status == "exists":
+                await _log(job_id, "INFO", f"Truncating target table '{dataset_name}' before load.", target_id)
+                await asyncio.to_thread(writer.truncate, None, dataset_name)
+                await _log(job_id, "INFO", f"Target table '{dataset_name}' truncated successfully.", target_id)
+            await _log(job_id, "INFO", "Target preparation complete.", target_id)
+            target_prepared = True
+        except NodeExecutionError:
+            raise
+        except Exception as exc:
+            raise NodeExecutionError(f"Target preparation failed for '{dataset_name}': {target_connector._scrub(str(exc))}") from exc
+    await _log(job_id, "INFO", "Reading source data...", source_id)
+    await _log(job_id, "INFO", f"Connecting to source: {conn.connection_type.value} / {conn.name}", source_id)
+    await _log(job_id, "INFO", f"Use Bulk API setting: {extraction_mode or 'auto'}", source_id)
+    await _log(job_id, "INFO", f"Using streaming ETL for {conn.connection_type.value} to {target_conn.connection_type.value}...", source_id)
+
+    try:
+        select_sql = connector.build_select_all_sql(object_name, schema) if object_name else custom_sql
+    except ConnectorUnsupportedError:
+        return None
+
+    if object_name:
+        log_sql = f"SELECT * FROM {object_name}"
+    else:
+        one_line = " ".join((custom_sql or "").split())
+        log_sql = one_line[:80] + "..." if len(one_line) > 80 else one_line
+
+    await _log(job_id, "INFO", f"Starting streaming ETL: {log_sql}...", source_id)
+    await _log(job_id, "INFO", f"Target: {dataset_name}, Batch size: {SOURCE_STREAM_CHUNK_SIZE}, Load: {load_config.load_mode} / {load_config.load_strategy}", target_id)
+
+    main_loop = asyncio.get_running_loop()
+    def _thread_log(level, msg):
+        asyncio.run_coroutine_threadsafe(_log(job_id, level, msg, source_id), main_loop)
+
+    try:
+        stream = await asyncio.to_thread(
+            connector.open_sql_stream,
+            select_sql,
+            params,
+            extraction_mode=extraction_mode,
+            log_fn=_thread_log,
+            cancel_check=lambda: is_cancelled(job_id),
+        )
+    except ConnectorUnsupportedError:
+        return None
+    except ConnectorError as exc:
+        raise NodeExecutionError(connector._scrub(str(exc))) from exc
+
+    table_ready = target_prepared
     total_in = total_out = chunk_num = 0
     rejected_total: list[dict] = []
     transform_rows_in = {nid: 0 for nid in transform_ids}
@@ -1697,25 +2038,65 @@ async def _execute_streaming_chain(
     cancelled = False
     source_t0 = datetime.now(timezone.utc)
 
+    total_rows = None
+    if object_name and hasattr(connector, "row_count"):
+        try:
+            total_rows = await asyncio.to_thread(connector.row_count, object_name, schema)
+        except Exception:
+            total_rows = None
+
+    if total_rows is not None:
+        await _log(job_id, "INFO", f"Estimated total records: {total_rows:,}", source_id)
+
+    await _update_job_metrics(job_id, {
+        "stage": "DOWNLOADING_BULK_RESULTS" if conn.connection_type.value == "SALESFORCE" else "FETCHING",
+        "total_rows": total_rows,
+        "extracted": 0,
+        "processed": 0,
+        "loaded": 0,
+        "rejected": 0,
+        "current_chunk": 0,
+        "chunks_processed": 0,
+        "current_chunk_rows": 0,
+    })
+
     try:
-        await _log(
-            job_id, "INFO",
-            f"Streaming '{object_name or 'custom query'}' from {conn.name} — extract and load run concurrently, "
-            "chunk by chunk, instead of waiting for the full source before loading starts...",
-            source_id,
-        )
         columns = list(stream.columns)
+        await _log(job_id, "INFO", f"Source object '{object_name or 'Query'}' has {len(columns)} queryable columns", source_id)
         while True:
             if is_cancelled(job_id):
                 cancelled = True
                 await _log(job_id, "WARN", "Cancellation requested — stopping before the next chunk.", source_id)
                 break
             raw_chunk = await asyncio.to_thread(stream.fetch_chunk, SOURCE_STREAM_CHUNK_SIZE)
+            pop_parse_errors = getattr(stream, "pop_parse_errors", None)
+            if pop_parse_errors:
+                page_parse_errors = pop_parse_errors()
+                if page_parse_errors:
+                    rejected_total.extend(page_parse_errors)
+                    await _log(
+                        job_id, "WARN",
+                        f"{len(page_parse_errors)} source row(s) skipped during extraction (malformed/oversized field) — see Rejected Records; extraction continues.",
+                        source_id,
+                    )
             if not raw_chunk:
                 break
             chunk_num += 1
             total_in += len(raw_chunk)
-            await _log(job_id, "INFO", f"Fetched chunk {chunk_num} — {len(raw_chunk):,} row(s) (running total: {total_in:,}).", source_id)
+
+            await _update_job_metrics(job_id, {
+                "stage": "TRANSFORMING" if transform_ids else "FETCHING",
+                "total_rows": total_rows,
+                "extracted": total_in,
+                "processed": total_in,
+                "loaded": total_out,
+                "rejected": len(rejected_total),
+                "current_chunk": chunk_num,
+                "chunks_processed": max(0, chunk_num - 1),
+                "current_chunk_rows": len(raw_chunk),
+            })
+
+            await _log(job_id, "INFO", f"Producer Bulk batch {chunk_num}: {len(raw_chunk):,} records (Total: {total_in:,})", source_id)
 
             df = pd.DataFrame(raw_chunk, columns=columns)
             for nid in transform_ids:
@@ -1725,49 +2106,109 @@ async def _execute_streaming_chain(
                 transform_rows_out[nid] += len(df)
 
             if not table_ready:
-                if create_if_missing or drop_recreate:
-                    table_status = await asyncio.to_thread(writer.ensure_table, None, dataset_name, df, recreate=drop_recreate)
+                await _log(job_id, "INFO", f"Connected to target database: {target_conn.connection_type.value} / {target_conn.name}", target_id)
+                await _update_job_metrics(job_id, {
+                    "stage": "PREPARING_TARGET",
+                    "extracted": total_in,
+                    "processed": total_in,
+                    "loaded": total_out,
+                    "total_rows": total_rows,
+                    "current_chunk": chunk_num,
+                    "current_chunk_rows": len(raw_chunk),
+                })
+                if load_config.drop_existing:
+                    await _log(job_id, "WARN", f"Drop + Recreate selected for target table '{dataset_name}' — existing table will be dropped before load if it exists.", target_id)
+                await _log(job_id, "INFO", f"Checking target table existence for '{dataset_name}'...", target_id)
+                if load_config.create_table or load_config.drop_existing:
+                    source_cols = None
+                    s_obj = scfg.get("object") or scfg.get("table")
+                    if s_obj and connector and hasattr(connector, "get_columns"):
+                        try:
+                            source_cols = await asyncio.to_thread(connector.get_columns, s_obj)
+                        except Exception:
+                            source_cols = None
+                    source_cols = _metadata_columns_for_dataframe(source_cols, df)
+
+                    if source_cols:
+                        await _log(job_id, "INFO", f"Preparing target table '{dataset_name}' from source metadata ({len(source_cols)} column definitions).", target_id)
+                        table_status = await asyncio.to_thread(
+                            writer.ensure_table_from_columns,
+                            None,
+                            dataset_name,
+                            source_cols,
+                            recreate=load_config.drop_existing,
+                            recreate_incompatible=load_config.truncate_first,
+                        )
+                    else:
+                        await _log(job_id, "WARN", f"Source metadata was not available for all output columns; preparing target table '{dataset_name}' from DataFrame sample types.", target_id)
+                        table_status = await asyncio.to_thread(writer.ensure_table, None, dataset_name, df, recreate=load_config.drop_existing)
                     if table_status != "exists":
                         await _log(job_id, "INFO", f"Target table '{dataset_name}' {table_status} from the pipeline's output columns.", target_id)
+                    else:
+                        await _log(job_id, "INFO", f"Target table '{dataset_name}' exists", target_id)
                 elif not await asyncio.to_thread(writer.table_exists, None, dataset_name):
                     raise NodeExecutionError(
                         f"Target table '{dataset_name}' does not exist and \"Create table if missing\" is turned off for this node."
                     )
                 else:
                     table_status = "exists"
-                if mode == "replace" and table_status == "exists":
+                    await _log(job_id, "INFO", f"Target table '{dataset_name}' exists", target_id)
+
+                if load_config.truncate_first and table_status == "exists":
                     await asyncio.to_thread(writer.truncate, None, dataset_name)
+                    await _log(job_id, "INFO", f"Truncated table {dataset_name}", target_id)
+                await _log(job_id, "INFO", "Insert method configured as: BULK (with automatic fallback to row-by-row if needed)", target_id)
                 table_ready = True
 
             out_columns = list(df.columns)
             rows = df.to_dict(orient="records")
             for i in range(0, len(rows), 5000):
+                if is_cancelled(job_id):
+                    cancelled = True
+                    await _log(job_id, "WARN", "Cancellation requested during load — stopping batch inserts.", target_id)
+                    break
                 batch = rows[i:i + 5000]
+                batch_id = (chunk_num, (i // 5000) + 1)
+                await _log(job_id, "INFO", f"[TARGET] {target_label} insert started: source_batch={batch_id[0]}, load_batch={batch_id[1]}, rows={len(batch):,}", target_id)
                 batch_written, batch_rejects = await asyncio.to_thread(
-                    write_batch_with_fallback, writer, None, dataset_name, out_columns, batch
+                    write_batch_with_fallback, writer, None, dataset_name, out_columns, batch, key_columns=None, cancel_check=lambda: is_cancelled(job_id)
                 )
                 total_out += batch_written
                 rejected_total.extend(batch_rejects)
+                await _log(
+                    job_id,
+                    "INFO",
+                    f"[TARGET] {target_label} commit completed: source_batch={batch_id[0]}, load_batch={batch_id[1]}, successful={batch_written:,}, rejected={len(batch_rejects):,}, loaded_total={total_out:,}",
+                    target_id,
+                )
+            if cancelled:
+                break
+
+            elapsed_sec = max(0.1, (datetime.now(timezone.utc) - source_t0).total_seconds())
+            rate = round(total_out / elapsed_sec)
             await _log(
                 job_id, "INFO",
-                f"Loaded chunk {chunk_num} — {len(rows):,} row(s) written to '{dataset_name}' (running total: {total_out:,}).",
+                f"Batch {chunk_num}: Inserted {len(rows):,} rows (Total: {total_out:,}, Rate: {rate:,} rows/sec)",
                 target_id,
             )
 
-            if total_in >= SOURCE_ROW_HARD_CAP:
-                extra = await asyncio.to_thread(stream.fetch_chunk, 1)
-                if extra:
-                    await _log(
-                        job_id, "WARN",
-                        f"Source has more than {SOURCE_ROW_HARD_CAP:,} rows — truncated to the first {SOURCE_ROW_HARD_CAP:,} "
-                        "(this engine's per-source cap).",
-                        source_id,
-                    )
-                break
+            await _update_job_metrics(job_id, {
+                "stage": "LOADING_TARGET" if target_id else "FETCHING",
+                "total_rows": total_rows or (total_in if len(raw_chunk) < SOURCE_STREAM_CHUNK_SIZE else None),
+                "extracted": total_in,
+                "processed": total_in,
+                "loaded": total_out,
+                "rejected": len(rejected_total),
+                "current_chunk": chunk_num,
+                "chunks_processed": chunk_num,
+                "current_chunk_rows": len(raw_chunk),
+            })
+
             if len(raw_chunk) < SOURCE_STREAM_CHUNK_SIZE:
                 break
-    except ConnectorError as exc:
-        raise NodeExecutionError(connector._scrub(str(exc))) from exc
+    except Exception as exc:
+        await _log(job_id, "ERROR", f"[TARGET] {target_label} insert failed for '{dataset_name}': {target_connector._scrub(str(exc))}", target_id)
+        raise NodeExecutionError(target_connector._scrub(str(exc))) from exc
     finally:
         await asyncio.to_thread(stream.close)
 
@@ -1777,12 +2218,21 @@ async def _execute_streaming_chain(
             node_id=target_id, target_object=dataset_name, rejects=rejected_total,
         )
         await _log(
-            job_id, "WARN",
+            job_id, "ERROR",
             f"{len(rejected_total)} row(s) rejected writing to '{dataset_name}' — see Rejected Records for each row and its real error.",
             target_id,
         )
+        raise NodeExecutionError(f"Target load failed: {len(rejected_total)} row(s) were rejected writing to '{dataset_name}'.")
 
-    duration_ms = int((datetime.now(timezone.utc) - source_t0).total_seconds() * 1000)
+    duration_sec = (datetime.now(timezone.utc) - source_t0).total_seconds()
+    hrs = int(duration_sec // 3600)
+    mins = int((duration_sec % 3600) // 60)
+    secs = int(duration_sec % 60)
+    dur_str = f"{hrs:02d}:{mins:02d}:{secs:02d}" if hrs > 0 else f"{mins:02d}:{secs:02d}"
+
+    await _log(job_id, "INFO", f"Streaming ETL complete in {duration_sec:.1f}s: {total_in:,} processed, {len(rejected_total):,} rejected", target_id)
+
+    duration_ms = int(duration_sec * 1000)
     await _update_node_stats(job_id, source_id, {
         "label": source_node.get("label", "source"), "type": "source", "status": "success",
         "rows_in": 0, "rows_out": total_in, "duration_ms": duration_ms,
@@ -1800,38 +2250,71 @@ async def _execute_streaming_chain(
     if rejected_total:
         target_stats["rows_rejected"] = len(rejected_total)
     await _update_node_stats(job_id, target_id, target_stats)
-    await _log(
-        job_id, "INFO",
-        f"Job finished — {total_in:,} row(s) extracted, {total_out:,} row(s) loaded, "
-        f"streamed concurrently across {chunk_num} chunk(s) (no separate fetch-then-load phases).",
-    )
+
+    await _update_job_metrics(job_id, {
+        "stage": "COMPLETED",
+        "total_rows": total_rows or total_in,
+        "extracted": total_in,
+        "processed": total_in,
+        "loaded": total_out,
+        "rejected": len(rejected_total),
+        "current_chunk": chunk_num,
+        "chunks_processed": chunk_num,
+        "total_chunks": chunk_num,
+        "current_chunk_rows": 0,
+    })
+
+    await _log(job_id, "INFO", "=" * 60)
+    await _log(job_id, "INFO", f"ETL Job Completed: Job #{job_id}")
+    await _log(job_id, "INFO", f"Final Status: completed")
+    await _log(job_id, "INFO", f"Rows Processed: {total_in:,}")
+    await _log(job_id, "INFO", f"Rows Rejected: {len(rejected_total):,}")
+    await _log(job_id, "INFO", f"Duration: {dur_str}")
+    await _log(job_id, "INFO", "=" * 60)
+
     return total_in, total_out, cancelled
 
 
 async def _execute(job_id: int, organization_id: int | None) -> None:
-    sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
-    async with sessionmaker() as db:
-        job = await db.get(PipelineJob, job_id)
-        version_result = await db.execute(
-            select(PipelineVersion).where(
-                PipelineVersion.pipeline_id == job.pipeline_id,
-                PipelineVersion.version_number == job.pipeline_version,
+    try:
+        sessionmaker = await tenant_engine_registry.get_background_sessionmaker(organization_id)
+        async with sessionmaker() as db:
+            job = await db.get(PipelineJob, job_id)
+            if job is None:
+                return
+            version_result = await db.execute(
+                select(PipelineVersion).where(
+                    PipelineVersion.pipeline_id == job.pipeline_id,
+                    PipelineVersion.version_number == job.pipeline_version,
+                )
             )
-        )
-        version = version_result.scalar_one_or_none()
-        job.status = JobStatus.RUNNING
-        job.started_at = datetime.now(timezone.utc)
-        await db.commit()
+            version = version_result.scalar_one_or_none()
+            job.status = JobStatus.RUNNING
+            job.started_at = datetime.now(timezone.utc)
+            await db.commit()
 
-    if version is None:
-        await _fail(job_id, "Pipeline version no longer exists (version retention keeps only the last 5).")
+        if version is None:
+            await _fail(job_id, "Pipeline version no longer exists (version retention keeps only the last 5).")
+            return
+
+        defn = version.pipeline_definition or {}
+        nodes = {n["id"]: n for n in defn.get("nodes", [])}
+        edges = defn.get("edges", [])
+
+        async with sessionmaker() as db_user:
+            user_name_map = await pipeline_job_service.user_name_map(db_user, {job.created_by}) if job.created_by else {}
+        user_name = user_name_map.get(job.created_by, "System / Automated")
+        start_str = job.started_at.strftime("%Y-%m-%d %H:%M:%S") if job.started_at else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        await _log(job_id, "INFO", "=" * 60)
+        await _log(job_id, "INFO", f"ETL Job Started: Job #{job.id} — {job.pipeline_name}")
+        await _log(job_id, "INFO", f"Operation: {job.trigger or 'db-to-db'}")
+        await _log(job_id, "INFO", f"User: {user_name}")
+        await _log(job_id, "INFO", f"Start Time: {start_str}")
+        await _log(job_id, "INFO", "=" * 60)
+    except Exception as exc:
+        await _fail(job_id, f"Could not initialize job execution: {exc}"[:300])
         return
-
-    defn = version.pipeline_definition or {}
-    nodes = {n["id"]: n for n in defn.get("nodes", [])}
-    edges = defn.get("edges", [])
-
-    await _log(job_id, "INFO", f"Job started — pipeline v{job.pipeline_version}, {len(nodes)} node(s).")
 
     try:
         order = _topo_sort(nodes, edges)
@@ -1862,6 +2345,7 @@ async def _execute(job_id: int, organization_id: int | None) -> None:
         return
 
     dataframes: dict[str, pd.DataFrame] = {}
+    column_metadata: dict[str, list[ColumnInfo]] = {}
     connector_cache: dict[int, tuple] = {}
     primary_connection_id: int | None = None
     total_in: int | None = None
@@ -1957,7 +2441,11 @@ async def _execute(job_id: int, organization_id: int | None) -> None:
                 elif ntype == "column_mapping_step":
                     df, status, rejected = await _run_column_mapping(job_id, node_id, input_df, cfg, organization_id, connector_cache)
                 elif ntype == "target":
-                    df, output_file, rejected = await _run_target(job_id, node_id, input_df, cfg, organization_id, primary_connection_id, connector_cache, job.pipeline_id, job_id)
+                    source_columns = column_metadata.get(src_ids[0]) if src_ids else None
+                    df, output_file, rejected = await _run_target(
+                        job_id, node_id, input_df, cfg, organization_id, primary_connection_id,
+                        connector_cache, job.pipeline_id, job_id, source_columns=source_columns,
+                    )
                 elif ntype == "notification":
                     df = input_df
                     await _run_notification(job_id, node_id, cfg)
@@ -1983,6 +2471,14 @@ async def _execute(job_id: int, organization_id: int | None) -> None:
                 return
 
             dataframes[node_id] = df
+            if ntype == "source" and df.attrs.get("source_columns"):
+                source_meta = _metadata_columns_for_dataframe(df.attrs.get("source_columns"), df)
+                if source_meta:
+                    column_metadata[node_id] = source_meta
+            elif src_ids and column_metadata.get(src_ids[0]) is not None:
+                source_meta = _metadata_columns_for_dataframe(column_metadata[src_ids[0]], df)
+                if source_meta:
+                    column_metadata[node_id] = source_meta
             rows_out = 0 if df is None else len(df)
             rows_in = 0 if input_df is None else len(input_df)
             duration_ms = int((datetime.now(timezone.utc) - t0).total_seconds() * 1000)
@@ -2007,6 +2503,13 @@ async def _execute(job_id: int, organization_id: int | None) -> None:
                     + (f", {len(rejected)} row(s) rejected" if rejected else "")
                 )
             await _update_node_stats(job_id, node_id, stats_patch)
+            await _update_job_metrics(job_id, {
+                "stage": "FETCHING" if ntype == "source" else ("LOADING_TARGET" if ntype == "target" else "TRANSFORMING"),
+                "extracted": rows_out if ntype == "source" else (total_in or 0),
+                "processed": rows_out if ntype not in ("source", "target") else (rows_in or 0),
+                "loaded": rows_out if ntype == "target" else 0,
+                "rejected": len(rejected) if rejected else 0,
+            })
             await _log(job_id, "INFO", f"'{label}' finished — {rows_in} in / {rows_out} out ({duration_ms} ms).", node_id)
             if total_in is None:
                 total_in = rows_in

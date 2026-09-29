@@ -92,6 +92,12 @@ class ReviewQueueDetailOut(BaseModel):
     document_type: str
     document_status: str
     document_preview_available: bool
+    # File type ("PDF"/"IMAGE"/etc, from Document.doc_type) — distinct from
+    # document_type above (the business classification, e.g. "Invoice").
+    # The viewer needs this to pick <iframe> (PDF) vs <img> (image); without
+    # it, PDFs were always rendered through <img>, which browsers cannot
+    # display, producing a broken-image icon instead of the document.
+    document_file_type: str | None = None
     review_type: str
     issue: str
     field_name: str | None

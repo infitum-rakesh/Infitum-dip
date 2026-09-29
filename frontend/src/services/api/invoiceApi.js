@@ -73,9 +73,14 @@ export const invoiceApi = {
    * the INVOICE taxonomy from the first run. Returns {document_id,
    * filename, status, duplicate_of_id} immediately — background OCR/AI
    * Extraction/materialization follow; use pollForInvoice() below. */
-  upload: (file, { onProgress } = {}) => {
+  upload: (file, { onProgress, languageConfig } = {}) => {
     const form = new FormData();
     form.append('file', file);
+    if (languageConfig) {
+      form.append('language_mode', languageConfig.mode || 'auto');
+      form.append('selected_languages', (languageConfig.selected_languages || []).join(','));
+      form.append('primary_language', languageConfig.primary_language || 'auto');
+    }
     return apiClient
       .post('/invoices/upload', form, {
         headers: { 'Content-Type': 'multipart/form-data' },

@@ -1,0 +1,89 @@
+/* ============================================================
+   Format Conversion page — scoped to .fc-*
+   ============================================================ */
+
+.fc-page { display: flex; flex-direction: column; gap: 16px; }
+
+.fc-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.fc-title { font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary); }
+.fc-subtitle { font-size: var(--fs-md); color: var(--text-muted); margin-top: 3px; }
+.fc-header-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+.fc-loading { padding: 40px; text-align: center; color: var(--text-muted); font-size: var(--fs-sm); }
+
+.fc-card {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl);
+  padding: 20px;
+}
+.fc-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.fc-card-title { font-size: var(--fs-lg); font-weight: var(--fw-semibold); color: var(--text-primary); }
+
+.fc-field-label { display: block; font-size: 11px; font-weight: var(--fw-medium); color: var(--text-muted); margin: 10px 0 4px; text-transform: uppercase; letter-spacing: 0.02em; }
+.fc-select, input.fc-select {
+  width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  font-size: var(--fs-sm); background: var(--bg-card); color: var(--text-primary); outline: none;
+}
+.fc-select:focus, input.fc-select:focus { border-color: var(--color-primary); }
+
+.fc-endpoints-row { display: flex; align-items: flex-start; gap: 16px; margin-top: 16px; flex-wrap: wrap; }
+.fc-endpoint-col { flex: 1; min-width: 220px; }
+.fc-arrow { color: var(--text-faint); margin-top: 46px; flex-shrink: 0; }
+
+/* Part 8 — target-format writer options (CSV delimiter/quotechar/encoding,
+   XLSX sheet name, XML root/row element names), shown once a DOWNLOAD_FILE
+   target format is picked. */
+.fc-format-options { display: flex; align-items: flex-end; gap: 12px; margin-top: 4px; flex-wrap: wrap; }
+.fc-format-options .fc-field-label { margin-top: 0; }
+.fc-format-options input.fc-select { width: 120px; }
+
+.fc-endpoint-badge {
+  display: inline-block; font-size: 10px; font-weight: var(--fw-semibold); text-transform: uppercase;
+  letter-spacing: 0.04em; padding: 2px 8px; border-radius: 999px; margin-bottom: 8px;
+}
+.fc-endpoint-badge.source { background: color-mix(in srgb, var(--color-primary) 15%, transparent); color: var(--color-primary); }
+.fc-endpoint-badge.target { background: color-mix(in srgb, var(--color-success, #16a34a) 15%, transparent); color: var(--color-success, #16a34a); }
+
+.fc-kind-toggle { display: flex; gap: 4px; background: var(--bg-secondary); border-radius: var(--radius-md); padding: 3px; }
+.fc-kind-btn {
+  flex: 1; padding: 6px 10px; border: none; border-radius: calc(var(--radius-md) - 2px); background: transparent;
+  font-size: 12px; font-weight: var(--fw-medium); color: var(--text-muted); cursor: pointer;
+}
+.fc-kind-btn.active { background: var(--bg-card); color: var(--text-primary); box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+.fc-kind-btn:disabled { cursor: default; opacity: 0.6; }
+
+.fc-upload-btn {
+  display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border: 1px dashed var(--border);
+  border-radius: var(--radius-md); font-size: 12px; color: var(--text-secondary); background: var(--bg-secondary);
+}
+.fc-uploaded-file {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-secondary); font-size: 12px;
+}
+.fc-icon-btn { display: inline-flex; align-items: center; justify-content: center; padding: 4px; border: none; background: none; color: var(--text-muted); cursor: pointer; border-radius: 4px; }
+.fc-icon-btn:hover { background: var(--bg-secondary); color: var(--text-primary); }
+
+.fc-spin { animation: fc-spin 1s linear infinite; }
+@keyframes fc-spin { to { transform: rotate(360deg); } }
+
+.fc-error-text { color: var(--color-danger, #dc2626); font-size: 12px; margin-top: 8px; }
+
+.fc-form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+.fc-job-list { display: flex; flex-direction: column; gap: 10px; }
+.fc-job-row {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  padding: 14px 16px; display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 12px;
+}
+.fc-job-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.fc-job-name { font-size: var(--fs-md); font-weight: var(--fw-semibold); color: var(--text-primary); }
+.fc-job-formats { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.fc-job-meta { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-muted); }
+.fc-job-rows { font-variant-numeric: tabular-nums; }
+.fc-job-actions { display: flex; gap: 6px; }
+.fc-job-error { grid-column: 1 / -1; font-size: 12px; color: var(--color-danger, #dc2626); background: color-mix(in srgb, var(--color-danger, #dc2626) 8%, transparent); padding: 6px 10px; border-radius: var(--radius-md); }
+
+@media (max-width: 720px) {
+  .fc-job-row { grid-template-columns: 1fr; }
+  .fc-endpoints-row { flex-direction: column; }
+  .fc-arrow { margin-top: 0; transform: rotate(90deg); align-self: center; }
+}

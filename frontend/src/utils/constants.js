@@ -120,6 +120,19 @@ export const CONNECTION_PERMISSIONS = {
 };
 
 /**
+ * Data Format Transformation Engine — centralized permission map.
+ * Deliberately has no `module` key, same "foundational, always-available
+ * utility" reasoning as CONNECTION_PERMISSIONS above (mirrored
+ * server-side by require_action(..., module=None) in api/transformation.py).
+ */
+export const TRANSFORMATION_PERMISSIONS = {
+  TRANSFORMATION_VIEW:   { action: ACTIONS.VIEW },
+  TRANSFORMATION_CREATE: { action: ACTIONS.CREATE },
+  TRANSFORMATION_RUN:    { action: ACTIONS.EXECUTE },
+  TRANSFORMATION_DELETE: { action: ACTIONS.DELETE },
+};
+
+/**
  * Schedules module — centralized permission map. Same "no module key"
  * reasoning as CONNECTION_PERMISSIONS: Schedules automates existing
  * pipelines across every other module, so it isn't gated behind any one
