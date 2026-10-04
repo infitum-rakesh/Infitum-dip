@@ -45,6 +45,7 @@ export const MODULES = {
   INVOICE_INTELLIGENCE:  'INVOICE_INTELLIGENCE',
   PAYMENT_APPROVAL:      'PAYMENT_APPROVAL',
   BULK_MIGRATION:        'BULK_MIGRATION',
+  TALLY_INTEGRATION:     'TALLY_INTEGRATION',
 };
 
 /** License status */
@@ -357,6 +358,17 @@ export const BULK_MIGRATION_PERMISSIONS = {
   BULK_MIGRATION_EDIT:   { module: MODULES.BULK_MIGRATION, action: ACTIONS.EDIT },
   BULK_MIGRATION_DELETE: { module: MODULES.BULK_MIGRATION, action: ACTIONS.DELETE },
   BULK_MIGRATION_RUN:    { module: MODULES.BULK_MIGRATION, action: ACTIONS.EXECUTE }, // validate/dry-run/run/pause/resume/cancel/retry
+};
+
+/**
+ * Tally Integration (Phase A: connection + read-only company discovery
+ * only — see api/tally.py). Mirrors the same shape as the other module
+ * permission maps above. TALLY_DISCOVER reuses EXECUTE, same tier as
+ * Test Connection on the generic Connections module.
+ */
+export const TALLY_PERMISSIONS = {
+  TALLY_VIEW:     { module: MODULES.TALLY_INTEGRATION, action: ACTIONS.VIEW },
+  TALLY_DISCOVER: { module: MODULES.TALLY_INTEGRATION, action: ACTIONS.EXECUTE },
 };
 
 /**

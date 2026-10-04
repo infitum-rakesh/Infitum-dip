@@ -192,6 +192,36 @@ class DocumentScheduleConfigOut(DocumentScheduleConfigIn):
     model_config = {"from_attributes": True}
 
 
+# ── TALLY-J: Scheduled/batch Tally reconciliation ──────────────────
+# Presence of `tally_config` on a Schedule (in/out) is what makes it a
+# Tally-reconciliation schedule — see schedule_service.execute_schedule()'s
+# dispatch branch and TallyReconciliationScheduleConfig's own docstring.
+
+class TallyReconciliationScheduleConfigIn(BaseModel):
+    connection_id: int
+    company_name: str
+    tolerance: float = 0.02
+    lookback_days: int = 7
+
+    @field_validator("company_name")
+    @classmethod
+    def _company_required(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Tally company name is required.")
+        return v.strip()
+
+    @field_validator("lookback_days")
+    @classmethod
+    def _lookback_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("Lookback days must be at least 1.")
+        return v
+
+
+class TallyReconciliationScheduleConfigOut(TallyReconciliationScheduleConfigIn):
+    model_config = {"from_attributes": True}
+
+
 # ── Responses ────────────────────────────────────────────────────
 
 class ScheduleOut(BaseModel):
@@ -201,6 +231,7 @@ class ScheduleOut(BaseModel):
     pipeline_name: str
     anomaly_job_id: int | None = None
     document_config: DocumentScheduleConfigOut | None = None
+    tally_config: TallyReconciliationScheduleConfigOut | None = None
     environment: str
     timezone: str
     frequency: str
@@ -332,6 +363,7 @@ class ScheduleCreateRequest(BaseModel):
     pipeline_name: str = ""
     anomaly_job_id: int | None = None  # AD12 — when set, pipeline_id/pipeline_name are overridden server-side (see schedule_service.create_schedule)
     document_config: DocumentScheduleConfigIn | None = None  # when set, pipeline_id/pipeline_name are overridden server-side the same way anomaly_job_id already is
+    tally_config: TallyReconciliationScheduleConfigIn | None = None  # TALLY-J — same server-side override, mutually exclusive with the two above
     environment: str = "DEVELOPMENT"
     timezone: str = "UTC"
     frequency: str
@@ -352,6 +384,7 @@ class ScheduleUpdateRequest(BaseModel):
     pipeline_id: str | None = None
     pipeline_name: str | None = None
     document_config: DocumentScheduleConfigIn | None = None
+    tally_config: TallyReconciliationScheduleConfigIn | None = None
     environment: str | None = None
     timezone: str | None = None
     frequency: str | None = None

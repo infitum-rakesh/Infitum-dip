@@ -54,7 +54,7 @@ PERMISSION_CATEGORIES = [
     "Review Queue", "Transformation", "Validation", "Reconciliation", "Anomaly Detection", "Pipeline",
     "SQL Workspace", "Schedules", "Incidents", "Monitoring", "Lineage", "Users",
     "Roles", "Licenses", "Audit Logs", "Settings", "Invoice Intelligence", "Payment Approvals",
-    "Bulk Object Migration",
+    "Bulk Object Migration", "Tally Integration",
 ]
 
 

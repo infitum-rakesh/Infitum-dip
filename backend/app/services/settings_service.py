@@ -81,6 +81,17 @@ def effective_document_intelligence_settings(row: OrganizationSettings | None) -
     return _effective_values(row)["document_intelligence"]
 
 
+def effective_ai_settings(row: OrganizationSettings | None) -> dict:
+    """Same accessor pattern as effective_document_intelligence_settings()
+    above, for the "ai" settings block — lets document_service.py's
+    _pick_ai_connections() honor Settings > AI > "AI Provider" (ai_provider)
+    as a real preference instead of ignoring it (see that function's own
+    docstring for why this exists)."""
+    if row is None:
+        return copy.deepcopy(DEFAULT_SETTINGS["ai"])
+    return _effective_values(row)["ai"]
+
+
 async def to_out(db: AsyncSession, org: Organization, row: OrganizationSettings) -> dict:
     values = _effective_values(row)
     updated_by_name = None

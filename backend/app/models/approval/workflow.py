@@ -47,6 +47,16 @@ Explicitly OUT of scope for this phase (disclosed, not faked):
     Phase 7's sla_scheduler_service.py, which also needed one small
     additive column this file didn't originally have — assigned_at
     (see ApprovalWorkflowStep/PeerReviewStep's own field comment).
+
+TALLY-H addendum: ApprovalWorkflow/ApprovalWorkflowAuditLog gained
+entity_type/entity_id (see ApprovalEntityType, models/approval/rules.py)
+so this same engine can gate Tally voucher write-back authorization
+without forking a second copy of it. invoice_id stays exactly as it was
+for every INVOICE-type row (this phase changes no existing behavior);
+it is simply NULL on a TALLY_VOUCHER row, which has no ap_invoices row
+to reference. See approval_workflow_engine_service.py's own module
+docstring for how create_workflow()/act_on_*_step() dispatch on
+entity_type.
 """
 import enum
 from datetime import datetime
@@ -57,7 +67,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.connection import TenantBase
-from app.models.approval.rules import ApprovalMode, ApproverType
+from app.models.approval.rules import ApprovalEntityType, ApprovalMode, ApproverType
 
 
 class ApprovalWorkflowStatus(str, enum.Enum):
@@ -157,13 +167,30 @@ class ApprovalWorkflow(TenantBase):
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
+    # TALLY-H — the generic identity every entity-agnostic code path
+    # (duplicate-suppression, act_on_*_step, _maybe_complete_workflow)
+    # actually keys off now. No FK wrapper: entity_id points at a
+    # different table depending on entity_type (ap_invoices.id vs
+    # tally_voucher_previews.id), and a single column can't carry two
+    # FK targets. invoice_id below remains the real FK for INVOICE rows
+    # specifically — kept in lockstep with entity_id for that case — so
+    # every pre-existing invoice_id-based query/join/frontend field
+    # keeps working unchanged; it is simply NULL for TALLY_VOUCHER rows.
+    entity_type: Mapped[ApprovalEntityType] = mapped_column(Enum(ApprovalEntityType), default=ApprovalEntityType.INVOICE, index=True)
+    entity_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+
     # Real FK — ApInvoice is TenantBase, same DB, no cross-boundary issue.
     # Deliberately NOT unique: a REJECTED invoice can be corrected and
     # resubmitted, creating a second ApprovalWorkflow row for the same
     # invoice — "at most one ACTIVE (PENDING/IN_PROGRESS) workflow per
     # invoice at a time" is a service-layer invariant (a later phase),
     # not a DB constraint, since history must keep every past attempt.
-    invoice_id: Mapped[int] = mapped_column(ForeignKey("ap_invoices.id"), nullable=False, index=True)
+    #
+    # TALLY-H — made nullable: NULL for entity_type=TALLY_VOUCHER rows
+    # (no ap_invoices row to reference), populated and kept equal to
+    # entity_id for entity_type=INVOICE rows exactly as before this
+    # phase — a pure backward-compatibility mirror, not a new meaning.
+    invoice_id: Mapped[int | None] = mapped_column(ForeignKey("ap_invoices.id"), nullable=True, index=True)
 
     # Which rule (+ exact published version) actually produced this
     # workflow, recorded once and never re-derived — see module
@@ -340,10 +367,17 @@ class ApprovalWorkflowAuditLog(TenantBase):
     organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
 
     workflow_id: Mapped[int] = mapped_column(ForeignKey("approval_workflows.id"), nullable=False, index=True)
+
+    # TALLY-H — same generic identity as ApprovalWorkflow's own
+    # entity_type/entity_id (see that model's comment); invoice_id below
+    # stays NULL for TALLY_VOUCHER rows, populated for INVOICE rows.
+    entity_type: Mapped[ApprovalEntityType] = mapped_column(Enum(ApprovalEntityType), default=ApprovalEntityType.INVOICE, index=True)
+    entity_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+
     # Denormalized — lets a future Invoice Detail screen pull approval
     # history for one invoice without an extra join through
     # approval_workflows first.
-    invoice_id: Mapped[int] = mapped_column(ForeignKey("ap_invoices.id"), nullable=False, index=True)
+    invoice_id: Mapped[int | None] = mapped_column(ForeignKey("ap_invoices.id"), nullable=True, index=True)
 
     event_type: Mapped[ApprovalWorkflowAuditEventType] = mapped_column(Enum(ApprovalWorkflowAuditEventType), nullable=False)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)

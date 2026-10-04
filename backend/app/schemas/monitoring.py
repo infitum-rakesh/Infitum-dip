@@ -186,6 +186,27 @@ class InvoiceProcessingOut(BaseModel):
     window_days: int
 
 
+class TallyOverviewOut(BaseModel):
+    extraction_runs_total: int
+    extraction_completed: int
+    extraction_failed: int
+    extraction_records_fetched: int
+    extraction_in_flight: int
+    reconciliation_runs_total: int
+    reconciliation_succeeded: int
+    reconciliation_failed: int
+    scheduled_reconciliation_runs: int
+    open_exceptions: int
+    exception_counts: dict[str, int]
+    tally_review_queue_depth: int
+    writeback_total: int
+    writeback_succeeded: int
+    writeback_dead_letter: int
+    writeback_failed: int
+    writeback_in_flight: int
+    window_days: int
+
+
 # ── Performance ──
 
 class PerformanceStageOut(BaseModel):

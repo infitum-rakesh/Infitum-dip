@@ -19,6 +19,7 @@ import './monitoring.css';
 const TABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'invoice_processing', label: 'Invoice Processing' },
+  { id: 'tally', label: 'Tally Integration' },
   { id: 'pipeline_runs', label: 'Pipeline Runs' },
   { id: 'job_runs', label: 'Job Runs' },
   { id: 'data_quality', label: 'Data Quality' },
@@ -78,6 +79,7 @@ export default function Monitoring() {
 
       {activeTab === 'overview' && <OverviewTab onOpenJob={openJob} onGoTab={selectTab} />}
       {activeTab === 'invoice_processing' && <InvoiceProcessingTab />}
+      {activeTab === 'tally' && <TallyOverviewTab />}
       {activeTab === 'pipeline_runs' && <PipelineRunsTab onOpenJob={openJob} onGoLineage={goToLineage} />}
       {activeTab === 'job_runs' && <JobRunsTab />}
       {activeTab === 'data_quality' && <DataQualityTab />}
@@ -241,6 +243,77 @@ function InvoiceProcessingTab() {
             </tbody>
           </table>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── Tally Integration (TALLY-J5) — real extraction/reconciliation/
+// write-back rollup off the Tally domain's own tables, see monitoring/
+// repository.py's tally_overview() for exactly what backs each number. ──
+
+function TallyOverviewTab() {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+
+  const load = useCallback(() => {
+    monitoringApi.getTallyOverview(7).then(setData).catch((e) => setError(apiErrorMessage(e, 'Could not load Tally integration metrics.')));
+  }, []);
+  useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
+
+  if (error) return <div className="mon-error-text">{error}</div>;
+  if (!data) return <div className="mon-muted">Loading…</div>;
+
+  const exceptionEntries = Object.entries(data.exception_counts || {});
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div className="mon-card">
+        <div className="mon-card-title">Extraction (TALLY-B)</div>
+        <div className="mon-kpi-grid">
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Runs (7d)</span><span className="mon-kpi-value">{data.extraction_runs_total}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Completed</span><span className="mon-kpi-value success">{data.extraction_completed}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Failed</span><span className={`mon-kpi-value ${data.extraction_failed ? 'danger' : ''}`}>{data.extraction_failed}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Records Fetched</span><span className="mon-kpi-value">{data.extraction_records_fetched.toLocaleString()}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">In Flight</span><span className={`mon-kpi-value ${data.extraction_in_flight ? 'warning' : ''}`}>{data.extraction_in_flight}</span></div>
+        </div>
+      </div>
+
+      <div className="mon-card">
+        <div className="mon-card-title">Reconciliation (TALLY-E) &amp; Review Queue (TALLY-F)</div>
+        <div className="mon-kpi-grid">
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Runs (7d)</span><span className="mon-kpi-value">{data.reconciliation_runs_total}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Succeeded</span><span className="mon-kpi-value success">{data.reconciliation_succeeded}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Failed</span><span className={`mon-kpi-value ${data.reconciliation_failed ? 'danger' : ''}`}>{data.reconciliation_failed}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Scheduled Runs</span><span className="mon-kpi-value">{data.scheduled_reconciliation_runs}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Open Exceptions</span><span className={`mon-kpi-value ${data.open_exceptions ? 'warning' : ''}`}>{data.open_exceptions}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Tally Review Queue Depth</span><span className={`mon-kpi-value ${data.tally_review_queue_depth ? 'warning' : ''}`}>{data.tally_review_queue_depth}</span></div>
+        </div>
+        {exceptionEntries.length > 0 && (
+          <table className="data-table" style={{ width: '100%', marginTop: 12 }}>
+            <thead><tr><th>Exception Type</th><th>Count (7d)</th></tr></thead>
+            <tbody>
+              {exceptionEntries.map(([type, count]) => (
+                <tr key={type}><td>{type}</td><td>{count}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="mon-card">
+        <div className="mon-card-title">Write-Back (TALLY-I)</div>
+        <p className="mon-muted" style={{ margin: '0 0 10px' }}>
+          Every write here is a real Import request against the connected TallyPrime instance, gated by the generic
+          Approval Workflow engine (entity_type=TALLY_VOUCHER) — see tally_writeback_service.py.
+        </p>
+        <div className="mon-kpi-grid">
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Total (7d)</span><span className="mon-kpi-value">{data.writeback_total}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Succeeded</span><span className="mon-kpi-value success">{data.writeback_succeeded}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Dead-Lettered</span><span className={`mon-kpi-value ${data.writeback_dead_letter ? 'danger' : ''}`}>{data.writeback_dead_letter}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Failed</span><span className={`mon-kpi-value ${data.writeback_failed ? 'danger' : ''}`}>{data.writeback_failed}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">In Flight</span><span className={`mon-kpi-value ${data.writeback_in_flight ? 'warning' : ''}`}>{data.writeback_in_flight}</span></div>
+        </div>
       </div>
     </div>
   );

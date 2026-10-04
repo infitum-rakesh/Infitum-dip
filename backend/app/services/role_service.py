@@ -54,6 +54,7 @@ CATEGORY_MODULE_MAP: dict[str, str | None] = {
     "Invoice Intelligence": "INVOICE_INTELLIGENCE",
     "Payment Approvals": "PAYMENT_APPROVAL",
     "Bulk Object Migration": "BULK_MIGRATION",
+    "Tally Integration": "TALLY_INTEGRATION",
 }
 
 # Every category offers the same generic 6-action set EXCEPT "SQL

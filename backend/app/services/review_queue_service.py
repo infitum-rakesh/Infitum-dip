@@ -291,6 +291,46 @@ async def create_from_ocr_quality(db: AsyncSession, doc: Document, flags: list[d
     return item
 
 
+async def create_from_tally_exception(db: AsyncSession, doc: Document, *, issue: str) -> ReviewQueueItem:
+    """TALLY-F — escalates a Tally reconciliation discrepancy (a GST/TDS
+    mismatch, a missing counterpart voucher, a missing Payment voucher)
+    into a real Review Queue item. Same BUSINESS_RULE-direct-build pattern
+    as create_from_anomaly()/create_from_invoice_validation() — a Tally
+    exception has no extraction field of its own to point _pick_primary_
+    issue() at (the ApInvoice's own fields can look perfectly clean; what's
+    wrong is a cross-system discrepancy against the real TallyPrime data).
+
+    Anchored to the SAME real Document the flagged ApInvoice was itself
+    materialized from — the master directive here is explicit: no
+    polymorphic/nullable ReviewQueueItem.document_id, no fake Document
+    rows. Reusing the invoice's own document as-is is what makes that
+    possible; see models/tally_reconciliation.py's
+    TallyReconciliationException.review_item_id for the reverse pointer,
+    and tally_reconciliation_service.py's _escalate_exceptions() for why
+    only invoice-anchored exception types ever call this at all.
+
+    Unlike the other create_from_*() functions, returns the ALREADY-OPEN
+    item instead of None when one exists for this document (matching
+    create_manual()'s convention) — a repeat reconciliation run against an
+    invoice that's already under review should still get a real
+    review_item_id back to link against, not silently nothing."""
+    existing = await _open_item_for_document(db, doc.id)
+    if existing:
+        return existing
+
+    picked = {
+        "review_type": ReviewType.BUSINESS_RULE, "issue": issue, "field_name": None,
+        "extracted_value": None, "expected_value": None, "confidence": doc.confidence, "validation_status": None,
+    }
+    item = _build_item(doc, picked)
+    db.add(item)
+    await db.flush()
+    await _log(db, item.id, None, "Flagged for Review", new_value=issue, reason="Auto-flagged by Tally Reconciliation")
+    await db.commit()
+    await db.refresh(item)
+    return item
+
+
 _MANUAL_ISSUE = {
     "review_type": ReviewType.VALIDATION,
     "issue": "Manually sent for review",

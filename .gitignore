@@ -17,14 +17,22 @@ frontend/node_modules/
 
 # Runtime data / generated artifacts (not source)
 backend/*.db
+backend/*.db-shm
+backend/*.db-wal
 backend/*.db.bak-*
 backend/anomaly_reports/
 backend/uploads/
 backend/sql_exports/
 backend/staging_data/
 backend/pipeline_outputs/
+backend/pytest_*.out
+frontend/pytest_*.out
 flask_session/
 /dip.db
+/logs/
+/run/
+/uploads/
+frontend/.vite/
 
 # OS / editor cruft
 .DS_Store
@@ -38,3 +46,4 @@ DIP_ETL.mp4
 DIP_Demo_v2_transcript.txt
 DEMO_VIDEO_CONTEXT.md
 stillora-*.mp4
+demo_final_4k.mp4

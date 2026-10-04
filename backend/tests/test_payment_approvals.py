@@ -325,7 +325,7 @@ async def test_resolve_department_picks_least_loaded_among_candidates(db, make_o
 
     # Give u1 an existing open ASSIGNED step so it's more loaded than u2.
     dummy_wf = ApprovalWorkflow(
-        organization_id=org.id, invoice_id=1, rule_id=1, rule_name="x", rule_version=1,
+        organization_id=org.id, entity_id=1, invoice_id=1, rule_id=1, rule_name="x", rule_version=1,
         status=ApprovalWorkflowStatus.IN_PROGRESS, approval_required=True, approval_mode=ApprovalMode.SEQUENTIAL,
         approval_count_required=1, current_approval_step_number=1,
     )
@@ -358,7 +358,7 @@ async def test_resolve_and_assign_step_stamps_due_at_from_sla_hours(db, make_org
     org = await make_org()
     user = await _make_user(db, org)
     wf = ApprovalWorkflow(
-        organization_id=org.id, invoice_id=1, rule_id=1, rule_name="x", rule_version=1,
+        organization_id=org.id, entity_id=1, invoice_id=1, rule_id=1, rule_name="x", rule_version=1,
         status=ApprovalWorkflowStatus.IN_PROGRESS, approval_required=True, approval_mode=ApprovalMode.SEQUENTIAL,
         approval_count_required=1, current_approval_step_number=1,
     )
@@ -388,7 +388,7 @@ async def test_create_workflow_materializes_steps_and_assigns_first_step(db, mak
     invoice = await _make_invoice(db, org)
     await rule_svc.publish_rule(db, org.id, _rule_input(_approver_user_id=user.id), user.id)
 
-    wf = await engine_svc.create_workflow(db, organization_id=org.id, invoice_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
+    wf = await engine_svc.create_workflow(db, organization_id=org.id, entity_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
     assert wf is not None
     assert wf.status == ApprovalWorkflowStatus.IN_PROGRESS
 
@@ -412,7 +412,7 @@ async def test_create_workflow_auto_approves_when_rule_requires_nothing(db, make
         user.id,
     )
 
-    wf = await engine_svc.create_workflow(db, organization_id=org.id, invoice_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
+    wf = await engine_svc.create_workflow(db, organization_id=org.id, entity_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
     assert wf is not None
     assert wf.status == ApprovalWorkflowStatus.AUTO_APPROVED
     assert wf.rule_id == rule.id
@@ -433,7 +433,7 @@ async def test_create_workflow_auto_approves_when_no_rule_matches(db, make_org):
     invoice = await _make_invoice(db, org)
     # No rule published for this org at all.
 
-    wf = await engine_svc.create_workflow(db, organization_id=org.id, invoice_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
+    wf = await engine_svc.create_workflow(db, organization_id=org.id, entity_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
     assert wf is not None
     assert wf.status == ApprovalWorkflowStatus.AUTO_APPROVED
     assert wf.rule_id is None
@@ -441,7 +441,7 @@ async def test_create_workflow_auto_approves_when_no_rule_matches(db, make_org):
     assert wf.rule_version is None
 
     # Idempotent: a second call for the same invoice returns the SAME row.
-    wf2 = await engine_svc.create_workflow(db, organization_id=org.id, invoice_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
+    wf2 = await engine_svc.create_workflow(db, organization_id=org.id, entity_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
     assert wf2.id == wf.id
 
 
@@ -454,7 +454,7 @@ async def test_create_workflow_raises_on_rule_conflict(db, make_org):
     await rule_svc.publish_rule(db, org.id, _rule_input(name="B", _approver_user_id=user.id), user.id)
 
     with pytest.raises(engine_svc.ApprovalWorkflowEngineError) as exc:
-        await engine_svc.create_workflow(db, organization_id=org.id, invoice_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
+        await engine_svc.create_workflow(db, organization_id=org.id, entity_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
     assert len(exc.value.conflicting_rule_ids) == 2
 
 
@@ -477,7 +477,7 @@ async def test_create_workflow_auto_approve_action_with_peer_review_still_create
         user.id,
     )
 
-    wf = await engine_svc.create_workflow(db, organization_id=org.id, invoice_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
+    wf = await engine_svc.create_workflow(db, organization_id=org.id, entity_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
     assert wf is not None
     assert wf.peer_review_required is True
 
@@ -486,7 +486,7 @@ async def test_create_workflow_auto_approve_action_with_peer_review_still_create
 
 async def _create_simple_workflow(db, org, user, invoice, **rule_overrides):
     await rule_svc.publish_rule(db, org.id, _rule_input(_approver_user_id=user.id, **rule_overrides), user.id)
-    return await engine_svc.create_workflow(db, organization_id=org.id, invoice_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
+    return await engine_svc.create_workflow(db, organization_id=org.id, entity_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
 
 
 @pytest.mark.asyncio
@@ -535,7 +535,7 @@ async def test_sequential_approve_advances_and_completes_workflow(db, make_org):
         ),
         u1.id,
     )
-    wf = await engine_svc.create_workflow(db, organization_id=org.id, invoice_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=u1.id)
+    wf = await engine_svc.create_workflow(db, organization_id=org.id, entity_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=u1.id)
 
     step1 = (await db.execute(select(ApprovalWorkflowStep).where(ApprovalWorkflowStep.workflow_id == wf.id, ApprovalWorkflowStep.step_number == 1))).scalar_one()
     await engine_svc.act_on_approval_step(db, organization_id=org.id, step_id=step1.id, actor_user_id=u1.id, approve=True)
@@ -570,7 +570,7 @@ async def test_parallel_mode_completes_at_count_required_and_skips_remainder(db,
         ),
         u1.id,
     )
-    wf = await engine_svc.create_workflow(db, organization_id=org.id, invoice_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=u1.id)
+    wf = await engine_svc.create_workflow(db, organization_id=org.id, entity_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=u1.id)
 
     steps = {s.step_number: s for s in (await db.execute(select(ApprovalWorkflowStep).where(ApprovalWorkflowStep.workflow_id == wf.id))).scalars().all()}
     assert all(s.status == ApprovalStepStatus.ASSIGNED for s in steps.values())  # PARALLEL assigns everyone at once
@@ -599,7 +599,7 @@ async def test_peer_review_flagged_still_counts_toward_completion(db, make_org):
         ),
         user.id,
     )
-    wf = await engine_svc.create_workflow(db, organization_id=org.id, invoice_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
+    wf = await engine_svc.create_workflow(db, organization_id=org.id, entity_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
     peer_step = (await db.execute(select(PeerReviewStep).where(PeerReviewStep.workflow_id == wf.id))).scalar_one()
 
     await engine_svc.act_on_peer_review_step(db, organization_id=org.id, step_id=peer_step.id, actor_user_id=user.id, flagged=True, comment="looks off")
@@ -621,7 +621,7 @@ async def test_create_workflow_rejects_invoice_from_a_different_org(db, make_org
     await rule_svc.publish_rule(db, org2.id, _rule_input(_approver_user_id=user2.id), user2.id)
 
     with pytest.raises(engine_svc.ApprovalWorkflowEngineError) as exc:
-        await engine_svc.create_workflow(db, organization_id=org2.id, invoice_id=victim_invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user2.id)
+        await engine_svc.create_workflow(db, organization_id=org2.id, entity_id=victim_invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user2.id)
     assert not exc.value.conflicting_rule_ids  # not-found, not a rule conflict
 
 
@@ -632,7 +632,7 @@ async def test_with_invoice_fields_never_stamps_a_cross_org_invoice(db, make_org
     victim_invoice = await _make_invoice(db, org1, invoice_number="VICTIM-2", vendor_name="Victim Vendor", total=555.0)
 
     bad_wf = ApprovalWorkflow(
-        organization_id=org2.id, invoice_id=victim_invoice.id, rule_id=0, rule_name="fake", rule_version=1,
+        organization_id=org2.id, entity_id=victim_invoice.id, invoice_id=victim_invoice.id, rule_id=0, rule_name="fake", rule_version=1,
         status=ApprovalWorkflowStatus.APPROVED, approval_required=True, approval_mode=ApprovalMode.SEQUENTIAL,
         approval_count_required=1, approval_count_completed=1,
     )
@@ -650,7 +650,7 @@ async def test_with_invoice_fields_stamps_normally_for_same_org_invoice(db, make
     org = await make_org()
     invoice = await _make_invoice(db, org, invoice_number="OWN-1", vendor_name="My Vendor", total=42.0)
     wf = ApprovalWorkflow(
-        organization_id=org.id, invoice_id=invoice.id, rule_id=0, rule_name="fake", rule_version=1,
+        organization_id=org.id, entity_id=invoice.id, invoice_id=invoice.id, rule_id=0, rule_name="fake", rule_version=1,
         status=ApprovalWorkflowStatus.APPROVED, approval_required=True, approval_mode=ApprovalMode.SEQUENTIAL,
         approval_count_required=1, approval_count_completed=1,
     )
@@ -714,8 +714,8 @@ async def test_create_workflow_is_idempotent_on_repeated_call(db, make_org):
     await rule_svc.publish_rule(db, org.id, _rule_input(_approver_user_id=user.id), user.id)
     context = engine.ApprovalMatchContext(amount=2500, currency="USD")
 
-    first = await engine_svc.create_workflow(db, organization_id=org.id, invoice_id=invoice.id, context=context, created_by=user.id)
-    second = await engine_svc.create_workflow(db, organization_id=org.id, invoice_id=invoice.id, context=context, created_by=user.id)
+    first = await engine_svc.create_workflow(db, organization_id=org.id, entity_id=invoice.id, context=context, created_by=user.id)
+    second = await engine_svc.create_workflow(db, organization_id=org.id, entity_id=invoice.id, context=context, created_by=user.id)
 
     assert first.id == second.id
     count = (await db.execute(select(func.count()).select_from(ApprovalWorkflow).where(ApprovalWorkflow.invoice_id == invoice.id)))
@@ -741,7 +741,7 @@ async def test_create_workflow_after_approval_does_not_create_second_workflow(db
     await db.refresh(wf)
     assert wf.status == ApprovalWorkflowStatus.APPROVED  # sanity — fully resolved before the retry
 
-    retried = await engine_svc.create_workflow(db, organization_id=org.id, invoice_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
+    retried = await engine_svc.create_workflow(db, organization_id=org.id, entity_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
 
     assert retried.id == wf.id  # same, already-APPROVED workflow — not a fresh PENDING one
     count = (await db.execute(select(func.count()).select_from(ApprovalWorkflow).where(ApprovalWorkflow.invoice_id == invoice.id)))
@@ -759,7 +759,7 @@ async def test_create_workflow_after_rejection_allows_resubmission(db, make_org)
     await db.refresh(wf)
     assert wf.status == ApprovalWorkflowStatus.REJECTED  # sanity
 
-    resubmitted = await engine_svc.create_workflow(db, organization_id=org.id, invoice_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
+    resubmitted = await engine_svc.create_workflow(db, organization_id=org.id, entity_id=invoice.id, context=engine.ApprovalMatchContext(amount=2500, currency="USD"), created_by=user.id)
 
     assert resubmitted is not None
     assert resubmitted.id != wf.id  # a genuinely NEW workflow — REJECTED must not be treated as "already exists"
@@ -780,7 +780,7 @@ async def test_create_workflow_after_rejection_allows_resubmission(db, make_org)
 
 def _dummy_workflow_row(org_id: int, invoice_id: int, **overrides) -> ApprovalWorkflow:
     defaults = dict(
-        organization_id=org_id, invoice_id=invoice_id, rule_id=0, rule_name="dummy", rule_version=1,
+        organization_id=org_id, entity_id=invoice_id, invoice_id=invoice_id, rule_id=0, rule_name="dummy", rule_version=1,
         status=ApprovalWorkflowStatus.IN_PROGRESS, approval_required=True, approval_mode=ApprovalMode.SEQUENTIAL,
         approval_count_required=1,
     )
@@ -818,7 +818,7 @@ async def test_classify_approval_outcome_detects_workflow_created(db, make_org):
     wf = _dummy_workflow_row(org.id, invoice.id)
     db.add(wf)
     await db.flush()
-    db.add(ApprovalWorkflowAuditLog(organization_id=org.id, workflow_id=wf.id, invoice_id=invoice.id, event_type=ApprovalWorkflowAuditEventType.CREATED, message="created"))
+    db.add(ApprovalWorkflowAuditLog(organization_id=org.id, workflow_id=wf.id, entity_id=invoice.id, invoice_id=invoice.id, event_type=ApprovalWorkflowAuditEventType.CREATED, message="created"))
     await db.commit()
 
     result = await sched_svc._classify_invoice_approval_outcome(db, invoice.document_id)
@@ -832,7 +832,7 @@ async def test_classify_approval_outcome_detects_duplicate_suppressed(db, make_o
     wf = _dummy_workflow_row(org.id, invoice.id)
     db.add(wf)
     await db.flush()
-    db.add(ApprovalWorkflowAuditLog(organization_id=org.id, workflow_id=wf.id, invoice_id=invoice.id, event_type=ApprovalWorkflowAuditEventType.DUPLICATE_SUPPRESSED, message="suppressed"))
+    db.add(ApprovalWorkflowAuditLog(organization_id=org.id, workflow_id=wf.id, entity_id=invoice.id, invoice_id=invoice.id, event_type=ApprovalWorkflowAuditEventType.DUPLICATE_SUPPRESSED, message="suppressed"))
     await db.commit()
 
     result = await sched_svc._classify_invoice_approval_outcome(db, invoice.document_id)
@@ -860,8 +860,8 @@ async def test_classify_approval_outcome_detects_approver_not_found_alongside_wo
     wf = _dummy_workflow_row(org.id, invoice.id)
     db.add(wf)
     await db.flush()
-    db.add(ApprovalWorkflowAuditLog(organization_id=org.id, workflow_id=wf.id, invoice_id=invoice.id, event_type=ApprovalWorkflowAuditEventType.CREATED, message="created"))
-    db.add(ApprovalWorkflowAuditLog(organization_id=org.id, workflow_id=wf.id, invoice_id=invoice.id, event_type=ApprovalWorkflowAuditEventType.RESOLUTION_FAILED, message="no eligible user"))
+    db.add(ApprovalWorkflowAuditLog(organization_id=org.id, workflow_id=wf.id, entity_id=invoice.id, invoice_id=invoice.id, event_type=ApprovalWorkflowAuditEventType.CREATED, message="created"))
+    db.add(ApprovalWorkflowAuditLog(organization_id=org.id, workflow_id=wf.id, entity_id=invoice.id, invoice_id=invoice.id, event_type=ApprovalWorkflowAuditEventType.RESOLUTION_FAILED, message="no eligible user"))
     await db.commit()
 
     result = await sched_svc._classify_invoice_approval_outcome(db, invoice.document_id)

@@ -419,6 +419,90 @@ async def invoice_processing_overview(db: AsyncSession, organization_id: int | N
     }
 
 
+# ── Tally Integration (TALLY-J) ──
+# Same "read straight off the real tables, no new persistence" convention
+# as invoice_processing_overview() above. Every count here comes from a
+# table another Tally phase already owns (TALLY-B extraction runs,
+# TALLY-E reconciliation runs/exceptions, TALLY-I write-back transactions)
+# — Monitoring never mutates any of them.
+
+async def tally_overview(db: AsyncSession, organization_id: int | None, since: datetime) -> dict:
+    from app.models.tally_extraction import TallyExtractionRun, TallyExtractionStatus
+    from app.models.tally_reconciliation import TallyExceptionType, TallyReconciliationException, TallyReconciliationRun, TallyReconciliationRunStatus
+    from app.models.tally_writeback import TallyVoucherWriteBackTransaction, TallyWriteBackStatus
+    from app.models.review_queue import ReviewQueueItem, ReviewStatus
+
+    async def _count(model, extra_where=None, *, since_field: str | None = "created_at"):
+        stmt = select(func.count()).select_from(model)
+        if since_field is not None:
+            stmt = stmt.where(getattr(model, since_field) >= since)
+        if organization_id is not None and hasattr(model, "organization_id"):
+            stmt = stmt.where(model.organization_id == organization_id)
+        if extra_where is not None:
+            stmt = stmt.where(extra_where)
+        return (await db.execute(stmt)).scalar_one()
+
+    # ── Extraction (TALLY-B) ──
+    extraction_runs_total = await _count(TallyExtractionRun)
+    extraction_completed = await _count(TallyExtractionRun, TallyExtractionRun.status.in_(
+        [TallyExtractionStatus.COMPLETED, TallyExtractionStatus.COMPLETED_WITH_ERRORS]
+    ))
+    extraction_failed = await _count(TallyExtractionRun, TallyExtractionRun.status == TallyExtractionStatus.FAILED)
+    extraction_records_stmt = select(func.coalesce(func.sum(TallyExtractionRun.records_fetched), 0)).where(TallyExtractionRun.created_at >= since)
+    if organization_id is not None:
+        extraction_records_stmt = extraction_records_stmt.where(TallyExtractionRun.organization_id == organization_id)
+    extraction_records_fetched = (await db.execute(extraction_records_stmt)).scalar_one()
+    extraction_in_flight = await _count(TallyExtractionRun, TallyExtractionRun.status == TallyExtractionStatus.RUNNING, since_field=None)
+
+    # ── Reconciliation (TALLY-E) ──
+    reconciliation_runs_total = await _count(TallyReconciliationRun)
+    reconciliation_succeeded = await _count(TallyReconciliationRun, TallyReconciliationRun.status == TallyReconciliationRunStatus.SUCCEEDED)
+    reconciliation_failed = await _count(TallyReconciliationRun, TallyReconciliationRun.status == TallyReconciliationRunStatus.FAILED)
+    scheduled_reconciliation_runs = await _count(TallyReconciliationRun, TallyReconciliationRun.trigger == "Schedule")
+
+    exception_counts_stmt = select(TallyReconciliationException.exception_type, func.count()).where(
+        TallyReconciliationException.created_at >= since,
+    ).group_by(TallyReconciliationException.exception_type)
+    if organization_id is not None:
+        exception_counts_stmt = exception_counts_stmt.where(TallyReconciliationException.organization_id == organization_id)
+    exception_counts = {t.value if hasattr(t, "value") else t: c for t, c in (await db.execute(exception_counts_stmt)).all()}
+    open_exceptions = sum(v for k, v in exception_counts.items() if k != TallyExceptionType.MATCHED.value)
+
+    # Review Queue depth attributable to Tally reconciliation specifically —
+    # via TallyReconciliationException.review_item_id (TALLY-F's real anchor
+    # pointer), never by document_type (which would also match ordinary
+    # invoice-validation review items anchored to the same Document type).
+    review_depth_stmt = select(func.count()).select_from(ReviewQueueItem).join(
+        TallyReconciliationException, TallyReconciliationException.review_item_id == ReviewQueueItem.id,
+    ).where(ReviewQueueItem.status.in_([ReviewStatus.PENDING, ReviewStatus.IN_PROGRESS, ReviewStatus.ESCALATED]))
+    if organization_id is not None:
+        review_depth_stmt = review_depth_stmt.where(ReviewQueueItem.organization_id == organization_id)
+    tally_review_queue_depth = (await db.execute(review_depth_stmt)).scalar_one()
+
+    # ── Write-back (TALLY-I) ──
+    writeback_total = await _count(TallyVoucherWriteBackTransaction)
+    writeback_succeeded = await _count(TallyVoucherWriteBackTransaction, TallyVoucherWriteBackTransaction.status == TallyWriteBackStatus.SUCCEEDED)
+    writeback_dead_letter = await _count(TallyVoucherWriteBackTransaction, TallyVoucherWriteBackTransaction.status == TallyWriteBackStatus.DEAD_LETTER)
+    writeback_failed = await _count(TallyVoucherWriteBackTransaction, TallyVoucherWriteBackTransaction.status == TallyWriteBackStatus.FAILED)
+    writeback_in_flight = await _count(
+        TallyVoucherWriteBackTransaction, TallyVoucherWriteBackTransaction.status.in_([TallyWriteBackStatus.PENDING, TallyWriteBackStatus.RETRYING]),
+        since_field=None,
+    )
+
+    return {
+        "extraction_runs_total": extraction_runs_total, "extraction_completed": extraction_completed,
+        "extraction_failed": extraction_failed, "extraction_records_fetched": extraction_records_fetched,
+        "extraction_in_flight": extraction_in_flight,
+        "reconciliation_runs_total": reconciliation_runs_total, "reconciliation_succeeded": reconciliation_succeeded,
+        "reconciliation_failed": reconciliation_failed, "scheduled_reconciliation_runs": scheduled_reconciliation_runs,
+        "open_exceptions": open_exceptions, "exception_counts": exception_counts,
+        "tally_review_queue_depth": tally_review_queue_depth,
+        "writeback_total": writeback_total, "writeback_succeeded": writeback_succeeded,
+        "writeback_dead_letter": writeback_dead_letter, "writeback_failed": writeback_failed,
+        "writeback_in_flight": writeback_in_flight,
+    }
+
+
 # ── Pipelines (for pickers / SLA scoping) ──
 
 async def list_pipelines(db: AsyncSession, organization_id: int | None) -> list[Pipeline]:

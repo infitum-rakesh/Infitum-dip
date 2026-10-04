@@ -6,7 +6,7 @@ import {
   AlertTriangle, PlayCircle, Clock, Users, Shield, Building2, Key,
   ScrollText, Settings, ChevronRight, LogOut, BarChart3, ArrowLeftRight,
   CreditCard, Puzzle, Gauge, UserCog, Monitor, DollarSign, Receipt, Zap, Lock,
-  BadgeCheck, History, Boxes,
+  BadgeCheck, History, Boxes, Calculator, FileText,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth.js';
 import { usePermission } from '@/hooks/usePermission.js';
@@ -74,6 +74,17 @@ const NAV = [
     module: MODULES.BULK_MIGRATION,
     items: [
       { to: '/app/bulk-migration', label: 'Pipelines', icon: Boxes },
+    ],
+  },
+  {
+    // TALLY-A — read-only connection + company discovery only; write-back
+    // and reconciliation land in later phases (see TALLY-B..J).
+    section: 'TALLY INTEGRATION',
+    module: MODULES.TALLY_INTEGRATION,
+    items: [
+      { to: '/app/tally/companies', label: 'Companies', icon: Calculator },
+      { to: '/app/tally/vouchers', label: 'Voucher Preview', icon: FileText },
+      { to: '/app/tally/reconciliation', label: 'Reconciliation', icon: Scale },
     ],
   },
   {

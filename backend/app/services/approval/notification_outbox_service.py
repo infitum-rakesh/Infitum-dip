@@ -267,7 +267,7 @@ async def notify_workflow_decided(db: AsyncSession, workflow: ApprovalWorkflow, 
     notification_type = ApprovalNotificationType.WORKFLOW_APPROVED if decision == "APPROVED" else ApprovalNotificationType.WORKFLOW_REJECTED
     subject = f"Approval workflow {decision.lower()}: {workflow.rule_name}"
     body = (
-        f"The approval workflow for rule '{workflow.rule_name}' (invoice id {workflow.invoice_id}) "
+        f"The approval workflow for rule '{workflow.rule_name}' ({workflow.entity_type.value.lower()} {workflow.entity_id}) "
         f"has been {decision}. {workflow.decision_reason or ''}".strip()
     )
 

@@ -361,8 +361,11 @@ async def decide(db: AsyncSession, invoice: ApInvoice, validation_results: list[
                 }.items() if v},
             )
             try:
+                from app.models.approval.rules import ApprovalEntityType
+
                 workflow = await approval_engine.create_workflow(
-                    db, organization_id=invoice.organization_id, invoice_id=invoice.id, context=approval_context,
+                    db, organization_id=invoice.organization_id, entity_type=ApprovalEntityType.INVOICE,
+                    entity_id=invoice.id, context=approval_context,
                 )
             except approval_engine.ApprovalWorkflowEngineError as exc:
                 # A genuine RULE_CONFLICT (two equally-specific rules tie) —

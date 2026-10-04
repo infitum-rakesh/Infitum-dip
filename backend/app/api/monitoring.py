@@ -31,6 +31,7 @@ from app.schemas.monitoring import (
     SlaDefinitionOut,
     SlaDefinitionUpdateRequest,
     SystemHealthOut,
+    TallyOverviewOut,
 )
 
 router = APIRouter(prefix="/monitoring", tags=["monitoring"])
@@ -59,6 +60,15 @@ async def invoice_processing(days: int = Query(7, ge=1, le=90), user: User = Dep
     invoice_processing_overview() for exactly what's real vs honestly
     disclosed as unavailable (no worker-pool concept exists in this build)."""
     return await svc.get_invoice_processing(db, _org_id(user), days=days)
+
+
+@router.get("/tally", response_model=TallyOverviewOut)
+async def tally_overview(days: int = Query(7, ge=1, le=90), user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
+    """TALLY-J5 — real Tally integration rollup (extraction, reconciliation,
+    review-queue depth, write-back outcomes) surfaced in the Monitoring
+    module — see monitoring/repository.py's tally_overview() for the exact
+    real-data queries behind each field."""
+    return await svc.get_tally_overview(db, _org_id(user), days=days)
 
 
 @router.get("/pipeline-runs", response_model=PipelineRunsOut)

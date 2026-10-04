@@ -45,6 +45,15 @@ class IncidentSource(str, enum.Enum):
     # background retry loop on the same DEAD_LETTER/circuit-open
     # conditions as INVOICE_ERP_POSTING above.
     DOCUMENT_WEBHOOK = "DOCUMENT_WEBHOOK"
+    # TALLY-J — filed by tally_writeback_service.py's background retry loop
+    # on the same DEAD_LETTER/circuit-open conditions as INVOICE_ERP_POSTING
+    # above, and by schedule_service._execute_tally_reconciliation_schedule()
+    # when a scheduled reconciliation run itself lands in FAILED (Tally
+    # unreachable, connection deleted, etc.) — a distinct source from the
+    # pre-existing RECONCILIATION one above, whose own message template
+    # describes a per-record MISMATCH, not a whole-run failure.
+    TALLY_WRITEBACK = "TALLY_WRITEBACK"
+    TALLY_RECONCILIATION = "TALLY_RECONCILIATION"
 
 
 class IncidentSeverity(str, enum.Enum):

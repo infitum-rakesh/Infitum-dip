@@ -219,28 +219,63 @@ def run_multilingual_ocr(
         best_dims = final_dims_by_page.get(page_number)
         page_changed = False
 
-        # Individual single-language attempts (not the joined multi-
-        # language string) — a lone script-appropriate model reads its
-        # own script far more reliably than a combined model does. Try
-        # detected candidates first, then every configured installed
-        # non-English model. This matters for Odia: a noisy combined pass
-        # can misread Oriya glyphs as Tamil, so relying only on the first
-        # pass' detected languages would never even try `ori`.
-        candidate_languages = [c.language for c in sorted(page_lang.languages, key=lambda c: c.confidence, reverse=True)]
-        candidate_languages.extend(code for code in effective_codes if code != "en")
-        tried_codes: set[str] = set()
-        for language in candidate_languages:
+        sorted_candidates = sorted(page_lang.languages, key=lambda c: c.confidence, reverse=True)
+
+        # A page where the detector found exactly one real candidate
+        # (document_language_service's INCLUSION_THRESHOLD filter already
+        # dropped anything else) isn't actually multilingual, so it never
+        # gets put to the confidence vote below — that vote is rigged
+        # against it. Pass 1's blind every-configured-language string can
+        # inflate its own average confidence on precisely this kind of
+        # page by opportunistically matching a handful of characters
+        # against a *different* script's lookalike glyphs (each scored
+        # confidently against its own alphabet, with no penalty for using
+        # the wrong one) — confirmed live on a pure-English invoice with
+        # a 13-language combined string: pass 1 scored 74.7% confidence
+        # on text riddled with Devanagari/Kannada/Tamil/Gujarati noise,
+        # while a clean English-only re-OCR of the same page scored a
+        # lower-but-correct 63.7% (genuine JPEG/compression softness, not
+        # a wrong-script misread) — so "pick whichever scores higher"
+        # kept the garbled text every time. The detector already named
+        # the one real answer; trust it outright instead of re-litigating
+        # it with a metric it's guaranteed to lose.
+        if len(sorted_candidates) == 1:
+            language = sorted_candidates[0].language
             tcode = tesseract_code_for(language)
-            if not tcode or tcode in tried_codes or tcode not in installed:
-                continue
-            tried_codes.add(tcode)
-            page_result = ocr_engine.extract_one_page(page_obj, lang=tcode)
-            conf = _avg_confidence(page_result["regions"])
-            if conf > best_confidence:
-                best_confidence = conf
+            if tcode and tcode in installed:
+                page_result = ocr_engine.extract_one_page(page_obj, lang=tcode)
                 best_regions = page_result["regions"]
+                best_confidence = _avg_confidence(best_regions)
                 best_dims = {"page": page_number, "width": page_result["width"], "height": page_result["height"]}
                 page_changed = True
+        elif sorted_candidates:
+            # Genuinely multilingual page (more than one language cleared
+            # INCLUSION_THRESHOLD) — no single language is obviously "the"
+            # answer, so measuring which single-language pass actually
+            # reads this specific page best is the right tool. Individual
+            # single-language attempts (not the joined multi-language
+            # string) — a lone script-appropriate model reads its own
+            # script far more reliably than a combined model does. Try
+            # detected candidates first, then every configured installed
+            # non-English model. This matters for Odia: a noisy combined
+            # pass can misread Oriya glyphs as Tamil, so relying only on
+            # the first pass' detected languages would never even try
+            # `ori`.
+            candidate_languages = [c.language for c in sorted_candidates]
+            candidate_languages.extend(code for code in effective_codes if code != "en")
+            tried_codes: set[str] = set()
+            for language in candidate_languages:
+                tcode = tesseract_code_for(language)
+                if not tcode or tcode in tried_codes or tcode not in installed:
+                    continue
+                tried_codes.add(tcode)
+                page_result = ocr_engine.extract_one_page(page_obj, lang=tcode)
+                conf = _avg_confidence(page_result["regions"])
+                if conf > best_confidence:
+                    best_confidence = conf
+                    best_regions = page_result["regions"]
+                    best_dims = {"page": page_number, "width": page_result["width"], "height": page_result["height"]}
+                    page_changed = True
 
         if page_changed:
             final_regions_by_page[page_number] = best_regions

@@ -67,6 +67,22 @@ class ApInvoiceSource(str, enum.Enum):
     PIPELINE = "PIPELINE"
 
 
+class ApInvoiceVoucherType(str, enum.Enum):
+    """Which Tally voucher type this invoice should map to on write-back
+    (TALLY-D's TallyVoucherBuilder / TALLY-I's controlled write-back) —
+    set here, at materialization time, so the accounting-mapping layer
+    has a real signal instead of re-deriving it. Defaults PURCHASE (the
+    overwhelmingly common case for an AP invoice); a reviewer/rule can
+    reclassify to CREDIT_NOTE/DEBIT_NOTE for a vendor credit/debit memo,
+    or PAYMENT for a payment-advice-shaped document. This column is
+    inert until TALLY-D/TALLY-I read it — recording it now avoids a
+    second, disconnected classification step later."""
+    PURCHASE = "PURCHASE"
+    CREDIT_NOTE = "CREDIT_NOTE"
+    DEBIT_NOTE = "DEBIT_NOTE"
+    PAYMENT = "PAYMENT"
+
+
 class ApInvoiceVendor(TenantBase):
     """Reference/master vendor data — used by Reference and PO validation
     (vendor exists/active). Not the same as a Connections `Connection`
@@ -126,10 +142,32 @@ class ApInvoice(TenantBase):
     purchase_order: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
     payment_terms: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    payment_reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+    # Indian GST / TDS taxonomy (TALLY-C) — additive and nullable; blank
+    # for every non-Indian invoice, exactly like every other optional
+    # field on this model. Named to match document_taxonomies.py's
+    # INVOICE fields 1:1, same convention as the header fields above.
+    vendor_gstin: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    vendor_pan: Mapped[str | None] = mapped_column(String(15), nullable=True)
+    buyer_gstin: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    place_of_supply: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    tds_section: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    tds_rate: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    tds_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Which Tally voucher type this invoice should map to on write-back —
+    # see ApInvoiceVoucherType. Not nullable: every invoice needs a
+    # default classification even before a human/rule ever looks at it.
+    voucher_type: Mapped[ApInvoiceVoucherType] = mapped_column(Enum(ApInvoiceVoucherType), default=ApInvoiceVoucherType.PURCHASE, nullable=False)
 
     # Amounts
     subtotal: Mapped[float | None] = mapped_column(Float, nullable=True)
     tax: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cgst_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sgst_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    igst_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cess_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
     discount: Mapped[float | None] = mapped_column(Float, nullable=True)
     freight: Mapped[float | None] = mapped_column(Float, nullable=True)
     total: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -194,6 +232,17 @@ class ApInvoiceLine(TenantBase):
     tax: Mapped[float | None] = mapped_column(Float, nullable=True)
     line_total: Mapped[float | None] = mapped_column(Float, nullable=True)
     purchase_order_line: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    # Indian GST line-level detail (TALLY-C) — additive/nullable, matches
+    # INVOICE_LINE_ITEMS_TABLE's columns 1:1.
+    hsn_sac_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    uom: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    cgst_rate: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    cgst_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sgst_rate: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    sgst_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    igst_rate: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    igst_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     # {page, boundingPolygon, sourceText} where available — see

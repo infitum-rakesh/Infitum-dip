@@ -1,9 +1,28 @@
-# Data Intelligence Platform — Windows Server Deployment
+# Data Intelligence Platform — Server Deployment
 
 This folder ships alongside `backend/` and `frontend/` as the root of the
 `DataIntelligencePlatform/` package. Everything here resolves paths from
-its own location (`%~dp0`) — never the caller's current directory, never
-a developer-specific path.
+its own location (`%~dp0` on Windows, `$SCRIPT_DIR` on Linux) — never the
+caller's current directory, never a developer-specific path.
+
+Two parallel script sets are provided, one per platform — same steps,
+same safety guarantees (idempotency, never silently deleting data,
+PID-exact process targeting, graceful-then-forceful shutdown), adapted to
+each OS's conventions:
+
+| Step | Windows | Linux |
+|---|---|---|
+| Install | `install.bat` | `install.sh` |
+| Start | `start.bat` | `start.sh` |
+| Stop | `stop.bat` | `stop.sh` |
+| Status | `status.bat` | `status.sh` |
+| Upgrade | `upgrade.bat <path>` | `upgrade.sh <path>` |
+| Uninstall | `uninstall.bat` | `uninstall.sh` |
+
+The rest of this document shows the Windows command; the Linux
+equivalent is always the same filename with `.sh` instead of `.bat`, run
+as `./script.sh` (after `chmod +x *.sh` once, or they're already
+executable if extracted from the release archive).
 
 ## 1. Architecture — read this first
 
@@ -13,7 +32,7 @@ scheduler, and the embedded async worker pools. There are **no separate
 Backend / Worker / Scheduler operating-system processes** — that's a
 deliberate, existing architectural choice in this codebase (see
 `backend/app/execution/pipeline_executor.py`'s own docstring), not a
-simplification made for this installer. `status.bat` reports
+simplification made for this installer. status.bat/status.sh report
 Worker/Scheduler health as **real, in-process subsystem status** (via
 `GET /api/ops-status`), clearly labeled as such.
 
@@ -21,28 +40,61 @@ A consequence: **`WORKER_COUNT` in `.env` should stay at `1`.** Setting
 it above 1 makes uvicorn fork multiple OS processes, and this app keeps
 some state (SQL Workspace's query-cancellation registry, in-flight
 background-task tracking) in one process's memory — a second worker
-would have its own, disconnected copy of that state. `install.bat`
-warns about this if you try to raise it.
+would have its own, disconnected copy of that state. `install.bat`/
+`install.sh` warn about this if you try to raise it.
 
 **Alembic is listed in `requirements.txt` but is not used anywhere in
 this codebase.** Schema evolution is a set of small, idempotent,
 hand-written scripts in `backend/scripts/migrate_*.py`, all run in the
 correct order by the single entrypoint `backend/scripts/run_all_migrations.py`
-(called by `install.bat` and `upgrade.bat`). This is a real, disclosed
+(called by install/upgrade on both platforms). This is a real, disclosed
 architectural choice for this release — adopting Alembic properly is a
-reasonable future improvement, out of scope here.
+reasonable future improvement, out of scope here. **Known gap, disclosed
+rather than hidden:** every `migrate_*.py` script is hardcoded to
+`sqlite3` — `run_all_migrations.py` actually runs them for a SQLite
+deployment, but for an *existing* Postgres/MySQL database that predates
+a specific feature, it prints a clear disclosure and exits 0 rather than
+pretending to migrate it. A brand-new Postgres/MySQL database is
+unaffected — `init_db()`'s `create_all()` builds the fully current
+schema on first startup regardless of database engine.
 
 ## 2. System requirements
 
+**Windows:**
 - Windows 10/11 or Windows Server 2016+
 - Python 3.11 or 3.12 (added to PATH)
-- Node.js 20 LTS + npm (needed to build the frontend during install;
-  not needed afterward if you ship a pre-built `frontend/dist/`)
 - PowerShell (ships with every supported Windows version — used for a
   few things batch can't do cleanly: masked password entry, random
   secret generation, reliable child-PID capture)
+
+**Linux:**
+- Any modern distribution with `bash` (3.2+ — the scripts deliberately
+  avoid bash-4-only syntax like `${var,,}` for the widest compatibility),
+  `python3.11`/`python3.12` + the matching `venv` module (e.g.
+  `apt-get install python3.12 python3.12-venv` on Debian/Ubuntu), and
+  `curl`. `rsync` is required only for `upgrade.sh`.
+
+**Both platforms:**
+- Node.js 20 LTS + npm — only needed if you're building the frontend on
+  *this* machine. See "Deploying without Node.js" below for the normal
+  production path, which needs none of this on the server.
 - ~2 GB disk for the Python virtual environment + dependencies, plus
   storage for uploaded documents and your database
+
+### Deploying without Node.js
+
+`frontend/dist/` is a set of static files (HTML/JS/CSS) — nothing about
+running the app requires Node.js or npm on the server. The intended
+release workflow is: build the frontend **once**, on a developer machine
+or CI runner that has Node.js (`npm ci && npm run build` inside
+`frontend/`), then ship the resulting `frontend/dist/` folder as part of
+the deployment package alongside `backend/` and this `deployment/`
+folder. `install.bat`/`install.sh` check for `frontend/dist/index.html`
+first: if it's already there, they skip the entire Node.js check and
+build step and print that they're using the pre-built bundle — the
+target server never needs Node.js/npm installed at all. Only fall back
+to installing Node.js on the server if you intend to build from source
+there instead.
 
 ## 3. Database prerequisites
 
@@ -50,7 +102,7 @@ reasonable future improvement, out of scope here.
   automatically.
 - **PostgreSQL / MySQL** (recommended for production): a reachable
   server, a database, and a user with `CREATE TABLE`/`ALTER TABLE`
-  rights on it. `install.bat`'s wizard collects host/port/db/user/
+  rights on it. The installer's wizard collects host/port/db/user/
   password.
 - **SQL Server**: NOT supported as *this platform's own* database (no
   async driver is installed in this build). It can still be used as a
@@ -61,14 +113,24 @@ reasonable future improvement, out of scope here.
 
 This app calls the real `tesseract` binary via `pytesseract` — it does
 **not** ship or install Tesseract itself. Install it separately:
-`https://github.com/UB-Mannheim/tesseract/wiki` (Windows installer),
-ensure `tesseract.exe` is on PATH. Additional language packs
-(`hin`, `kan`, `tam`, etc.) install as `.traineddata` files into
-Tesseract's `tessdata` directory — see
-`https://github.com/tesseract-ocr/tessdata_fast`. `validate_config.py`
-and `status.bat` both report exactly which languages are actually
-installed; the app never silently falls back to English if a requested
-language model is missing — it raises a clear error instead.
+
+- **Windows**: `https://github.com/UB-Mannheim/tesseract/wiki`
+  (installer), ensure `tesseract.exe` is on PATH (or set `TESSERACT_CMD`
+  in `backend/.env` to its full path).
+- **Linux**: your distribution's package, e.g.
+  `sudo apt-get install tesseract-ocr tesseract-ocr-eng` on
+  Debian/Ubuntu, or `sudo dnf install tesseract` on Fedora/RHEL.
+
+Additional language packs (`hin`, `kan`, `tam`, etc.) install as
+`.traineddata` files into Tesseract's `tessdata` directory — on Windows
+see `https://github.com/tesseract-ocr/tessdata_fast`; on Linux, install
+the matching package (e.g. `tesseract-ocr-hin`, `tesseract-ocr-kan`) or
+drop the `.traineddata` file into `/usr/share/tesseract-ocr/*/tessdata/`.
+`validate_config.py` and `status.bat`/`status.sh` all report exactly
+which languages are actually installed on this server right now (a live
+subprocess call, not a cached value); the app never silently falls back
+to English if a requested language model is missing — it raises a clear
+error instead.
 
 ## 5. AI provider configuration
 
@@ -87,67 +149,83 @@ that the path string is set.
 ## 7. Installation
 
 ```
-install.bat
+install.bat                    (Windows)
+./install.sh                   (Linux)
 ```
 
 Interactive wizard: pre-flight checks → Python venv → backend deps →
-frontend deps + production build → directories → `.env` (DB type,
-credentials, secret key, worker count) → `validate_config.py` →
-`run_all_migrations.py` → Seller Admin creation → health check →
+frontend deps + production build (skipped if `frontend/dist` is already
+present — see "Deploying without Node.js" above) → directories → `.env`
+(DB type, credentials, secret key, worker count) → `validate_config.py`
+→ `run_all_migrations.py` → Seller Admin creation → health check →
 summary. **Safe to rerun** — every step is idempotent or skips cleanly
 if already done (see §11 below).
 
 ## 8. Database setup
 
-Handled inside `install.bat` (see §3, §7). To reconfigure the database
-later, edit `backend/.env`'s `DATABASE_URL` directly, then run:
+Handled inside install.bat/install.sh (see §3, §7). To reconfigure the
+database later, edit `backend/.env`'s `DATABASE_URL` directly, then run:
 ```
-.venv\Scripts\python backend\scripts\validate_config.py
+.venv\Scripts\python backend\scripts\validate_config.py        (Windows)
 .venv\Scripts\python backend\scripts\run_all_migrations.py
+
+.venv/bin/python backend/scripts/validate_config.py             (Linux)
+.venv/bin/python backend/scripts/run_all_migrations.py
 ```
+`validate_config.py` also accepts `--db-only` to run just the database
+connectivity check (what `status.bat`/`status.sh` use for their
+Database row).
 
 ## 9. Seller Admin creation
 
 A default Seller Portal login (`seller@platform-admin.com` /
 `Seller@1234!`) is auto-seeded on every backend startup if it doesn't
-already exist — you always have *a* way in, out of the box. `install.bat`
-also offers to run `backend/scripts/create_seller_account.py`
+already exist — you always have *a* way in, out of the box. Both
+installers also offer to run `backend/scripts/create_seller_account.py`
 interactively, which lets you set your **own** email/password (hidden
 input, never echoed or logged) instead. Password requirements: 8+
 characters, upper, lower, digit, special character.
 
-Re-running the creation script (or `install.bat`) against an email that
+Re-running the creation script (or the installer) against an email that
 already exists is a safe no-op unless you explicitly pass
 `--reset-password` — it will never create a duplicate account.
 
 ## 10. Starting the application
 
 ```
-start.bat
+start.bat                      (Windows)
+./start.sh                     (Linux)
 ```
 Resolves everything from its own folder, refuses to start a second copy
-if one is already running (checks `run\backend.pid`), launches
+if one is already running (checks `run/backend.pid`), launches
 `uvicorn` with no `--reload` and `WORKER_COUNT` workers, and prints the
-URLs.
+URLs. On Linux it's launched via `nohup` + `disown` so it keeps running
+after the shell that started it exits — no systemd unit is required,
+though wrapping `start.sh`/`stop.sh` in one is a reasonable alternative
+if your distribution standardizes on systemd for service management.
 
 ## 11. Stopping the application
 
 ```
-stop.bat
+stop.bat                       (Windows)
+./stop.sh                      (Linux)
 ```
-Targets the exact PID `start.bat` recorded (never a generic
-window-title/process-name match). Tries a graceful stop first —
-FastAPI's own shutdown handler stops the scheduler cleanly — and only
-force-kills if it doesn't exit within 10 seconds.
+Targets the exact PID start.bat/start.sh recorded (never a generic
+window-title/process-name match). Tries a graceful stop first (Windows:
+`Stop-Process`; Linux: `SIGTERM`) — FastAPI's own shutdown handler stops
+the scheduler cleanly — and only force-kills (`taskkill /F` / `SIGKILL`)
+if it doesn't exit within 10 seconds.
 
 ## 12. Status checking
 
 ```
-status.bat
+status.bat                     (Windows)
+./status.sh                    (Linux)
 ```
 Reports Backend (PID/port), Scheduler (real, in-process — via
 `/api/ops-status`), OCR (real Tesseract check via `/ocr-health`),
-Database (real connectivity check), and Storage (directory presence).
+Database (real connectivity check via `validate_config.py --db-only`),
+and Storage (directory presence).
 
 ## 13. Logs
 
@@ -173,25 +251,30 @@ on whatever schedule fits your data:
   it invalidates every issued session token).
 - **Document storage**: the `uploads/` directory.
 
-`upgrade.bat` takes its own timestamped backup of `.env` and (if
+Both upgrade scripts take their own timestamped backup of `.env` and (if
 SQLite) `dip.db` into `backup/` before touching anything, as a safety
 net — that is not a substitute for your own regular backup schedule.
 
 ## 15. Upgrade
 
 ```
-upgrade.bat <path-to-extracted-new-package>
+upgrade.bat <path-to-extracted-new-package>      (Windows)
+./upgrade.sh <path-to-extracted-new-package>     (Linux)
 ```
 Backs up config/DB → stops the app → replaces `backend/app`,
 `backend/scripts`, `frontend/dist`, `requirements.txt` from the new
-package → `pip install` → `run_all_migrations.py` → restarts → health
-check. **Never overwrites** `backend/.env`, `dip.db`, `uploads/`, or
-`logs/`.
+package (Windows: `robocopy /MIR`; Linux: `rsync -a --delete` — both an
+exact mirror, so files removed in the new release are removed here too)
+→ `pip install` → `run_all_migrations.py` → restarts → health check.
+**Never overwrites** `backend/.env`, `dip.db`, `uploads/`, or `logs/`.
+`upgrade.sh` requires `rsync` on PATH; it errors clearly if missing
+rather than silently falling back to a non-mirroring copy.
 
 ## 16. Uninstall
 
 ```
-uninstall.bat
+uninstall.bat                  (Windows)
+./uninstall.sh                 (Linux)
 ```
 Stops the running service. **Defaults to keeping** your database,
 uploads, and logs — deletion requires typing `YES` to confirm.
@@ -199,16 +282,20 @@ Optionally removes the Python virtual environment.
 
 ## 17. Troubleshooting
 
-- **`install.bat` fails at a step**: the error names the step, the
-  reason, and tells you to fix it and rerun — rerunning never
-  duplicates users/roles/tables/seed data (every step is idempotent).
+- **Installer fails at a step**: the error names the step, the reason,
+  and tells you to fix it and rerun — rerunning never duplicates
+  users/roles/tables/seed data (every step is idempotent).
 - **Backend won't start**: check `logs/backend.log` and
   `logs/uvicorn.err.log`.
-- **"Configuration INVALID"**: `validate_config.py`'s output tells you
-  exactly which of DB/storage/OCR failed and why, without ever printing
-  a password.
+- **"Configuration INVALID" / FAIL lines**: `validate_config.py`'s
+  output tells you exactly which of Secret Key/DB/storage/OCR/origins
+  failed and why, without ever printing a password.
 - **Port already in use**: another process (or a previous, un-stopped
-  instance) is on the configured `PORT`. Run `status.bat` first.
+  instance) is on the configured `PORT`. Run status.bat/status.sh first.
+- **Linux: `bad substitution` or similar shell error**: you're likely
+  running the scripts with `sh script.sh` instead of `bash script.sh` /
+  `./script.sh` — they require bash (even an old 3.2, which macOS and
+  some minimal containers ship), not a bare POSIX `sh`.
 
 ## 18. Firewall
 

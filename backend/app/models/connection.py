@@ -52,6 +52,10 @@ class ConnectionType(str, enum.Enum):
     # from ORACLE above, which is a plain Oracle Database driver
     # connection (SQL*Net/cx_Oracle), unrelated to ERP Cloud's REST APIs.
     ORACLE_ERP_CLOUD = "ORACLE_ERP_CLOUD"
+    # TallyPrime — Indian SMB accounting software, integrated via its own
+    # local XML-over-HTTP gateway (typically port 9000), not a SQL dialect
+    # or a WSDL/SOAP service. See connectors/application/tallyprime.py.
+    TALLY_PRIME = "TALLY_PRIME"
     # Storage
     SFTP = "SFTP"
     FTP = "FTP"

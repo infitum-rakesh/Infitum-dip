@@ -31,6 +31,12 @@ document_service.process_document() and connection_service.test_connection()
     asyncio.create_task() and returns the RUNNING run immediately, the same
     fire-and-forget shape document_service.start_processing() uses for a
     single manual scan.
+  - a schedule with a TallyReconciliationScheduleConfig row (TALLY-J): a
+    real refresh-then-reconcile run against one TallyPrime connection
+    (tally_scheduled_reconciliation_service.run_scheduled_reconciliation())
+    — see _execute_tally_reconciliation_schedule() below. Awaited inline
+    like the anomaly branch, not fire-and-forget like the document branch:
+    bounded HTTP+diff cost, not per-file OCR/AI.
 Every other schedule type (still pipeline_id-keyed, no second engine to
 call) keeps simulating, completely unchanged.
 """
@@ -53,6 +59,7 @@ from app.models.connection import Connection
 from app.models.document import Document, DocumentStatus
 from app.models.document_schedule import DocumentScheduleConfig, DocumentSourceRegistry, DocumentSourceStatus
 from app.models.schedule import RunStatus, Schedule, ScheduleFrequency, ScheduleRun, ScheduleStatus
+from app.models.tally_schedule import TallyReconciliationScheduleConfig
 from app.models.user import User
 from app.services import document_schedule_service as doc_sched_svc
 from app.services import document_service
@@ -94,6 +101,13 @@ class ScheduleAlreadyRunningError(Exception):
 
 async def get_document_config(db: AsyncSession, schedule_id: int) -> DocumentScheduleConfig | None:
     result = await db.execute(select(DocumentScheduleConfig).where(DocumentScheduleConfig.schedule_id == schedule_id))
+    return result.scalar_one_or_none()
+
+
+async def get_tally_config(db: AsyncSession, schedule_id: int) -> TallyReconciliationScheduleConfig | None:
+    result = await db.execute(
+        select(TallyReconciliationScheduleConfig).where(TallyReconciliationScheduleConfig.schedule_id == schedule_id)
+    )
     return result.scalar_one_or_none()
 
 
@@ -244,12 +258,34 @@ async def _validate_and_apply_document_config(db: AsyncSession, schedule: Schedu
         setattr(existing, field, value)
 
 
+async def _validate_and_apply_tally_config(db: AsyncSession, schedule: Schedule, config_in) -> None:
+    """TALLY-J — same cross-cutting DB-lookup validation convention as
+    _validate_and_apply_document_config above: the pydantic-level check
+    only proved a connection_id was present, not that it's real, owned by
+    this org, and actually a TALLY_PRIME connection (picking the wrong
+    connection by mistake would otherwise fail loudly but late, deep inside
+    a background schedule run instead of at save time)."""
+    conn = await db.get(Connection, config_in.connection_id)
+    if conn is None or (schedule.organization_id is not None and conn.organization_id != schedule.organization_id):
+        raise ScheduleValidationError(f"Connection {config_in.connection_id} was not found.")
+    if conn.connection_type.value != "TALLY_PRIME":
+        raise ScheduleValidationError(f"Connection {config_in.connection_id} is not a TallyPrime connection.")
+
+    existing = await get_tally_config(db, schedule.id)
+    if existing is None:
+        existing = TallyReconciliationScheduleConfig(schedule_id=schedule.id)
+        db.add(existing)
+    for field, value in config_in.model_dump().items():
+        setattr(existing, field, value)
+
+
 async def create_schedule(db: AsyncSession, *, organization_id: int | None, owner_id: int, body) -> Schedule:
     pipeline_id, pipeline_name = body.pipeline_id, body.pipeline_name
     anomaly_job_id = getattr(body, "anomaly_job_id", None)
     document_config = getattr(body, "document_config", None)
-    if anomaly_job_id is not None and document_config is not None:
-        raise ScheduleValidationError("A schedule can't be linked to both an Anomaly Job and a document source — pick one.")
+    tally_config = getattr(body, "tally_config", None)
+    if sum(x is not None for x in (anomaly_job_id, document_config, tally_config)) > 1:
+        raise ScheduleValidationError("A schedule can't be linked to more than one of: an Anomaly Job, a document source, or a Tally reconciliation connection — pick one.")
 
     if anomaly_job_id is not None:
         from app.models.anomaly import AnomalyJob  # local import: avoid a module-level anomaly<->schedule import cycle
@@ -262,8 +298,10 @@ async def create_schedule(db: AsyncSession, *, organization_id: int | None, owne
         pipeline_id, pipeline_name = NON_PIPELINE_SCHEDULE_ID, job.name
     elif document_config is not None:
         pipeline_id, pipeline_name = NON_PIPELINE_SCHEDULE_ID, f"Document Source: {document_config.source_path}"
+    elif tally_config is not None:
+        pipeline_id, pipeline_name = NON_PIPELINE_SCHEDULE_ID, f"Tally Reconciliation: {tally_config.company_name}"
     elif not pipeline_id:
-        raise ScheduleValidationError("pipeline_id is required for a Pipeline Builder schedule (or link an Anomaly Job / document source instead).")
+        raise ScheduleValidationError("pipeline_id is required for a Pipeline Builder schedule (or link an Anomaly Job / document source / Tally reconciliation connection instead).")
 
     schedule = Schedule(
         organization_id=organization_id, owner_id=owner_id, name=body.name,
@@ -278,10 +316,12 @@ async def create_schedule(db: AsyncSession, *, organization_id: int | None, owne
                       timezone_name=body.timezone, cron_expression=body.cron_expression)
     schedule.next_run_at = compute_next_run(schedule)
     db.add(schedule)
-    await db.flush()  # assigns schedule.id, needed by _validate_and_apply_document_config below, before the final commit
+    await db.flush()  # assigns schedule.id, needed by _validate_and_apply_document_config/_validate_and_apply_tally_config below, before the final commit
 
     if document_config is not None:
         await _validate_and_apply_document_config(db, schedule, document_config)
+    if tally_config is not None:
+        await _validate_and_apply_tally_config(db, schedule, tally_config)
 
     await db.commit()
     await db.refresh(schedule)
@@ -304,6 +344,10 @@ async def update_schedule(db: AsyncSession, schedule: Schedule, body) -> Schedul
     if document_config is not None:
         await _validate_and_apply_document_config(db, schedule, document_config)
 
+    tally_config = getattr(body, "tally_config", None)
+    if tally_config is not None:
+        await _validate_and_apply_tally_config(db, schedule, tally_config)
+
     if body.frequency is not None or body.start_date is not None or body.start_time is not None or body.timezone is not None:
         _apply_frequency(
             schedule,
@@ -324,6 +368,7 @@ async def update_schedule(db: AsyncSession, schedule: Schedule, body) -> Schedul
 async def delete_schedule(db: AsyncSession, schedule: Schedule) -> None:
     await db.execute(DocumentSourceRegistry.__table__.update().where(DocumentSourceRegistry.schedule_id == schedule.id).values(schedule_id=None))
     await db.execute(DocumentScheduleConfig.__table__.delete().where(DocumentScheduleConfig.schedule_id == schedule.id))
+    await db.execute(TallyReconciliationScheduleConfig.__table__.delete().where(TallyReconciliationScheduleConfig.schedule_id == schedule.id))
     await db.execute(ScheduleRun.__table__.delete().where(ScheduleRun.schedule_id == schedule.id))
     await db.delete(schedule)
     await db.commit()
@@ -384,7 +429,7 @@ async def owner_name_map(db: AsyncSession, ids: set[int]) -> dict[int, str]:
 async def list_schedules(
     db: AsyncSession, *, organization_id: int | None, search: str = "",
     status_filter: str | None = None, environment: str | None = None, frequency: str | None = None,
-    anomaly_job_id: int | None = None,
+    anomaly_job_id: int | None = None, tally_connection_id: int | None = None,
     page: int = 1, page_size: int = 20, sort_by: str = "next_run_at", sort_dir: str = "asc",
 ) -> tuple[list[Schedule], int, dict[int, str]]:
     stmt = select(Schedule)
@@ -398,6 +443,15 @@ async def list_schedules(
         stmt = stmt.where(Schedule.frequency == frequency)
     if anomaly_job_id is not None:
         stmt = stmt.where(Schedule.anomaly_job_id == anomaly_job_id)
+    if tally_connection_id is not None:
+        # TALLY-J — TallyReconciliationScheduleConfig lives in its own table
+        # (unlike anomaly_job_id, a real column on Schedule itself), so this
+        # filter is a subquery rather than a plain column comparison.
+        stmt = stmt.where(Schedule.id.in_(
+            select(TallyReconciliationScheduleConfig.schedule_id).where(
+                TallyReconciliationScheduleConfig.connection_id == tally_connection_id
+            )
+        ))
 
     result = await db.execute(stmt)
     schedules = list(result.scalars().all())
@@ -465,11 +519,15 @@ def _as_utc_opt(dt: datetime | None) -> datetime | None:
     return _as_utc(dt) if dt is not None else None
 
 
-def to_out(schedule: Schedule, owner_name: str | None, document_config: DocumentScheduleConfig | None = None) -> dict:
+def to_out(
+    schedule: Schedule, owner_name: str | None, document_config: DocumentScheduleConfig | None = None,
+    tally_config: TallyReconciliationScheduleConfig | None = None,
+) -> dict:
     return {
         "id": schedule.id, "name": schedule.name, "pipeline_id": schedule.pipeline_id, "pipeline_name": schedule.pipeline_name,
         "anomaly_job_id": schedule.anomaly_job_id,
         "document_config": _document_config_to_out(document_config) if document_config is not None else None,
+        "tally_config": _tally_config_to_out(tally_config) if tally_config is not None else None,
         "environment": schedule.environment.value, "timezone": schedule.timezone, "frequency": schedule.frequency.value,
         "frequency_display": frequency_display(schedule), "start_at": _as_utc(schedule.start_at), "cron_expression": schedule.cron_expression,
         "status": schedule.status.value, "next_run_at": _as_utc_opt(schedule.next_run_at), "last_run_at": _as_utc_opt(schedule.last_run_at),
@@ -494,6 +552,13 @@ def _document_config_to_out(config: DocumentScheduleConfig) -> dict:
         "duplicate_content_behavior": config.duplicate_content_behavior, "max_file_size_mb": config.max_file_size_mb,
         "document_type": config.document_type,
         "invoice_auto_post": config.invoice_auto_post, "invoice_erp_connection_id": config.invoice_erp_connection_id,
+    }
+
+
+def _tally_config_to_out(config: TallyReconciliationScheduleConfig) -> dict:
+    return {
+        "connection_id": config.connection_id, "company_name": config.company_name,
+        "tolerance": config.tolerance, "lookback_days": config.lookback_days,
     }
 
 
@@ -592,6 +657,101 @@ async def _execute_anomaly_schedule(db: AsyncSession, schedule: Schedule, run: S
     run.logs = logs
 
 
+async def _execute_tally_reconciliation_schedule(db: AsyncSession, schedule: Schedule, run: ScheduleRun, now: datetime) -> None:
+    """TALLY-J — real dispatch branch: mutates `run` in place with the
+    actual result of refreshing this connection's data (incremental
+    PURCHASE_VOUCHERS/PAYMENTS + full PARTY_MASTER extraction) and then
+    running tally_reconciliation_service.run_reconciliation() against it —
+    see tally_scheduled_reconciliation_service.run_scheduled_reconciliation().
+    Awaited inline rather than fire-and-forget like the document-source
+    branch below: a Tally HTTP round trip plus the engine's in-memory diff
+    is bounded, closer in cost to AD12's anomaly execution than to a real
+    OCR+AI pipeline per file. Never raises: a bad/missing connection or an
+    engine-level failure is captured into run.status=FAILED +
+    run.error_message instead, so a schedule keeps being pollable/
+    retriable rather than the whole request 500ing."""
+    from app.models.tally_reconciliation import TallyReconciliationRunStatus
+    from app.services import tally_scheduled_reconciliation_service
+
+    async def _report_failure_incident(reason: str) -> None:
+        """Best-effort, same 'never break the real operation' convention as
+        invoice_erp_service._report_dead_letter_incident() — see
+        tally_writeback_service._report_writeback_dead_letter_incident()
+        for the sibling version of this same pattern."""
+        try:
+            from app.models.incident import IncidentSeverity, IncidentSource
+            from app.monitoring import alerts
+            from app.services import incident_service
+
+            label = schedule.name
+            incident = await incident_service.report_incident(
+                db, organization_id=schedule.organization_id, source=IncidentSource.TALLY_RECONCILIATION.value,
+                title=f"Scheduled Tally reconciliation failed — {label}",
+                description=reason, severity=IncidentSeverity.HIGH.value,
+                dataset_name=label,
+            )
+            fired = await alerts.evaluate_rules(db, organization_id=schedule.organization_id, ctx={
+                "event": "TALLY_RECONCILIATION_FAILED",
+                "message": f"Schedule '{label}' — Tally reconciliation failed: {reason}",
+            })
+            if fired:
+                for event in fired:
+                    if event.incident_id is None:
+                        event.incident_id = incident.id
+                await db.commit()
+        except Exception:  # noqa: BLE001 - reporting must never break the real dispatch outcome
+            pass
+
+    config = await get_tally_config(db, schedule.id)
+    logs: list[dict] = [_log(now, "INFO", f"Dispatching Tally reconciliation for connection #{config.connection_id if config else '?'}…")]
+    try:
+        if config is None:
+            raise ValueError("This schedule's Tally reconciliation configuration no longer exists.")
+        connection = await db.get(Connection, config.connection_id)
+        if connection is None or (schedule.organization_id is not None and connection.organization_id != schedule.organization_id):
+            raise ValueError(f"Connection {config.connection_id} no longer exists or no longer belongs to this organization.")
+
+        recon_run, extraction_notes = await tally_scheduled_reconciliation_service.run_scheduled_reconciliation(
+            db, connection, company=config.company_name, tolerance=config.tolerance, lookback_days=config.lookback_days,
+            schedule_id=schedule.id, created_by=schedule.owner_id,
+        )
+        for note in extraction_notes:
+            logs.append(_log(now, "INFO", note))
+
+        ended_at = datetime.now(timezone.utc)
+        if recon_run.status == TallyReconciliationRunStatus.FAILED:
+            run.status = RunStatus.FAILED
+            run.error_message = recon_run.error_message or "Tally reconciliation failed."
+            logs.append(_log(ended_at, "ERROR", run.error_message))
+            await _report_failure_incident(run.error_message)
+        else:
+            exception_count = (recon_run.missing_count or 0) + (recon_run.mismatched_count or 0) + (recon_run.extra_count or 0)
+            run.status = RunStatus.WARNING if exception_count > 0 else RunStatus.SUCCESS
+            run.error_message = None
+            logs.append(_log(
+                ended_at, "INFO",
+                f"Reconciliation run #{recon_run.id} — {recon_run.matched_count or 0} matched, {exception_count} exception(s) across "
+                f"{(recon_run.source_count or 0)} invoice(s)/{(recon_run.target_count or 0)} voucher(s) considered.",
+            ))
+
+        run.ended_at = ended_at
+        run.duration_seconds = round((ended_at - now).total_seconds(), 1)
+        run.records_processed = (recon_run.matched_count or 0) + (recon_run.missing_count or 0) + (recon_run.extra_count or 0) + (recon_run.mismatched_count or 0)
+        run.records_failed = (recon_run.missing_count or 0) + (recon_run.mismatched_count or 0)
+    except Exception as exc:
+        ended_at = datetime.now(timezone.utc)
+        run.status = RunStatus.FAILED
+        run.ended_at = ended_at
+        run.duration_seconds = round((ended_at - now).total_seconds(), 1)
+        run.records_processed = 0
+        run.records_failed = 0
+        run.error_message = str(exc)
+        logs.append(_log(ended_at, "ERROR", str(exc)))
+        await _report_failure_incident(str(exc))
+
+    run.logs = logs
+
+
 def _finalize_schedule(schedule: Schedule, run: ScheduleRun) -> None:
     """Shared by all three execute_schedule() dispatch branches (simulated
     pipeline / real anomaly / real document-source) — same
@@ -621,6 +781,15 @@ async def execute_schedule(db: AsyncSession, schedule: Schedule, *, trigger: str
 
     if schedule.anomaly_job_id is not None:
         await _execute_anomaly_schedule(db, schedule, run, now)
+        _finalize_schedule(schedule, run)
+        await db.commit()
+        await db.refresh(run)
+        await db.refresh(schedule)
+        return run
+
+    tally_config = await get_tally_config(db, schedule.id)
+    if tally_config is not None:
+        await _execute_tally_reconciliation_schedule(db, schedule, run, now)
         _finalize_schedule(schedule, run)
         await db.commit()
         await db.refresh(run)

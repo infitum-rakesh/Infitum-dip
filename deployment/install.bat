@@ -48,20 +48,29 @@ if !ERRORLEVEL! EQU 0 (
     )
 )
 
-REM ── Step 3: Node.js / npm (needed to build the frontend) ────
+REM ── Step 3: Node.js / npm (only needed if frontend\dist isn't
+REM           already shipped — see Step 7+8 below) ─────────────
 echo [3/16] Checking Node.js / npm...
-where node >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
-    echo   ERROR: Node.js was not found on PATH.
-    echo   Install Node.js 20 LTS from https://nodejs.org/ and rerun install.bat.
-    goto :fail
+if exist "%~dp0frontend\dist\index.html" (
+    echo   frontend\dist already present ^(pre-built^) — Node.js/npm are not required on this server.
+    set "SKIP_FRONTEND_BUILD=1"
+) else (
+    set "SKIP_FRONTEND_BUILD=0"
+    where node >nul 2>nul
+    if !ERRORLEVEL! NEQ 0 (
+        echo   ERROR: Node.js was not found on PATH, and no pre-built frontend\dist was shipped with this package.
+        echo   Either install Node.js 20 LTS from https://nodejs.org/ and rerun install.bat,
+        echo   or build the frontend on a machine that has Node.js and copy frontend\dist here first
+        echo   ^(see README_DEPLOYMENT.md's "Deploying without Node.js" section^).
+        goto :fail
+    )
+    where npm >nul 2>nul
+    if !ERRORLEVEL! NEQ 0 (
+        echo   ERROR: npm was not found on PATH ^(usually installed alongside Node.js^).
+        goto :fail
+    )
+    for /f "tokens=*" %%v in ('node --version') do echo   Found Node.js %%v
 )
-where npm >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
-    echo   ERROR: npm was not found on PATH ^(usually installed alongside Node.js^).
-    goto :fail
-)
-for /f "tokens=*" %%v in ('node --version') do echo   Found Node.js %%v
 
 REM ── Step 4: required system directories exist before we need them
 echo [4/16] Checking required system dependencies...
@@ -92,28 +101,38 @@ if !ERRORLEVEL! NEQ 0 (
 )
 
 REM ── Step 7+8: frontend dependencies + production build ──────
-echo [7/16] Installing frontend dependencies...
-if exist "%~dp0frontend\package-lock.json" (
-    call npm ci --prefix "%~dp0frontend"
+REM Skipped entirely when frontend\dist was already shipped pre-built
+REM (SKIP_FRONTEND_BUILD=1, set in Step 3) — that is the normal path for
+REM a packaged release deployed to a server with no Node.js on it at all.
+if "!SKIP_FRONTEND_BUILD!"=="1" (
+    echo [7/16] Installing frontend dependencies...
+    echo   Skipped — using the pre-built frontend\dist shipped with this package.
+    echo [8/16] Building frontend production bundle...
+    echo   Skipped — frontend\dist\index.html already exists.
 ) else (
-    call npm install --prefix "%~dp0frontend"
-)
-if !ERRORLEVEL! NEQ 0 (
-    echo   ERROR: npm install failed. See the output above.
-    goto :fail
-)
+    echo [7/16] Installing frontend dependencies...
+    if exist "%~dp0frontend\package-lock.json" (
+        call npm ci --prefix "%~dp0frontend"
+    ) else (
+        call npm install --prefix "%~dp0frontend"
+    )
+    if !ERRORLEVEL! NEQ 0 (
+        echo   ERROR: npm install failed. See the output above.
+        goto :fail
+    )
 
-echo [8/16] Building frontend production bundle...
-call npm run build --prefix "%~dp0frontend"
-if !ERRORLEVEL! NEQ 0 (
-    echo   ERROR: frontend build failed. See the output above.
-    goto :fail
+    echo [8/16] Building frontend production bundle...
+    call npm run build --prefix "%~dp0frontend"
+    if !ERRORLEVEL! NEQ 0 (
+        echo   ERROR: frontend build failed. See the output above.
+        goto :fail
+    )
+    if not exist "%~dp0frontend\dist\index.html" (
+        echo   ERROR: build finished but frontend\dist\index.html is missing.
+        goto :fail
+    )
+    echo   OK — frontend\dist is ready ^(the backend serves it directly^).
 )
-if not exist "%~dp0frontend\dist\index.html" (
-    echo   ERROR: build finished but frontend\dist\index.html is missing.
-    goto :fail
-)
-echo   OK — frontend\dist is ready ^(the backend serves it directly^).
 
 REM ── Step 9: required directories ─────────────────────────────
 echo [9/16] Creating required directories...

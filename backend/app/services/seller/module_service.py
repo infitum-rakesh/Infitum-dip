@@ -66,6 +66,7 @@ MODULE_CATALOG: dict[str, dict] = {
     "INVOICE_INTELLIGENCE":{"label": "Invoice Intelligence",  "category": "DOCUMENT INTELLIGENCE"},
     "PAYMENT_APPROVAL":     {"label": "Payment Approvals",      "category": "OPERATIONS"},
     "BULK_MIGRATION":       {"label": "Bulk Object Migration",  "category": "OPERATIONS"},
+    "TALLY_INTEGRATION":    {"label": "Tally Integration",      "category": "OPERATIONS"},
 }
 CATALOG_VERSION = "1.0.0"  # matches main.py's FastAPI(version=...) — one platform release, no per-module versioning exists
 
@@ -86,6 +87,11 @@ MODULE_DEPENDENCIES: dict[str, list[str]] = {
     # vendor/...) — an org with no Invoice Intelligence has no invoices
     # for an approval rule to ever evaluate against.
     "PAYMENT_APPROVAL": ["INVOICE_INTELLIGENCE"],
+    # Tally reconciliation is defined against materialized AP invoices
+    # (see reconciliation/tally_projection.py, Phase E) — an org with no
+    # Invoice Intelligence has nothing on the "Documents" side to reconcile
+    # against a Tally voucher population.
+    "TALLY_INTEGRATION": ["INVOICE_INTELLIGENCE"],
 }
 
 

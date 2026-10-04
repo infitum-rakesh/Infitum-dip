@@ -68,7 +68,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.approval.rules import ApprovalRule, ApprovalStepType
+from app.models.approval.rules import ApprovalEntityType, ApprovalRule, ApprovalStepType
 from app.models.approval.workflow import (
     ApprovalStepStatus,
     ApprovalWorkflow,
@@ -90,6 +90,26 @@ class ApprovalWorkflowEngineError(Exception):
         super().__init__(message)
 
 
+async def _load_and_validate_entity(db: AsyncSession, *, entity_type: ApprovalEntityType, entity_id: int, organization_id: int) -> object:
+    """TALLY-H — the one place create_workflow() dispatches on entity_type
+    to find and org-validate the real row this workflow is about. Adding
+    a third entity_type later means adding one branch here, not forking
+    create_workflow() itself. Raises ApprovalWorkflowEngineError (never
+    returns None) on a missing/cross-org entity — same contract the old
+    invoice-only code already had."""
+    if entity_type == ApprovalEntityType.INVOICE:
+        from app.models.invoice_intelligence.core import ApInvoice
+        entity = await db.get(ApInvoice, entity_id)
+        label = "Invoice"
+    else:
+        from app.models.tally_mapping import TallyVoucherPreview
+        entity = await db.get(TallyVoucherPreview, entity_id)
+        label = "Tally voucher preview"
+    if entity is None or (entity.organization_id is not None and entity.organization_id != organization_id):
+        raise ApprovalWorkflowEngineError(f"{label} {entity_id} was not found in this organization.")
+    return entity
+
+
 def _trace_to_dict(trace: engine.EvaluationTrace) -> dict:
     return {
         "candidates_considered": trace.candidates_considered,
@@ -105,13 +125,22 @@ def _trace_to_dict(trace: engine.EvaluationTrace) -> dict:
 
 
 async def create_workflow(
-    db: AsyncSession, *, organization_id: int, invoice_id: int, context: engine.ApprovalMatchContext, created_by: int | None = None,
+    db: AsyncSession, *, organization_id: int, entity_id: int, context: engine.ApprovalMatchContext,
+    entity_type: ApprovalEntityType = ApprovalEntityType.INVOICE, created_by: int | None = None,
 ) -> ApprovalWorkflow | None:
     """Returns None when nothing needs to happen — no rule matched, or
     the winning rule requires neither approval nor peer review — never a
     fabricated workflow for a "nothing to do" case. Raises
     ApprovalWorkflowEngineError on a genuine RULE_CONFLICT rather than
     guessing.
+
+    TALLY-H — generalized from invoice_id to entity_type+entity_id so
+    Tally voucher write-back authorization can reuse this exact function
+    rather than forking a second copy of it (see ApprovalEntityType,
+    models/approval/rules.py). entity_type defaults to INVOICE, so every
+    pre-existing call site (invoice_decision_service.py's PAY9 wiring,
+    the admin POST /approvals/workflows route) needed only a mechanical
+    rename, not a behavior change.
 
     Real bug found live: this used to bail out on `rule.action ==
     AUTO_APPROVE` alone, which silently discarded a legitimate
@@ -124,20 +153,17 @@ async def create_workflow(
     # PAY13 — tenant-isolation hardening: this route is reachable directly
     # (POST /approvals/workflows, "admin/test-triggered creation outside
     # the automatic pipeline path" per the module docstring above), so
-    # invoice_id is caller-supplied and was never checked against the
+    # entity_id is caller-supplied and was never checked against the
     # caller's own organization_id before this fix. Every org currently
     # shares one physical database until it actually cuts over via
     # Bring-Your-Own-Database (see tenant_routing.py's own docstring), so
-    # an unchecked invoice_id let one org create a workflow that silently
-    # pointed at another org's real invoice row — never surfaced by this
+    # an unchecked entity_id let one org create a workflow that silently
+    # pointed at another org's real row — never surfaced by this
     # endpoint's own response, but later fetched cross-org by
-    # api/approvals.py's own invoice-enrichment code (also hardened in
+    # api/approvals.py's own entity-enrichment code (also hardened in
     # this phase, defense-in-depth). Real bug found live, not theoretical.
-    from app.models.invoice_intelligence.core import ApInvoice
-
-    invoice = await db.get(ApInvoice, invoice_id)
-    if invoice is None or (invoice.organization_id is not None and invoice.organization_id != organization_id):
-        raise ApprovalWorkflowEngineError(f"Invoice {invoice_id} was not found in this organization.")
+    await _load_and_validate_entity(db, entity_type=entity_type, entity_id=entity_id, organization_id=organization_id)
+    invoice_id = entity_id if entity_type == ApprovalEntityType.INVOICE else None
 
     # PAY16 — idempotency guard (spec §111): every intake path that can
     # reach this function (the scheduled document pipeline, Review Queue
@@ -163,7 +189,8 @@ async def create_workflow(
     existing = (await db.execute(
         select(ApprovalWorkflow)
         .where(
-            ApprovalWorkflow.invoice_id == invoice_id,
+            ApprovalWorkflow.entity_type == entity_type,
+            ApprovalWorkflow.entity_id == entity_id,
             ApprovalWorkflow.organization_id == organization_id,
             ApprovalWorkflow.status.in_([
                 ApprovalWorkflowStatus.PENDING, ApprovalWorkflowStatus.IN_PROGRESS,
@@ -174,10 +201,10 @@ async def create_workflow(
     )).scalars().first()
     if existing is not None:
         db.add(ApprovalWorkflowAuditLog(
-            organization_id=organization_id, workflow_id=existing.id, invoice_id=invoice_id,
+            organization_id=organization_id, workflow_id=existing.id, entity_type=entity_type, entity_id=entity_id, invoice_id=invoice_id,
             event_type=ApprovalWorkflowAuditEventType.DUPLICATE_SUPPRESSED,
             message=(
-                f"create_workflow() called again for invoice {invoice_id}, which already has "
+                f"create_workflow() called again for {entity_type.value} {entity_id}, which already has "
                 f"workflow #{existing.id} (status={existing.status.value}) — suppressed, no duplicate created."
             ),
             details={"existing_workflow_id": existing.id, "existing_status": existing.status.value},
@@ -185,31 +212,32 @@ async def create_workflow(
         await db.commit()
         return existing
 
-    trace = await engine.evaluate(db, organization_id, context)
+    trace = await engine.evaluate(db, organization_id, context, entity_type)
     if trace.conflict:
         raise ApprovalWorkflowEngineError(
-            f"RULE_CONFLICT: {len(trace.conflicting_rule_ids)} equally-specific rules tie for this invoice — "
+            f"RULE_CONFLICT: {len(trace.conflicting_rule_ids)} equally-specific rules tie for this {entity_type.value} — "
             f"resolve the conflict (adjust priority or conditions) before a workflow can be created.",
             conflicting_rule_ids=trace.conflicting_rule_ids,
         )
     if trace.winner is None:
-        # PAY22 — no ApprovalRule matched this invoice at all. Previously
+        # PAY22 — no ApprovalRule matched this entity at all. Previously
         # this returned None (nothing persisted); now it persists a
         # terminal AUTO_APPROVED record with rule_id=NULL so every
-        # invoice that reaches this function has SOME workflow row to
+        # entity that reaches this function has SOME workflow row to
         # show in the Approval Workflows list, per the explicit ask that
         # motivated this phase. rule=None is the "no rule to reference"
         # case; the sibling "a rule matched but needed no gate" case
         # below passes the actual rule through instead.
-        return await _create_auto_approved(db, organization_id=organization_id, invoice_id=invoice_id, context=context, trace=trace, rule=None, created_by=created_by)
+        return await _create_auto_approved(db, organization_id=organization_id, entity_type=entity_type, entity_id=entity_id, context=context, trace=trace, rule=None, created_by=created_by)
 
     rule = await db.get(ApprovalRule, trace.winner.rule_id)
     if rule is None or not (rule.approval_required or rule.peer_review_required):
-        return await _create_auto_approved(db, organization_id=organization_id, invoice_id=invoice_id, context=context, trace=trace, rule=rule, created_by=created_by)
+        return await _create_auto_approved(db, organization_id=organization_id, entity_type=entity_type, entity_id=entity_id, context=context, trace=trace, rule=rule, created_by=created_by)
 
     now = datetime.now(timezone.utc)
     workflow = ApprovalWorkflow(
-        organization_id=organization_id, invoice_id=invoice_id, rule_id=rule.id, rule_name=rule.name, rule_version=rule.version,
+        organization_id=organization_id, entity_type=entity_type, entity_id=entity_id, invoice_id=invoice_id,
+        rule_id=rule.id, rule_name=rule.name, rule_version=rule.version,
         status=ApprovalWorkflowStatus.PENDING, approval_required=rule.approval_required, approval_mode=rule.approval_mode,
         approval_count_required=rule.approval_count, current_approval_step_number=1 if rule.approval_required else None,
         peer_review_required=rule.peer_review_required, peer_review_mode=rule.peer_review_mode,
@@ -238,7 +266,7 @@ async def create_workflow(
 
     workflow.status = ApprovalWorkflowStatus.IN_PROGRESS
     db.add(ApprovalWorkflowAuditLog(
-        organization_id=organization_id, workflow_id=workflow.id, invoice_id=invoice_id,
+        organization_id=organization_id, workflow_id=workflow.id, entity_type=entity_type, entity_id=entity_id, invoice_id=invoice_id,
         event_type=ApprovalWorkflowAuditEventType.CREATED,
         message=f"Workflow created from rule '{rule.name}' v{rule.version}.", actor_id=created_by,
         details={"rule_id": rule.id, "rule_version": rule.version},
@@ -251,28 +279,40 @@ async def create_workflow(
 
 
 async def _create_auto_approved(
-    db: AsyncSession, *, organization_id: int, invoice_id: int, context: engine.ApprovalMatchContext,
+    db: AsyncSession, *, organization_id: int, entity_type: ApprovalEntityType, entity_id: int, context: engine.ApprovalMatchContext,
     trace: engine.EvaluationTrace, rule: ApprovalRule | None, created_by: int | None,
 ) -> ApprovalWorkflow:
     """PAY22 — the "nothing needs a human" outcome of create_workflow(),
     now a real persisted row instead of a bare None return. Terminal from
     the moment it's created (no PENDING/IN_PROGRESS window — there is no
     step for anyone to act on), zero ApprovalWorkflowStep/PeerReviewStep
-    rows, and explicitly excluded from every "does this invoice need to
+    rows, and explicitly excluded from every "does this entity need to
     wait on approval" check (invoice_decision_service.decide() only ever
     flips the invoice to APPROVING for PENDING/IN_PROGRESS — see its own
-    comment) — this function changes what gets recorded, never what
-    happens to the invoice.
+    comment; tally_approval_service.submit_for_approval() applies the
+    identical rule for TallyVoucherPreview.approval_status) — this
+    function changes what gets recorded, never what happens to the
+    underlying entity.
 
     `rule` distinguishes the two ways this is reached: None when no
     ApprovalRule matched at all (rule_id stays NULL — see the model's own
     comment on why that's a real, distinct fact worth keeping), or the
     actual matched ApprovalRule when it matched but needed neither
     approval_required nor peer_review_required (rule_id populated, for
-    an honest "yes, a rule owned this decision" record)."""
+    an honest "yes, a rule owned this decision" record).
+
+    TALLY-H — for entity_type=TALLY_VOUCHER with NO ApprovalRule
+    configured (rule is None), this is a disclosed configuration gap, not
+    a silent one: it means the org never set up a TALLY_VOUCHER-scoped
+    ApprovalRule, so nothing gates this voucher's write-back beyond
+    TALLY-D's deterministic pre-write validation. Identical in spirit to
+    how an org that never configures a PAYMENT_APPROVAL rule gets the
+    same AUTO_APPROVED behavior for invoices — the fix in both cases is
+    the same: configure a rule, not a code change here."""
+    invoice_id = entity_id if entity_type == ApprovalEntityType.INVOICE else None
     now = datetime.now(timezone.utc)
     workflow = ApprovalWorkflow(
-        organization_id=organization_id, invoice_id=invoice_id,
+        organization_id=organization_id, entity_type=entity_type, entity_id=entity_id, invoice_id=invoice_id,
         rule_id=rule.id if rule else None, rule_name=rule.name if rule else None, rule_version=rule.version if rule else None,
         status=ApprovalWorkflowStatus.AUTO_APPROVED, approval_required=False, peer_review_required=False,
         approval_count_required=0, peer_review_count_required=0,
@@ -287,7 +327,7 @@ async def _create_auto_approved(
         else f"Rule '{rule.name}' v{rule.version} matched but requires neither approval nor peer review — auto-approved."
     )
     db.add(ApprovalWorkflowAuditLog(
-        organization_id=organization_id, workflow_id=workflow.id, invoice_id=invoice_id,
+        organization_id=organization_id, workflow_id=workflow.id, entity_type=entity_type, entity_id=entity_id, invoice_id=invoice_id,
         event_type=ApprovalWorkflowAuditEventType.AUTO_APPROVED, message=message, actor_id=created_by,
         details={"rule_id": rule.id if rule else None, "rule_version": rule.version if rule else None},
     ))
@@ -375,6 +415,31 @@ async def _sync_invoice_status(db: AsyncSession, invoice_id: int, *, approved: b
     await db.commit()
 
 
+async def _sync_tally_voucher_status(db: AsyncSession, preview_id: int, *, approved: bool) -> None:
+    """TALLY-H analog of _sync_invoice_status — flips the write-back
+    approval gate on the real TallyVoucherPreview row once its workflow
+    resolves. Only touches a preview actually still PENDING, same
+    defensive reasoning as the invoice version."""
+    from app.models.tally_mapping import TallyVoucherApprovalStatus, TallyVoucherPreview
+
+    preview = await db.get(TallyVoucherPreview, preview_id)
+    if preview is None or preview.approval_status != TallyVoucherApprovalStatus.PENDING:
+        return
+    preview.approval_status = TallyVoucherApprovalStatus.APPROVED if approved else TallyVoucherApprovalStatus.REJECTED
+    await db.commit()
+
+
+async def _sync_entity_status(db: AsyncSession, entity_type: ApprovalEntityType, entity_id: int, *, approved: bool, reason: str | None = None) -> None:
+    """TALLY-H — the single dispatch point _maybe_complete_workflow() and
+    act_on_*_step() call instead of hardcoding the invoice path; adding a
+    third entity_type later means one more branch here, not touching the
+    workflow engine's own state-machine logic."""
+    if entity_type == ApprovalEntityType.INVOICE:
+        await _sync_invoice_status(db, entity_id, approved=approved, reason=reason)
+    else:
+        await _sync_tally_voucher_status(db, entity_id, approved=approved)
+
+
 async def _maybe_complete_workflow(db: AsyncSession, workflow: ApprovalWorkflow) -> None:
     if workflow.status != ApprovalWorkflowStatus.IN_PROGRESS:
         return  # already terminal (REJECTED/APPROVED/CANCELLED/EXPIRED)
@@ -387,12 +452,12 @@ async def _maybe_complete_workflow(db: AsyncSession, workflow: ApprovalWorkflow)
     workflow.status = ApprovalWorkflowStatus.APPROVED
     workflow.completed_at = datetime.now(timezone.utc)
     db.add(ApprovalWorkflowAuditLog(
-        organization_id=workflow.organization_id, workflow_id=workflow.id, invoice_id=workflow.invoice_id,
+        organization_id=workflow.organization_id, workflow_id=workflow.id, entity_type=workflow.entity_type, entity_id=workflow.entity_id, invoice_id=workflow.invoice_id,
         event_type=ApprovalWorkflowAuditEventType.COMPLETED,
         message="Workflow approved — all required approvals/peer reviews complete.",
     ))
     await db.commit()
-    await _sync_invoice_status(db, workflow.invoice_id, approved=True)
+    await _sync_entity_status(db, workflow.entity_type, workflow.entity_id, approved=True)
     await outbox.notify_workflow_decided(db, workflow, "APPROVED")
     await db.commit()
 
@@ -434,7 +499,7 @@ async def act_on_approval_step(
     step.acted_at = now
 
     db.add(ApprovalWorkflowAuditLog(
-        organization_id=workflow.organization_id, workflow_id=workflow.id, invoice_id=workflow.invoice_id,
+        organization_id=workflow.organization_id, workflow_id=workflow.id, entity_type=workflow.entity_type, entity_id=workflow.entity_id, invoice_id=workflow.invoice_id,
         event_type=ApprovalWorkflowAuditEventType.STEP_APPROVED if approve else ApprovalWorkflowAuditEventType.STEP_REJECTED,
         message=f"Step #{step.step_number} {'approved' if approve else 'rejected'} by user {actor_user_id}." + (f" Comment: {comment}" if comment else ""),
         actor_id=actor_user_id, details={"step_id": step.id, "comment": comment},
@@ -445,11 +510,11 @@ async def act_on_approval_step(
         workflow.completed_at = now
         workflow.decision_reason = comment or f"Rejected at step #{step.step_number}."
         db.add(ApprovalWorkflowAuditLog(
-            organization_id=workflow.organization_id, workflow_id=workflow.id, invoice_id=workflow.invoice_id,
+            organization_id=workflow.organization_id, workflow_id=workflow.id, entity_type=workflow.entity_type, entity_id=workflow.entity_id, invoice_id=workflow.invoice_id,
             event_type=ApprovalWorkflowAuditEventType.COMPLETED, message=f"Workflow rejected at step #{step.step_number}.",
         ))
         await db.commit()
-        await _sync_invoice_status(db, workflow.invoice_id, approved=False, reason=workflow.decision_reason)
+        await _sync_entity_status(db, workflow.entity_type, workflow.entity_id, approved=False, reason=workflow.decision_reason)
         await outbox.notify_workflow_decided(db, workflow, "REJECTED")
         await db.commit()
         return step
@@ -467,7 +532,7 @@ async def act_on_approval_step(
             for r in remaining:
                 r.status = ApprovalStepStatus.SKIPPED
                 db.add(ApprovalWorkflowAuditLog(
-                    organization_id=workflow.organization_id, workflow_id=workflow.id, invoice_id=workflow.invoice_id,
+                    organization_id=workflow.organization_id, workflow_id=workflow.id, entity_type=workflow.entity_type, entity_id=workflow.entity_id, invoice_id=workflow.invoice_id,
                     event_type=ApprovalWorkflowAuditEventType.STEP_SKIPPED,
                     message=f"Step #{r.step_number} skipped — approval_count_required already met.",
                 ))
@@ -511,7 +576,7 @@ async def act_on_peer_review_step(
     step.reviewed_at = now
 
     db.add(ApprovalWorkflowAuditLog(
-        organization_id=workflow.organization_id, workflow_id=workflow.id, invoice_id=workflow.invoice_id,
+        organization_id=workflow.organization_id, workflow_id=workflow.id, entity_type=workflow.entity_type, entity_id=workflow.entity_id, invoice_id=workflow.invoice_id,
         event_type=ApprovalWorkflowAuditEventType.PEER_REVIEW_FLAGGED if flagged else ApprovalWorkflowAuditEventType.PEER_REVIEW_REVIEWED,
         message=f"Peer review step #{step.step_number} {'flagged' if flagged else 'reviewed'} by user {actor_user_id}." + (f" Comment: {comment}" if comment else ""),
         actor_id=actor_user_id, details={"step_id": step.id, "comment": comment},
@@ -532,7 +597,7 @@ async def act_on_peer_review_step(
             for r in remaining:
                 r.status = PeerReviewStatus.SKIPPED
                 db.add(ApprovalWorkflowAuditLog(
-                    organization_id=workflow.organization_id, workflow_id=workflow.id, invoice_id=workflow.invoice_id,
+                    organization_id=workflow.organization_id, workflow_id=workflow.id, entity_type=workflow.entity_type, entity_id=workflow.entity_id, invoice_id=workflow.invoice_id,
                     event_type=ApprovalWorkflowAuditEventType.STEP_SKIPPED,
                     message=f"Peer review step #{r.step_number} skipped — peer_review_count_required already met.",
                 ))

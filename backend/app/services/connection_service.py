@@ -230,6 +230,32 @@ FIELD_SCHEMAS: dict[str, dict] = {
             {"key": "token_url", "label": "Token URL (IDCS / OCI IAM)", "type": "text", "show_if": {"field": "auth_type", "equals": "OAuth2"}},
         ],
     },
+    "TALLY_PRIME": {
+        # TallyPrime — real XML-over-HTTP against Tally's own local gateway
+        # (Gateway of Tally -> F1 Help -> Settings -> Connectivity, "Enable
+        # ODBC/HTTP Server" — default port 9000). No SQL dialect and no
+        # WSDL; see connectors/application/tallyprime.py's docstring.
+        # Write is OFF by default (Part 16 — read-only until the full
+        # validation/duplicate-check/approval flow is verified) and the
+        # UI must show "READ ONLY" unless write_enabled is explicitly true.
+        "label": "TallyPrime", "category": "APPLICATION",
+        "fields": [
+            {"key": "host", "label": "Tally Host / IP", "type": "text", "required": True, "default": "localhost",
+             "help": "The machine running TallyPrime with its HTTP gateway enabled — usually 'localhost' if this backend runs on the same machine as Tally, otherwise Tally's LAN IP."},
+            {"key": "port", "label": "Port", "type": "number", "required": True, "default": 9000},
+            {"key": "company_name", "label": "Company", "type": "text",
+             "help": "Leave blank until you've run Test Connection at least once — then use Discover Companies to pick from Tally's real company list. Every Tally operation explicitly targets this one company; nothing is ever inferred."},
+            {"key": "timeout_seconds", "label": "Timeout (seconds)", "type": "number", "default": 30},
+            {"key": "max_retries", "label": "Max Retries", "type": "number", "default": 3},
+            {"key": "connection_mode", "label": "Connection Mode", "type": "select", "options": ["HTTP"], "default": "HTTP",
+             "help": "TallyPrime's own local gateway only speaks plain HTTP (not HTTPS) — this is Tally's own protocol choice, not a limitation of this integration."},
+            {"key": "read_mode", "label": "Read Mode", "type": "select", "options": ["Full", "Incremental"], "default": "Incremental"},
+            {"key": "write_enabled", "label": "Write Enabled", "type": "checkbox", "default": False,
+             "help": "OFF by default. Every write still separately requires validation, duplicate-check, a voucher preview and explicit human approval before anything is posted to Tally — enabling this alone does not let anything write automatically."},
+            {"key": "auth_token", "label": "Gateway Auth Token (optional)", "type": "password", "secret": True,
+             "help": "Only needed if this Tally instance's HTTP gateway sits behind a reverse proxy that requires a bearer token — Tally's own gateway has no built-in authentication."},
+        ],
+    },
     "LOCAL_FILE": {
         "label": "Local Folder", "category": "STORAGE",
         "fields": [
@@ -407,7 +433,7 @@ FIELD_SCHEMAS: dict[str, dict] = {
 
 CATEGORIES = [
     {"key": "DATABASE", "label": "Database", "types": ["SQL_SERVER", "POSTGRESQL", "MYSQL", "ORACLE", "SNOWFLAKE", "SAP", "VERTICA", "FABRIC"]},
-    {"key": "APPLICATION", "label": "Application", "types": ["SALESFORCE", "NETSUITE_SUITEQL", "NETSUITE_SOAP", "ORACLE_ERP_CLOUD"]},
+    {"key": "APPLICATION", "label": "Application", "types": ["SALESFORCE", "NETSUITE_SUITEQL", "NETSUITE_SOAP", "ORACLE_ERP_CLOUD", "TALLY_PRIME"]},
     {"key": "STORAGE", "label": "Storage", "types": ["LOCAL_FILE", "SFTP", "FTP", "NETWORK_FILE", "EMAIL_IMAP"]},
     {"key": "API", "label": "API", "types": ["REST", "SOAP"]},
     {"key": "CLOUD", "label": "Cloud", "types": ["AZURE", "AWS", "OTHER"]},
@@ -422,6 +448,7 @@ _HOST_FIELD = {
     "SNOWFLAKE": "account", "FABRIC": "sql_endpoint",
     "SALESFORCE": "username", "NETSUITE_SUITEQL": "dsn", "NETSUITE_SOAP": "account",
     "ORACLE_ERP_CLOUD": "host",
+    "TALLY_PRIME": "host",
     "LOCAL_FILE": "base_path", "SFTP": "host", "FTP": "host", "NETWORK_FILE": "unc_path", "EMAIL_IMAP": "host",
     "REST": "base_url", "SOAP": "wsdl_url",
     "AZURE": "storage_account", "AWS": "region", "OTHER": "host",

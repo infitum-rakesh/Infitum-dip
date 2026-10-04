@@ -118,6 +118,13 @@ import BulkMigrationPipelines from '@/pages/bulk-migration/BulkMigrationPipeline
 import BulkMigrationPipelineDetail from '@/pages/bulk-migration/BulkMigrationPipelineDetail.jsx';
 import BulkMigrationRunMonitor from '@/pages/bulk-migration/BulkMigrationRunMonitor.jsx';
 
+// Tally Integration (TALLY-A) — Phase A scope only: connection + company discovery.
+import TallyCompanies from '@/pages/tally/TallyCompanies.jsx';
+// TALLY-G — account mapping + voucher preview/validation UI (Phase 13).
+import TallyVoucherPreview from '@/pages/tally/TallyVoucherPreview.jsx';
+// TALLY-J7 — reconciliation run-now + history + scheduled-run visibility.
+import TallyReconciliation from '@/pages/tally/TallyReconciliation.jsx';
+
 // Customer Billing (implemented, SB29)
 import CustomerBilling from '@/pages/billing/CustomerBilling.jsx';
 
@@ -349,6 +356,13 @@ export const router = createBrowserRouter([
           { path: 'bulk-migration',                        element: <BulkMigrationPipelines /> },
           { path: 'bulk-migration/runs/:runId',             element: <BulkMigrationRunMonitor /> },
           { path: 'bulk-migration/:pipelineId',             element: <BulkMigrationPipelineDetail /> },
+
+          // Tally Integration (TALLY-A) — Phase A scope only.
+          { path: 'tally/companies', element: <TallyCompanies /> },
+          // TALLY-G — account mapping + voucher preview/validation UI.
+          { path: 'tally/vouchers', element: <TallyVoucherPreview /> },
+          // TALLY-J7 — reconciliation run-now + history + scheduled-run visibility.
+          { path: 'tally/reconciliation', element: <TallyReconciliation /> },
 
           // Billing (SB29) — org-scoped self-service Subscriptions/
           // Invoices/Payments, reachable regardless of subscription

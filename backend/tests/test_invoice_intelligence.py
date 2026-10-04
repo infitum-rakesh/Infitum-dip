@@ -37,7 +37,7 @@ from sqlalchemy import select
 from app.core.deps import require_action
 from app.models.connection import Connection, ConnectionCategory, ConnectionEnvironment, ConnectionType
 from app.models.document import Document, DocumentStatus
-from app.models.invoice_intelligence.core import ApInvoice, ApInvoiceDecision, ApInvoiceStatus
+from app.models.invoice_intelligence.core import ApInvoice, ApInvoiceDecision, ApInvoiceLine, ApInvoiceStatus, ApInvoiceVoucherType
 from app.models.invoice_intelligence.erp import ApInvoiceErpStatus, ApInvoiceReconciliationStatus
 from app.models.invoice_intelligence.rules import ApInvoiceRuleCategory, ApInvoiceRuleResult, ApInvoiceRuleSeverity
 from app.models.review_queue import ReviewQueueItem
@@ -193,6 +193,55 @@ async def test_materialize_invoice_normalizes_amounts_dates_and_vendor(db, make_
     assert invoice.invoice_date is not None and invoice.invoice_date.year == 2026
     assert invoice.vendor_id is not None  # auto-resolved/created reference vendor
     assert invoice.document_id == doc.id
+
+
+@pytest.mark.asyncio
+async def test_materialize_invoice_maps_indian_gst_tds_fields(db, make_org):
+    """TALLY-C — additive GST/TDS taxonomy fields materialize onto
+    ApInvoice/ApInvoiceLine exactly like every other optional field;
+    voucher_type defaults PURCHASE until a reviewer/rule reclassifies it."""
+    org = await make_org()
+    fields = _invoice_fields() + [
+        _field("vendor_gstin", "27AAAAA0000A1Z5"), _field("vendor_pan", "AAAAA0000A"),
+        _field("buyer_gstin", "29BBBBB1111B2Z6"), _field("place_of_supply", "Maharashtra"),
+        _field("cgst_amount", 45.0), _field("sgst_amount", 45.0), _field("igst_amount", None, missing=True),
+        _field("cess_amount", 5.0), _field("payment_reference", "UTR123456789"),
+        _field("tds_section", "194C"), _field("tds_rate", "2%"), _field("tds_amount", 20.0),
+        {
+            "name": "line_items", "type": "table", "missing": False,
+            "rows": [{
+                "description": "Consulting services", "hsn_sac_code": "9983", "uom": "NOS",
+                "quantity": 1, "unit_price": 1000.0, "cgst_rate": "9%", "cgst_amount": 45.0,
+                "sgst_rate": "9%", "sgst_amount": 45.0, "amount": 1090.0,
+            }],
+        },
+    ]
+    doc = await _make_document(db, org, fields=fields)
+    invoice = await invoice_processing_service.materialize_invoice(db, doc)
+
+    assert invoice.vendor_gstin == "27AAAAA0000A1Z5"
+    assert invoice.vendor_pan == "AAAAA0000A"
+    assert invoice.buyer_gstin == "29BBBBB1111B2Z6"
+    assert invoice.place_of_supply == "Maharashtra"
+    assert invoice.cgst_amount == 45.0
+    assert invoice.sgst_amount == 45.0
+    assert invoice.igst_amount is None
+    assert invoice.cess_amount == 5.0
+    assert invoice.payment_reference == "UTR123456789"
+    assert invoice.tds_section == "194C"
+    assert invoice.tds_rate == "2%"
+    assert invoice.tds_amount == 20.0
+    assert invoice.voucher_type == ApInvoiceVoucherType.PURCHASE  # model default, untouched by materialization
+
+    result = await db.execute(select(ApInvoiceLine).where(ApInvoiceLine.invoice_id == invoice.id))
+    line = result.scalars().one()
+    assert line.hsn_sac_code == "9983"
+    assert line.uom == "NOS"
+    assert line.cgst_rate == "9%"
+    assert line.cgst_amount == 45.0
+    assert line.sgst_rate == "9%"
+    assert line.sgst_amount == 45.0
+    assert line.igst_rate is None
 
 
 @pytest.mark.asyncio

@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.approval.rules import (
     ApprovalConditionField,
     ApprovalConditionOperator,
+    ApprovalEntityType,
     ApprovalMode,
     ApprovalRule,
     ApprovalRuleAction,
@@ -75,6 +76,7 @@ class StepInput:
 @dataclass
 class RuleInput:
     name: str
+    entity_type: ApprovalEntityType = ApprovalEntityType.INVOICE
     description: str | None = None
     priority: int = 100
     status: ApprovalRuleStatus = ApprovalRuleStatus.ACTIVE
@@ -102,16 +104,19 @@ class RuleInput:
             self.steps = []
 
 
-async def list_rules_for_admin(db: AsyncSession, organization_id: int | None) -> list[ApprovalRule]:
-    """Every currently-published rule visible to this organization —
-    includes INACTIVE rows too (an admin needs to see and re-activate a
-    rule, not just have it vanish), same convention as invoice_validation_
-    service.list_rules_for_admin(). Never used by the live evaluation
-    path (rule_engine_service.resolve_candidate_rules() filters status
-    itself)."""
+async def list_rules_for_admin(
+    db: AsyncSession, organization_id: int | None, entity_type: ApprovalEntityType = ApprovalEntityType.INVOICE,
+) -> list[ApprovalRule]:
+    """Every currently-published rule visible to this organization AND
+    scoped to entity_type — includes INACTIVE rows too (an admin needs to
+    see and re-activate a rule, not just have it vanish), same convention
+    as invoice_validation_service.list_rules_for_admin(). Never used by
+    the live evaluation path (rule_engine_service.resolve_candidate_rules()
+    filters status itself)."""
     result = await db.execute(
         select(ApprovalRule).where(
             ApprovalRule.is_current.is_(True),
+            ApprovalRule.entity_type == entity_type,
             (ApprovalRule.organization_id == organization_id) | (ApprovalRule.organization_id.is_(None)),
         )
     )
@@ -141,7 +146,7 @@ async def get_rule_children(db: AsyncSession, rule_id: int) -> tuple[list[Approv
 
 def _build_transient(organization_id: int | None, version: int, payload: RuleInput) -> tuple[ApprovalRule, list[ApprovalRuleCondition], list[ApprovalRuleStep]]:
     rule = ApprovalRule(
-        organization_id=organization_id, name=payload.name, description=payload.description,
+        organization_id=organization_id, entity_type=payload.entity_type, name=payload.name, description=payload.description,
         version=version, is_current=True, status=payload.status, priority=payload.priority,
         effective_from=payload.effective_from, effective_to=payload.effective_to,
         min_amount=payload.min_amount, max_amount=payload.max_amount, currency=payload.currency,
@@ -179,7 +184,8 @@ async def publish_rule(db: AsyncSession, organization_id: int | None, payload: R
 
     existing_result = await db.execute(
         select(ApprovalRule).where(
-            ApprovalRule.organization_id == organization_id, ApprovalRule.name == payload.name, ApprovalRule.is_current.is_(True),
+            ApprovalRule.organization_id == organization_id, ApprovalRule.name == payload.name,
+            ApprovalRule.entity_type == payload.entity_type, ApprovalRule.is_current.is_(True),
         )
     )
     existing = existing_result.scalar_one_or_none()
@@ -227,7 +233,7 @@ async def set_rule_status(db: AsyncSession, organization_id: int | None, rule_id
 
     if rule.organization_id is None and organization_id is not None:
         override = ApprovalRule(
-            organization_id=organization_id, name=rule.name, description=rule.description, version=1, is_current=True,
+            organization_id=organization_id, entity_type=rule.entity_type, name=rule.name, description=rule.description, version=1, is_current=True,
             status=status, priority=rule.priority, effective_from=rule.effective_from, effective_to=rule.effective_to,
             min_amount=rule.min_amount, max_amount=rule.max_amount, currency=rule.currency, invoice_type=rule.invoice_type,
             action=rule.action, approval_required=rule.approval_required, approval_count=rule.approval_count,
@@ -264,13 +270,16 @@ async def set_rule_status(db: AsyncSession, organization_id: int | None, rule_id
     return target
 
 
-async def simulate_rule(db: AsyncSession, organization_id: int | None, context: engine.ApprovalMatchContext, actor_id: int | None) -> engine.EvaluationTrace:
-    """Dry run — evaluates every currently-active rule against a
-    hypothetical context, changes nothing, and logs a SIMULATION_RUN
-    audit event against the winning (or conflicting) rule(s) so a
-    "why did/didn't this match" question is answerable later without
-    reproducing the exact inputs."""
-    trace = await engine.evaluate(db, organization_id, context)
+async def simulate_rule(
+    db: AsyncSession, organization_id: int | None, context: engine.ApprovalMatchContext, actor_id: int | None,
+    entity_type: ApprovalEntityType = ApprovalEntityType.INVOICE,
+) -> engine.EvaluationTrace:
+    """Dry run — evaluates every currently-active rule (scoped to
+    entity_type) against a hypothetical context, changes nothing, and
+    logs a SIMULATION_RUN audit event against the winning (or
+    conflicting) rule(s) so a "why did/didn't this match" question is
+    answerable later without reproducing the exact inputs."""
+    trace = await engine.evaluate(db, organization_id, context, entity_type)
     target_names = [e.rule_name for e in (trace.matched_rules or [])] or ["<no match>"]
     db.add(ApprovalRuleAuditLog(
         organization_id=organization_id, rule_name=", ".join(target_names)[:150],

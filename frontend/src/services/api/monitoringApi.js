@@ -14,6 +14,10 @@ export const monitoringApi = {
   // events (see monitoring/repository.py's invoice_processing_overview()).
   getInvoiceProcessing: (days = 7) => apiClient.get('/monitoring/invoice-processing', { params: { days } }).then((r) => r.data),
 
+  // TALLY-J5 — extraction/reconciliation/write-back rollup + Tally-attributable
+  // review queue depth (see monitoring/repository.py's tally_overview()).
+  getTallyOverview: (days = 7) => apiClient.get('/monitoring/tally', { params: { days } }).then((r) => r.data),
+
   listPipelineRuns: (params = {}) => apiClient.get('/monitoring/pipeline-runs', { params }).then((r) => r.data),
 
   listScheduleRuns: (params = {}) => apiClient.get('/monitoring/schedule-runs', { params }).then((r) => r.data),

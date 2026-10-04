@@ -873,7 +873,10 @@ def test_19_build_fields_from_record_maps_scalars_line_items_and_json_safe_types
 
     line_items = by_name["line_items"]
     assert line_items["type"] == "table"
-    assert line_items["rows"] == [{"description": "Widget", "sku": "", "quantity": 2, "unit_price": 50.0, "tax": "", "amount": 100.0}]
+    assert line_items["rows"] == [{
+        "description": "Widget", "sku": "", "hsn_sac_code": "", "uom": "", "quantity": 2, "unit_price": 50.0, "tax": "",
+        "cgst_rate": "", "cgst_amount": "", "sgst_rate": "", "sgst_amount": "", "igst_rate": "", "igst_amount": "", "amount": 100.0,
+    }]
 
     for f in fields:
         assert f["confidence"] == 100.0

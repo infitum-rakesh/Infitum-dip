@@ -18,6 +18,7 @@ from app.database.tenant_routing import get_tenant_db
 from app.models.approval.rules import (
     ApprovalConditionField,
     ApprovalConditionOperator,
+    ApprovalEntityType,
     ApprovalMode,
     ApprovalRuleAction,
     ApprovalRuleStatus,
@@ -110,7 +111,8 @@ def _to_rule_input(body: ApprovalRuleIn) -> rule_svc.RuleInput:
         for s in body.steps
     ]
     return rule_svc.RuleInput(
-        name=body.name, description=body.description, priority=body.priority,
+        name=body.name, entity_type=_enum(ApprovalEntityType, body.entity_type, "entity_type"),
+        description=body.description, priority=body.priority,
         status=_enum(ApprovalRuleStatus, body.status, "status"),
         effective_from=body.effective_from, effective_to=body.effective_to,
         min_amount=body.min_amount, max_amount=body.max_amount, currency=body.currency, invoice_type=body.invoice_type,
@@ -134,9 +136,10 @@ def _evaluation_out(e: engine.RuleEvaluation) -> ApprovalEvaluationOut:
 
 @router.get("/rules", response_model=list[ApprovalRuleOut])
 async def list_rules(
+    entity_type: str = Query("INVOICE"),
     user: User = Depends(require_action("VIEW", module=APPROVAL_MODULE)), db: AsyncSession = Depends(get_tenant_db),
 ):
-    return await rule_svc.list_rules_for_admin(db, _effective_org_id(user))
+    return await rule_svc.list_rules_for_admin(db, _effective_org_id(user), _enum(ApprovalEntityType, entity_type, "entity_type"))
 
 
 @router.get("/rules/{rule_id}", response_model=ApprovalRuleDetailOut)
@@ -180,8 +183,9 @@ async def set_rule_status(
 async def simulate_rule(
     body: ApprovalSimulateRequest, user: User = Depends(require_action("EXECUTE", module=APPROVAL_MODULE)), db: AsyncSession = Depends(get_tenant_db),
 ):
+    entity_type = _enum(ApprovalEntityType, body.entity_type, "entity_type")
     context = engine.ApprovalMatchContext(amount=body.amount, currency=body.currency, invoice_type=body.invoice_type, conditions=body.conditions)
-    trace = await rule_svc.simulate_rule(db, _effective_org_id(user), context, user.id)
+    trace = await rule_svc.simulate_rule(db, _effective_org_id(user), context, user.id, entity_type)
     return ApprovalSimulateResponse(
         candidates_considered=trace.candidates_considered,
         evaluations=[_evaluation_out(e) for e in trace.evaluations],
@@ -239,39 +243,85 @@ def _with_invoice_fields(out: ApprovalWorkflowOut, invoice, organization_id: int
     return out
 
 
+def _with_tally_fields(out, preview, linked_invoice, organization_id: int | None):
+    """TALLY-H — the analog of _with_invoice_fields() for entity_type=
+    TALLY_VOUCHER rows: stamps party ledger/voucher type/company from the
+    real TallyVoucherPreview, plus total/currency from its linked
+    ApInvoice (the preview itself carries no total — it's derived from
+    the invoice at build time) so a Tally approver sees an amount just
+    like an invoice approver does. Same tenant-isolation re-check as the
+    invoice version."""
+    if preview is not None and (preview.organization_id is None or organization_id is None or preview.organization_id == organization_id):
+        out.voucher_party_ledger = preview.party_ledger_name
+        out.voucher_type = preview.voucher_type
+        out.voucher_company_name = preview.company_name
+        if linked_invoice is not None:
+            out.total = linked_invoice.total
+            out.currency = linked_invoice.currency
+    return out
+
+
+async def _stamp_entity_fields(db: AsyncSession, entities: list[tuple], org_id: int | None) -> None:
+    """TALLY-H — batch-fetches ApInvoice for entity_type=INVOICE rows and
+    TallyVoucherPreview (+ its linked ApInvoice, for total/currency) for
+    entity_type=TALLY_VOUCHER rows, then stamps each `out` object in
+    place. `entities` is a list of (entity_type, entity_id, out) triples
+    — a plain list, not a dict keyed by (entity_type, entity_id), because
+    a REJECTED-then-resubmitted invoice/voucher legitimately has more
+    than one ApprovalWorkflow row pointing at the very same entity (see
+    ApprovalWorkflow's own docstring on why entity_id is deliberately not
+    unique) — deduping by entity would silently leave one of them
+    unstamped."""
+    from app.models.invoice_intelligence.core import ApInvoice
+    from app.models.tally_mapping import TallyVoucherPreview
+
+    invoice_ids = {eid for (etype, eid, _out) in entities if etype == ApprovalEntityType.INVOICE}
+    preview_ids = {eid for (etype, eid, _out) in entities if etype == ApprovalEntityType.TALLY_VOUCHER}
+
+    invoices = {inv.id: inv for inv in (await db.execute(select(ApInvoice).where(ApInvoice.id.in_(invoice_ids)))).scalars().all()} if invoice_ids else {}
+    previews = {p.id: p for p in (await db.execute(select(TallyVoucherPreview).where(TallyVoucherPreview.id.in_(preview_ids)))).scalars().all()} if preview_ids else {}
+    preview_invoice_ids = {p.invoice_id for p in previews.values()}
+    preview_invoices = {inv.id: inv for inv in (await db.execute(select(ApInvoice).where(ApInvoice.id.in_(preview_invoice_ids)))).scalars().all()} if preview_invoice_ids else {}
+
+    for etype, eid, out in entities:
+        if etype == ApprovalEntityType.INVOICE:
+            _with_invoice_fields(out, invoices.get(eid), org_id)
+        else:
+            preview = previews.get(eid)
+            _with_tally_fields(out, preview, preview_invoices.get(preview.invoice_id) if preview else None, org_id)
+
+
 @router.get("/workflows", response_model=list[ApprovalWorkflowOut])
 async def list_workflows(
     status_filter: str | None = Query(None, alias="status"),
+    entity_type: str | None = Query(None),
     user: User = Depends(require_action("VIEW", module=APPROVAL_MODULE)), db: AsyncSession = Depends(get_tenant_db),
 ):
-    from app.models.invoice_intelligence.core import ApInvoice
-
     stmt = select(ApprovalWorkflow)
     org_id = _effective_org_id(user)
     if org_id is not None:
         stmt = stmt.where(ApprovalWorkflow.organization_id == org_id)
     if status_filter:
         stmt = stmt.where(ApprovalWorkflow.status == status_filter)
+    if entity_type:
+        stmt = stmt.where(ApprovalWorkflow.entity_type == _enum(ApprovalEntityType, entity_type, "entity_type"))
     stmt = stmt.order_by(ApprovalWorkflow.created_at.desc())
     workflows = (await db.execute(stmt)).scalars().all()
 
-    invoice_ids = {wf.invoice_id for wf in workflows}
-    invoices = {inv.id: inv for inv in (await db.execute(select(ApInvoice).where(ApInvoice.id.in_(invoice_ids)))).scalars().all()} if invoice_ids else {}
-    return [_with_invoice_fields(ApprovalWorkflowOut.model_validate(wf), invoices.get(wf.invoice_id), org_id) for wf in workflows]
+    outs = [ApprovalWorkflowOut.model_validate(wf) for wf in workflows]
+    await _stamp_entity_fields(db, [(wf.entity_type, wf.entity_id, out) for wf, out in zip(workflows, outs)], org_id)
+    return outs
 
 
 @router.get("/workflows/{workflow_id}", response_model=ApprovalWorkflowDetailOut)
 async def get_workflow(
     workflow_id: int, user: User = Depends(require_action("VIEW", module=APPROVAL_MODULE)), db: AsyncSession = Depends(get_tenant_db),
 ):
-    from app.models.invoice_intelligence.core import ApInvoice
-
     org_id = _effective_org_id(user)
     workflow = await _load_workflow(db, org_id, workflow_id)
     steps = (await db.execute(select(ApprovalWorkflowStep).where(ApprovalWorkflowStep.workflow_id == workflow_id).order_by(ApprovalWorkflowStep.step_number))).scalars().all()
     peer_steps = (await db.execute(select(PeerReviewStep).where(PeerReviewStep.workflow_id == workflow_id).order_by(PeerReviewStep.step_number))).scalars().all()
     audit = (await db.execute(select(ApprovalWorkflowAuditLog).where(ApprovalWorkflowAuditLog.workflow_id == workflow_id).order_by(ApprovalWorkflowAuditLog.created_at))).scalars().all()
-    invoice = await db.get(ApInvoice, workflow.invoice_id)
 
     # Real bug found live (user-reported): the Approver/Assigned To/Acted
     # columns on the Workflow Detail screen showed "User #3" — stamp real
@@ -301,7 +351,8 @@ async def get_workflow(
     out.steps = step_outs
     out.peer_review_steps = peer_outs
     out.audit_log = audit
-    return _with_invoice_fields(out, invoice, org_id)
+    await _stamp_entity_fields(db, [(workflow.entity_type, workflow.entity_id, out)], org_id)
+    return out
 
 
 @router.post("/workflows")
@@ -314,7 +365,7 @@ async def create_workflow(
     context = engine.ApprovalMatchContext(amount=body.amount, currency=body.currency, invoice_type=body.invoice_type, conditions=body.conditions)
     try:
         workflow = await engine_svc.create_workflow(
-            db, organization_id=org_id, invoice_id=body.invoice_id, context=context, created_by=user.id,
+            db, organization_id=org_id, entity_type=ApprovalEntityType.INVOICE, entity_id=body.invoice_id, context=context, created_by=user.id,
         )
     except engine_svc.ApprovalWorkflowEngineError as exc:
         # PAY13 — create_workflow() now also raises this for "invoice not
@@ -338,42 +389,39 @@ async def create_workflow(
 async def my_approvals(
     user: User = Depends(require_action("VIEW", module=APPROVAL_MODULE)), db: AsyncSession = Depends(get_tenant_db),
 ):
-    """PAY10 — batch-fetches the invoice header fields (number/vendor/
-    total/currency) an approver actually needs to decide, in one extra
-    query rather than N+1 per row. ApInvoice import is local to this
-    function, not a module-level import — api/approvals.py otherwise has
-    zero dependency on the invoice_intelligence package, and this keeps
-    it that way for every route except this one."""
-    from app.models.invoice_intelligence.core import ApInvoice
-
+    """PAY10 — batch-fetches the entity header fields (invoice number/
+    vendor/total/currency, or TALLY-H's voucher party ledger/type/company)
+    an approver actually needs to decide, in one extra query rather than
+    N+1 per row, via the same _stamp_entity_fields() dispatcher
+    list_workflows()/get_workflow() use."""
     items: list[MyApprovalItemOut] = []
     steps = (await db.execute(select(ApprovalWorkflowStep).where(ApprovalWorkflowStep.assigned_user_id == user.id, ApprovalWorkflowStep.status == ApprovalStepStatus.ASSIGNED))).scalars().all()
     peer_steps = (await db.execute(select(PeerReviewStep).where(PeerReviewStep.assigned_user_id == user.id, PeerReviewStep.status == PeerReviewStatus.ASSIGNED))).scalars().all()
 
     workflow_ids = {s.workflow_id for s in steps} | {s.workflow_id for s in peer_steps}
     workflows = {wf.id: wf for wf in (await db.execute(select(ApprovalWorkflow).where(ApprovalWorkflow.id.in_(workflow_ids)))).scalars().all()} if workflow_ids else {}
-    invoice_ids = {wf.invoice_id for wf in workflows.values()}
-    invoices = {inv.id: inv for inv in (await db.execute(select(ApInvoice).where(ApInvoice.id.in_(invoice_ids)))).scalars().all()} if invoice_ids else {}
 
-    def _invoice_fields(wf) -> dict:
-        # PAY13 — same tenant-isolation check as _with_invoice_fields()
-        # below: never stamp an invoice's fields without confirming it
-        # actually belongs to the workflow's own organization.
-        inv = invoices.get(wf.invoice_id)
-        if inv is None or (inv.organization_id is not None and inv.organization_id != wf.organization_id):
-            return {}
-        return {"invoice_number": inv.invoice_number, "vendor_name": inv.vendor_name, "total": inv.total, "currency": inv.currency}
+    # PAY13 — same tenant-isolation re-check _stamp_entity_fields() itself
+    # already does per-entity; org_id here scopes it to THIS caller's org.
+    org_id = _effective_org_id(user)
+    entities = []
 
     for s in steps:
         wf = workflows.get(s.workflow_id)
         if wf is None:
             continue
-        items.append(MyApprovalItemOut(step_id=s.id, step_kind="APPROVAL", workflow_id=wf.id, invoice_id=wf.invoice_id, rule_name=wf.rule_name, step_number=s.step_number, assigned_at=s.assigned_at, due_at=s.due_at, **_invoice_fields(wf)))
+        item = MyApprovalItemOut(step_id=s.id, step_kind="APPROVAL", workflow_id=wf.id, entity_type=wf.entity_type.value, invoice_id=wf.invoice_id, rule_name=wf.rule_name, step_number=s.step_number, assigned_at=s.assigned_at, due_at=s.due_at)
+        items.append(item)
+        entities.append((wf.entity_type, wf.entity_id, item))
     for s in peer_steps:
         wf = workflows.get(s.workflow_id)
         if wf is None:
             continue
-        items.append(MyApprovalItemOut(step_id=s.id, step_kind="PEER_REVIEW", workflow_id=wf.id, invoice_id=wf.invoice_id, rule_name=wf.rule_name, step_number=s.step_number, assigned_at=s.assigned_at, due_at=s.due_at, **_invoice_fields(wf)))
+        item = MyApprovalItemOut(step_id=s.id, step_kind="PEER_REVIEW", workflow_id=wf.id, entity_type=wf.entity_type.value, invoice_id=wf.invoice_id, rule_name=wf.rule_name, step_number=s.step_number, assigned_at=s.assigned_at, due_at=s.due_at)
+        items.append(item)
+        entities.append((wf.entity_type, wf.entity_id, item))
+
+    await _stamp_entity_fields(db, entities, org_id)
     return items
 
 

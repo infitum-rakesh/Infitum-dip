@@ -56,7 +56,7 @@ from app.database.connection import AsyncSessionLocal
 from app.connectors.base import ConnectorError
 from app.core.config import get_settings
 from app.database import tenant_engine_registry
-from app.models.connection import Connection, ConnectionCategory, ConnectionStatus
+from app.models.connection import Connection, ConnectionCategory, ConnectionStatus, ConnectionType
 from app.models.document import Document, DocumentStatus, DocumentType
 from app.models.user import User
 from app.ocr.engine import OcrEngineError, OcrNotApplicableError, render_pages_as_png
@@ -732,19 +732,45 @@ PIPELINE_NAMES = ["Invoice Pipeline", "Receipt Pipeline", "Contract Pipeline", "
 _TOTAL_FIELD_HINTS = ("total", "amount_due", "grand_total", "balance_due")
 
 
+_AI_PROVIDER_SETTING_TO_CONNECTION_TYPE = {
+    "openai": ConnectionType.OPENAI,
+    "anthropic": ConnectionType.ANTHROPIC,
+    "ollama": ConnectionType.OLLAMA,
+    # "azure-openai"/"google-vertex" (also offered by Settings > AI >
+    # AI Provider) have no matching ConnectionType — no real connector
+    # exists for either yet, so they're left out of this map on purpose;
+    # an org that picked one just keeps today's id-ascending order below,
+    # same as before this preference existed.
+}
+
+
 async def _pick_ai_connections(db: AsyncSession, organization_id: int | None) -> list[Connection]:
-    """Every ACTIVE AI_PROVIDER connection for this org, in id order (same
-    connections configured on the Connections page / offered by the
-    Document Intelligence wizard's AI Agent picker). Used — instead of
-    just grabbing the first one — so that a connection which is
-    genuinely broken at RUNTIME (e.g. an Anthropic key whose account has
-    run out of API credit, a rate limit, a transient network error) isn't
-    a hard stop for extraction when another configured connection (say,
-    a local Ollama) can actually serve the request. Callers try these in
-    order and only move to the next on a real failure — see
-    _run_ai_extraction()/run_manual_ai_extraction() below. Empty list
-    (not None) when none are configured, so callers can genuinely skip
-    the stage rather than fabricate field values."""
+    """Every ACTIVE AI_PROVIDER connection for this org, preferring the
+    org's own Settings > AI > "AI Provider" choice first, then falling
+    back to id order for the rest (same connections configured on the
+    Connections page / offered by the Document Intelligence wizard's AI
+    Agent picker). Real bug found live: this used to ALWAYS sort by id
+    only, completely ignoring Settings > AI — an org that explicitly
+    configured "openai" as its AI Provider could still have every
+    automatic extraction served by whichever connection happened to have
+    the lowest id (observed live: org 2 configured "openai" but its
+    Anthropic connection, id=2, was tried first purely because 2 < 13,
+    and a transient Anthropic failure meant Ollama — id=3 — served the
+    request instead of the org's actual choice, OpenAI id=13, which was
+    never even tried). The underlying "try the next one on a real
+    failure" resilience (see docstring below) is preserved — this only
+    changes which connection is tried FIRST, not whether a broken one
+    still gets skipped over.
+
+    Used — instead of just grabbing the first one — so that a connection
+    which is genuinely broken at RUNTIME (e.g. an Anthropic key whose
+    account has run out of API credit, a rate limit, a transient network
+    error) isn't a hard stop for extraction when another configured
+    connection (say, a local Ollama) can actually serve the request.
+    Callers try these in order and only move to the next on a real
+    failure — see _run_ai_extraction()/run_manual_ai_extraction() below.
+    Empty list (not None) when none are configured, so callers can
+    genuinely skip the stage rather than fabricate field values."""
     stmt = select(Connection).where(
         Connection.category == ConnectionCategory.AI_PROVIDER,
         Connection.status == ConnectionStatus.ACTIVE,
@@ -754,7 +780,14 @@ async def _pick_ai_connections(db: AsyncSession, organization_id: int | None) ->
         else stmt.where(Connection.organization_id.is_(None))
     stmt = stmt.order_by(Connection.id.asc())
     result = await db.execute(stmt)
-    return list(result.scalars().all())
+    connections = list(result.scalars().all())
+    if len(connections) > 1:
+        org_settings = await settings_service.get_or_create(db, organization_id) if organization_id is not None else None
+        ai_settings = settings_service.effective_ai_settings(org_settings)
+        preferred_type = _AI_PROVIDER_SETTING_TO_CONNECTION_TYPE.get(ai_settings.get("ai_provider"))
+        if preferred_type is not None:
+            connections.sort(key=lambda c: c.connection_type != preferred_type)
+    return connections
 
 
 def _conn_label(conn: Connection) -> str:
@@ -1471,7 +1504,7 @@ def friendly_db_error(exc: Exception) -> str:
 
 async def process_document(
     db: AsyncSession, doc: Document, *, reprocess: bool = False,
-    confidence_threshold: float = 90.0, accuracy_threshold: float = 90.0,
+    confidence_threshold: float | None = None, accuracy_threshold: float | None = None,
     document_type: str | None = None,
     invoice_auto_post: bool = False, invoice_erp_connection_id: int | None = None,
     skip_invoice_pipeline: bool = False,
@@ -1485,10 +1518,18 @@ async def process_document(
     remain simulated — see module docstring.
 
     confidence_threshold/accuracy_threshold (spec: Scheduled Document
-    Intelligence Workflow) control the PASS/REVIEW_REQUIRED boundary below —
-    defaults exactly match manual scan's previous hardcoded 90/90 so every
-    existing caller is unaffected; only schedule_service.py's document-
-    schedule dispatch passes non-default values, per-schedule.
+    Intelligence Workflow) control the PASS/REVIEW_REQUIRED boundary below.
+    None (the default — every caller except schedule_service.py) resolves
+    to the org's own Settings > Document Intelligence > "Default Confidence
+    Threshold" (falling back to 90.0 if the org has no settings row yet) —
+    see the resolution right below. Real bug found live: this used to be a
+    bare `= 90.0` default, so manual upload/reprocess and bulk upload never
+    actually read the org's configured threshold at all, silently using 90
+    regardless of what Settings showed — only schedule_service.py's
+    per-schedule dispatch passed its own (non-org-settings) value and
+    therefore worked. schedule_service.py still passes an explicit
+    per-schedule float here, which takes precedence over the org default
+    exactly as before.
 
     document_type (e.g. "INVOICE", see document_taxonomies.py) pins AI
     Extraction to a known canonical taxonomy instead of ad-hoc auto-detect
@@ -1528,6 +1569,21 @@ async def process_document(
     config applies exactly as before this feature existed; see that
     function's docstring for the override dict's shape."""
     doc_id = doc.id  # saved before anything can fail — used to re-fetch a clean instance if the except block below needs to recover from a broken session
+    # Resolved up front, independent of which branch below runs (OCR vs
+    # OcrNotApplicableError vs preextracted_fields) — see this function's
+    # own docstring for why this exists. A caller that passes an explicit
+    # value (schedule_service.py) is never touched; every other caller
+    # (manual upload, bulk upload, Review Queue reprocess) now actually
+    # gets the org's configured Settings > Document Intelligence > Default
+    # Confidence Threshold instead of a hardcoded 90.
+    if confidence_threshold is None or accuracy_threshold is None:
+        org_settings_for_threshold = await settings_service.get_or_create(db, doc.organization_id) if doc.organization_id else None
+        di_settings_for_threshold = settings_service.effective_document_intelligence_settings(org_settings_for_threshold)
+        org_default_threshold = di_settings_for_threshold.get("default_confidence_threshold", 90.0)
+        if confidence_threshold is None:
+            confidence_threshold = org_default_threshold
+        if accuracy_threshold is None:
+            accuracy_threshold = org_default_threshold
     rnd = random.Random()
     now = datetime.now(timezone.utc)
     timeline = [] if reprocess else list(doc.timeline or [])
@@ -1827,12 +1883,10 @@ async def process_document(
 
         conf_components = [c for c in (scan_conf, ocr_conf, extraction_conf) if c is not None]
         overall_conf = round(sum(conf_components) / len(conf_components), 1)
-        # confidence_threshold/accuracy_threshold default to 90 — the exact
-        # value manual scan hardcoded before this parameter existed, so
-        # every existing caller (manual scan, bulk upload, Review Queue
-        # reprocess — none of which pass this yet) sees byte-identical
-        # behavior. Only the Scheduled Document Intelligence Workflow
-        # (schedule_service.py) passes a schedule-configured value.
+        # confidence_threshold/accuracy_threshold are resolved above — the
+        # org's configured Default Confidence Threshold for every caller
+        # except the Scheduled Document Intelligence Workflow
+        # (schedule_service.py), which passes its own per-schedule value.
         extraction_needs_review = (
             overall_conf < confidence_threshold
             or (fields and accuracy_score < accuracy_threshold)

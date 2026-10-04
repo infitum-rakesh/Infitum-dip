@@ -49,6 +49,29 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.database.connection import TenantBase
 
 
+class ApprovalEntityType(str, enum.Enum):
+    """TALLY-H — what kind of thing a rule/workflow gates. Added so the
+    same rule-engine + workflow-instance machinery this whole feature
+    built for invoice payment approval can be reused, unforked, for
+    Tally voucher write-back authorization (spec's own directive: reuse
+    the generic engine, never duplicate it, but keep the two kinds of
+    approval logically separate). Every ApprovalRule/ApprovalWorkflow row
+    predating this column is backfilled to INVOICE (see migrate_tally_h.py)
+    — exactly the behavior every existing rule/workflow already had, so
+    this is purely additive, never a behavior change for Payment Approval.
+
+    resolve_candidate_rules() filters on this so a TALLY_VOUCHER context
+    can never accidentally match an INVOICE-scoped rule (or vice versa) —
+    without that filter, an org's existing unconditional invoice rule
+    ("matches unconditionally, no conditions defined") would silently
+    also claim every Tally voucher submitted for approval, which would be
+    a real, dangerous correctness bug given this feature's own "no
+    AI-generated data may post to Tally without explicit human
+    authorization" requirement."""
+    INVOICE = "INVOICE"
+    TALLY_VOUCHER = "TALLY_VOUCHER"
+
+
 class ApprovalRuleStatus(str, enum.Enum):
     ACTIVE = "ACTIVE"
     INACTIVE = "INACTIVE"
@@ -116,12 +139,18 @@ class ApprovalRule(TenantBase):
     # while building Phase 4, which is the first table that actually
     # grows this table a real FK child from OUTSIDE this file.
     __table_args__ = (
-        UniqueConstraint("organization_id", "name", "version", name="uq_approval_rule_org_name_version"),
+        UniqueConstraint("organization_id", "name", "version", "entity_type", name="uq_approval_rule_org_name_version_entity"),
         {"sqlite_autoincrement": True},
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     organization_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
+
+    # TALLY-H — scopes this rule to one kind of approval. Two entity types
+    # may reuse the same rule `name` independently (each has its own
+    # version lineage) — that's why entity_type joined the uniqueness key
+    # above rather than name alone.
+    entity_type: Mapped[ApprovalEntityType] = mapped_column(Enum(ApprovalEntityType), default=ApprovalEntityType.INVOICE, index=True)
 
     name: Mapped[str] = mapped_column(String(150), nullable=False, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)

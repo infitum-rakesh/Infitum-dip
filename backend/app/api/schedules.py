@@ -54,12 +54,14 @@ async def _get_or_404(db: AsyncSession, schedule_id: int, user: User):
 
 
 async def _to_out(db: AsyncSession, schedule, owner_name: str | None) -> dict:
-    """svc.to_out() needs the schedule's DocumentScheduleConfig row (if
-    any) to include `document_config` in the response — fetched once here
+    """svc.to_out() needs the schedule's DocumentScheduleConfig/
+    TallyReconciliationScheduleConfig row (if any) to include
+    `document_config`/`tally_config` in the response — fetched once here
     so every route below stays a one-liner instead of repeating the
     lookup."""
     document_config = await svc.get_document_config(db, schedule.id)
-    return svc.to_out(schedule, owner_name, document_config)
+    tally_config = await svc.get_tally_config(db, schedule.id)
+    return svc.to_out(schedule, owner_name, document_config, tally_config)
 
 
 # ── KPIs ──────────────────────────────────────────────────────────
@@ -80,6 +82,7 @@ async def list_schedules(
     environment: str | None = Query(None),
     frequency: str | None = Query(None),
     anomaly_job_id: int | None = Query(None, description="Filter to the schedule(s) linked to one AnomalyJob"),
+    tally_connection_id: int | None = Query(None, description="Filter to the schedule(s) linked to one Tally connection"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     sort_by: str = Query("next_run_at"),
@@ -89,7 +92,8 @@ async def list_schedules(
 ):
     schedules, total, name_map = await svc.list_schedules(
         db, organization_id=_effective_org_id(user), search=q, status_filter=status_filter,
-        environment=environment, frequency=frequency, anomaly_job_id=anomaly_job_id, page=page, page_size=page_size,
+        environment=environment, frequency=frequency, anomaly_job_id=anomaly_job_id,
+        tally_connection_id=tally_connection_id, page=page, page_size=page_size,
         sort_by=sort_by, sort_dir=sort_dir,
     )
     items = [await _to_out(db, s, name_map.get(s.owner_id)) for s in schedules]

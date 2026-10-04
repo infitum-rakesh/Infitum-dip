@@ -56,6 +56,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.approval.rules import (
     ApprovalConditionOperator,
+    ApprovalEntityType,
     ApprovalMode,
     ApprovalRule,
     ApprovalRuleAction,
@@ -253,17 +254,27 @@ class EvaluationTrace:
     conflicting_rule_ids: list[int]
 
 
-async def resolve_candidate_rules(db: AsyncSession, organization_id: int | None) -> list[ApprovalRule]:
+async def resolve_candidate_rules(
+    db: AsyncSession, organization_id: int | None, entity_type: ApprovalEntityType = ApprovalEntityType.INVOICE,
+) -> list[ApprovalRule]:
     """Every currently-published, ACTIVE rule visible to this
-    organization — org-specific rows plus platform-default rows
-    (organization_id IS NULL), merged by name exactly like
-    invoice_validation_service.get_current_rules(). INACTIVE rules never
-    reach live evaluation (they still exist for a Rule admin screen to
-    list and re-activate, a later phase's concern)."""
+    organization AND scoped to this entity_type — org-specific rows plus
+    platform-default rows (organization_id IS NULL), merged by name
+    exactly like invoice_validation_service.get_current_rules(). INACTIVE
+    rules never reach live evaluation (they still exist for a Rule admin
+    screen to list and re-activate, a later phase's concern).
+
+    TALLY-H — the entity_type filter is load-bearing, not cosmetic: an
+    org's existing unconditional invoice rule ("matches unconditionally")
+    would otherwise silently also claim every Tally voucher submitted for
+    approval, defeating the "explicit human authorization" requirement
+    that motivated TALLY-H in the first place. Defaults to INVOICE so
+    every pre-existing caller (Payment Approval) is unaffected."""
     result = await db.execute(
         select(ApprovalRule).where(
             ApprovalRule.is_current.is_(True),
             ApprovalRule.status == ApprovalRuleStatus.ACTIVE,
+            ApprovalRule.entity_type == entity_type,
             (ApprovalRule.organization_id == organization_id) | (ApprovalRule.organization_id.is_(None)),
         )
     )
@@ -374,15 +385,19 @@ def _evaluate_rule(rule: ApprovalRule, conditions: list[ApprovalRuleCondition], 
     )
 
 
-async def evaluate(db: AsyncSession, organization_id: int | None, context: ApprovalMatchContext) -> EvaluationTrace:
+async def evaluate(
+    db: AsyncSession, organization_id: int | None, context: ApprovalMatchContext,
+    entity_type: ApprovalEntityType = ApprovalEntityType.INVOICE,
+) -> EvaluationTrace:
     """The engine's single entry point: resolves every candidate rule
-    visible to this org, matches each against `context`, applies the
-    specificity ladder to pick a winner among the matches, and returns
-    the full trace — every candidate, matched or not, and why."""
+    visible to this org AND scoped to entity_type, matches each against
+    `context`, applies the specificity ladder to pick a winner among the
+    matches, and returns the full trace — every candidate, matched or
+    not, and why."""
     if context.as_of is None:
         context = replace(context, as_of=datetime.now(timezone.utc))
 
-    candidates = await resolve_candidate_rules(db, organization_id)
+    candidates = await resolve_candidate_rules(db, organization_id, entity_type)
     conditions_by_rule = await _load_conditions_by_rule(db, [r.id for r in candidates])
 
     evaluations = [_evaluate_rule(rule, conditions_by_rule.get(rule.id, []), context) for rule in candidates]

@@ -136,6 +136,41 @@ class FileRowSource(RowSource):
         return f"uploaded file '{self.object_name}'"
 
 
+class ListRowSource(RowSource):
+    """An in-memory list[dict] as a RowSource — e.g. ORM query results
+    materialized in Python (no connector/file involved at all). Added for
+    TALLY-E's ApInvoice-vs-TallyCanonicalVoucher reconciliation, which
+    compares two in-memory record sets rather than a live SQL object or
+    uploaded file; kept here (not in Tally-specific code) since it's a
+    generic capability any future in-memory-vs-in-memory reconciliation
+    need can reuse without touching this module again."""
+
+    def __init__(self, rows: list[dict], *, name: str = "in-memory rows"):
+        self.rows = rows
+        self.name = name
+
+    def count(self) -> int:
+        return len(self.rows)
+
+    def get_columns(self) -> list[str]:
+        columns: list[str] = []
+        seen = set()
+        for row in self.rows:
+            for k in row:
+                if k not in seen:
+                    seen.add(k)
+                    columns.append(k)
+        return columns
+
+    def iter_rows(self, columns: list[str], chunk_size: int = 5000):
+        for i in range(0, len(self.rows), chunk_size):
+            chunk = self.rows[i:i + chunk_size]
+            yield [{c: r.get(c) for c in columns} for r in chunk]
+
+    def describe(self) -> str:
+        return self.name
+
+
 def compare_counts(source: RowSource) -> int:
     return source.count()
 
@@ -203,6 +238,25 @@ def _normalize(v) -> str | None:
     return None if v is None else str(v).strip()
 
 
+def _values_equal(sv, tv, tolerance: float | None) -> bool:
+    """Exact normalized-string equality by default (unchanged behavior for
+    every existing caller). When `tolerance` is set for this column
+    (TALLY-E's real need: GST/TDS amounts that legitimately differ by a
+    paisa/cent of rounding shouldn't be reported as a MISMATCH), both
+    values are parsed as numbers and compared within that tolerance
+    instead — a value that isn't parseable as a number with a tolerance
+    configured is never silently treated as equal; it falls back to exact
+    comparison so a genuine type/format problem still surfaces."""
+    if tolerance is None:
+        return _normalize(sv) == _normalize(tv)
+    if sv is None or tv is None:
+        return sv is None and tv is None
+    try:
+        return abs(float(sv) - float(tv)) <= tolerance
+    except (TypeError, ValueError):
+        return _normalize(sv) == _normalize(tv)
+
+
 def _normalize_name(v, config: dict) -> str | None:
     """Name-fallback normalization (spec: trim + case-insensitive by
     default; collapse-repeated-spaces and Unicode NFKC normalization
@@ -268,7 +322,7 @@ def diff_keys_and_fields(
     key_columns: list[str], compare_columns: list[str],
     target_key_columns: list[str] | None = None, target_compare_columns: list[str] | None = None,
     fallback_columns: list[str] | None = None, target_fallback_columns: list[str] | None = None,
-    name_normalization: dict | None = None,
+    name_normalization: dict | None = None, tolerance_columns: dict[str, float] | None = None,
 ) -> dict:
     """Returns {source_count, target_count, matched_count,
     matched_by_id_count, matched_by_name_count, matched_by_name (list of
@@ -309,6 +363,14 @@ def diff_keys_and_fields(
     either method — an ambiguous candidate is excluded from "extra" too
     (it may well be the real match; reporting it as a false extra would
     be exactly the kind of confidently-wrong result this exists to avoid).
+
+    `tolerance_columns` ({source compare-column name: allowed numeric
+    delta}, TALLY-E's real need): a column not listed here compares with
+    the same exact-normalized-string equality as always (every existing
+    caller passes None/omits this — byte-identical prior behavior). A
+    listed column instead compares `abs(float(source) - float(target)) <=
+    tolerance`; a value that isn't parseable as a number falls back to
+    exact comparison rather than being silently treated as equal.
 
     DUPLICATE_TARGET_MATCH (independent of fallback matching — this check
     always runs): if the TARGET has 2+ rows sharing the same key, a source
@@ -386,7 +448,7 @@ def diff_keys_and_fields(
         srow, trow = source_rows[skey], target_rows[tkey]
         for i, col in enumerate(compare_columns):
             sv, tv = srow.get(col), trow.get(target_compare_columns[i])
-            if _normalize(sv) != _normalize(tv):
+            if not _values_equal(sv, tv, (tolerance_columns or {}).get(col)):
                 mismatches.append({
                     "key": skey, "column": col, "source_value": sv, "target_value": tv,
                     "match_method": match_method, "target_key": tkey,

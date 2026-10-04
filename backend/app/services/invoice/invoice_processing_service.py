@@ -233,6 +233,21 @@ async def materialize_invoice(
     invoice.freight = _parse_amount(fmap.get("shipping_amount"))
     invoice.total = _parse_amount(fmap.get("total_amount"))
 
+    # Indian GST / TDS taxonomy (TALLY-C) — same additive, never-fabricated
+    # normalization as every other field here; blank for non-Indian invoices.
+    invoice.vendor_gstin = _clean_string(fmap.get("vendor_gstin"))
+    invoice.vendor_pan = _clean_string(fmap.get("vendor_pan"))
+    invoice.buyer_gstin = _clean_string(fmap.get("buyer_gstin"))
+    invoice.place_of_supply = _clean_string(fmap.get("place_of_supply"))
+    invoice.cgst_amount = _parse_amount(fmap.get("cgst_amount"))
+    invoice.sgst_amount = _parse_amount(fmap.get("sgst_amount"))
+    invoice.igst_amount = _parse_amount(fmap.get("igst_amount"))
+    invoice.cess_amount = _parse_amount(fmap.get("cess_amount"))
+    invoice.payment_reference = _clean_string(fmap.get("payment_reference"))
+    invoice.tds_section = _clean_string(fmap.get("tds_section"))
+    invoice.tds_rate = _clean_string(fmap.get("tds_rate"))
+    invoice.tds_amount = _parse_amount(fmap.get("tds_amount"))
+
     invoice.extractor_confidence = doc.extraction_percent
     invoice.ai_raw_response = doc.ai_raw_response
     invoice.status = ApInvoiceStatus.NORMALIZED
@@ -262,6 +277,14 @@ async def materialize_invoice(
             unit_price=_parse_amount(row.get("unit_price")),
             tax=_parse_amount(row.get("tax")),
             line_total=_parse_amount(row.get("amount")),
+            hsn_sac_code=_clean_string(row.get("hsn_sac_code")),
+            uom=_clean_string(row.get("uom")),
+            cgst_rate=_clean_string(row.get("cgst_rate")),
+            cgst_amount=_parse_amount(row.get("cgst_amount")),
+            sgst_rate=_clean_string(row.get("sgst_rate")),
+            sgst_amount=_parse_amount(row.get("sgst_amount")),
+            igst_rate=_clean_string(row.get("igst_rate")),
+            igst_amount=_parse_amount(row.get("igst_amount")),
         ))
 
     await db.commit()

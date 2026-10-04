@@ -36,6 +36,14 @@ function formatCurrency(n, currency = 'USD') {
 
 function isOverdue(dueAt) { return !!dueAt && new Date(dueAt).getTime() < Date.now(); }
 
+// TALLY-H — a row's human-readable subject for confirm dialogs, generalized
+// beyond "invoice #N" since entity_type=TALLY_VOUCHER rows have no invoice_id.
+function subjectLabel(row) {
+  if (row.invoice_number) return row.invoice_number;
+  if (row.entity_type === 'TALLY_VOUCHER') return `${row.voucher_type || 'Tally voucher'} for ${row.voucher_party_ledger || 'unknown party'}`;
+  return `invoice #${row.invoice_id}`;
+}
+
 const STEP_KIND_LABEL = { APPROVAL: 'Approval', PEER_REVIEW: 'Peer Review' };
 
 export default function MyApprovals() {
@@ -65,7 +73,7 @@ export default function MyApprovals() {
   useEffect(() => { load(); }, [load]);
 
   const runApprove = async (row) => {
-    if (!window.confirm(`Approve ${row.invoice_number || `invoice #${row.invoice_id}`} for ${formatCurrency(row.total, row.currency)}?`)) return;
+    if (!window.confirm(`Approve ${subjectLabel(row)} for ${formatCurrency(row.total, row.currency)}?`)) return;
     setActionBusy(`${row.step_id}_approve`); setActionError(null);
     try {
       await paymentApprovalApi.approveStep(row.workflow_id, row.step_id);
@@ -78,7 +86,7 @@ export default function MyApprovals() {
   };
 
   const runReview = async (row) => {
-    if (!window.confirm(`Mark ${row.invoice_number || `invoice #${row.invoice_id}`} as reviewed?`)) return;
+    if (!window.confirm(`Mark ${subjectLabel(row)} as reviewed?`)) return;
     setActionBusy(`${row.step_id}_review`); setActionError(null);
     try {
       await paymentApprovalApi.reviewPeerStep(row.workflow_id, row.step_id);
@@ -110,10 +118,17 @@ export default function MyApprovals() {
 
   const columns = [
     {
-      key: 'invoice_number', header: 'Invoice',
-      render: (v, row) => <span className="pa-invoice-cell">{v || `#${row.invoice_id}`}</span>,
+      key: 'invoice_number', header: 'Item',
+      // TALLY-H — entity_type=TALLY_VOUCHER rows have no invoice_number
+      // (they're not an invoice); show the voucher's own identity instead.
+      render: (v, row) => row.entity_type === 'TALLY_VOUCHER'
+        ? <span className="pa-invoice-cell">{row.voucher_type || 'Tally Voucher'} — {row.voucher_party_ledger || 'Unknown party'}</span>
+        : <span className="pa-invoice-cell">{v || `#${row.invoice_id}`}</span>,
     },
-    { key: 'vendor_name', header: 'Vendor', render: (v) => v || '—' },
+    {
+      key: 'vendor_name', header: 'Vendor',
+      render: (v, row) => v || (row.entity_type === 'TALLY_VOUCHER' ? row.voucher_party_ledger : null) || '—',
+    },
     { key: 'total', header: 'Amount', render: (v, row) => <span className="pa-amount-cell">{formatCurrency(v, row.currency)}</span> },
     { key: 'rule_name', header: 'Rule', render: (v) => <span className="pa-rule-cell">{v}</span> },
     {

@@ -45,8 +45,18 @@ export default function ApprovalWorkflows() {
   useEffect(() => { load(); }, [load]);
 
   const columns = [
-    { key: 'invoice_number', header: 'Invoice', render: (v, row) => <span className="par-name-cell">{v || `#${row.invoice_id}`}</span> },
-    { key: 'vendor_name', header: 'Vendor', render: (v) => v || '—' },
+    {
+      key: 'invoice_number', header: 'Item',
+      // TALLY-H — entity_type=TALLY_VOUCHER rows have no invoice_number/
+      // invoice_id; show the voucher's own identity instead.
+      render: (v, row) => row.entity_type === 'TALLY_VOUCHER'
+        ? <span className="par-name-cell">{row.voucher_type || 'Tally Voucher'} — {row.voucher_party_ledger || 'Unknown party'}</span>
+        : <span className="par-name-cell">{v || `#${row.invoice_id}`}</span>,
+    },
+    {
+      key: 'vendor_name', header: 'Vendor',
+      render: (v, row) => v || (row.entity_type === 'TALLY_VOUCHER' ? row.voucher_party_ledger : null) || '—',
+    },
     { key: 'total', header: 'Amount', render: (v, row) => <span className="pa-amount-cell">{formatCurrency(v, row.currency)}</span> },
     { key: 'rule_name', header: 'Rule', render: (v, row) => <span className="pa-rule-cell">{v ? `${v} v${row.rule_version}` : 'No rule matched'}</span> },
     { key: 'status', header: 'Status', render: (v) => <StatusBadge variant={STATUS_VARIANT[v] ?? 'gray'} dot>{v.replace('_', ' ')}</StatusBadge> },

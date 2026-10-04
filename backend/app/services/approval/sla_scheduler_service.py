@@ -179,7 +179,7 @@ async def run_escalation_sweep(db: AsyncSession) -> dict:
                     f"user {outcome.assigned_user_id} after {step.escalation_after_hours}h. {outcome.reason}"
                 )
                 db.add(ApprovalWorkflowAuditLog(
-                    organization_id=workflow.organization_id, workflow_id=workflow.id, invoice_id=workflow.invoice_id,
+                    organization_id=workflow.organization_id, workflow_id=workflow.id, entity_type=workflow.entity_type, entity_id=workflow.entity_id, invoice_id=workflow.invoice_id,
                     event_type=ApprovalWorkflowAuditEventType.ESCALATED, message=message,
                     details={
                         "step_id": step.id, "step_kind": "PEER_REVIEW" if is_peer else "APPROVAL", "resolved": True,
@@ -195,7 +195,7 @@ async def run_escalation_sweep(db: AsyncSession) -> dict:
                 step.status = PeerReviewStatus.ESCALATED if is_peer else ApprovalStepStatus.ESCALATED
                 message = f"Step #{step.step_number} escalation FAILED after {step.escalation_after_hours}h — {outcome.reason}"
                 db.add(ApprovalWorkflowAuditLog(
-                    organization_id=workflow.organization_id, workflow_id=workflow.id, invoice_id=workflow.invoice_id,
+                    organization_id=workflow.organization_id, workflow_id=workflow.id, entity_type=workflow.entity_type, entity_id=workflow.entity_id, invoice_id=workflow.invoice_id,
                     event_type=ApprovalWorkflowAuditEventType.ESCALATED, message=message,
                     details={
                         "step_id": step.id, "step_kind": "PEER_REVIEW" if is_peer else "APPROVAL", "resolved": False,

@@ -511,6 +511,106 @@ class BaseConnector(abc.ABC):
         so any connector may leave this unoverridden."""
         return self.test_connection()
 
+    # ── Accounting integration (TallyPrime today; the same surface a
+    # future SAP/Oracle/NetSuite *accounting* connector would implement) ──
+    # Modeled after the ERP invoice-posting extension immediately above:
+    # an accounting connection IS a Connection like any other (Test
+    # Connection, encrypted secrets, connector registry) — it just has
+    # accounting-shaped verbs instead of tabular ones. Every method
+    # returns THIS codebase's own normalized shape (plain dicts/lists of
+    # dicts with documented keys); a connector must parse/reshape its
+    # vendor's raw wire format (Tally's XML, a future SAP/Oracle's JSON,
+    # ...) internally and never hand raw vendor structures to a caller —
+    # this is what keeps the reconciliation engine and canonical-model
+    # builders genuinely source-agnostic (see reconciliation/engine.py's
+    # own RowSource abstraction, the same principle one layer down).
+    # Only connectors/application/tallyprime.py overrides these today.
+
+    def list_companies(self) -> list[dict]:
+        """Real list of companies/organizations available on this
+        accounting instance: [{"name": str, "guid": str | None,
+        "is_default": bool}, ...]. Never assume a single/default company —
+        callers must let the user pick when more than one is returned."""
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support company discovery.")
+
+    def get_company(self, name: str) -> dict:
+        """Validates one specific company by name against this instance's
+        real company list and returns its detail dict. Raises
+        ConnectorError (not a silent empty dict) if it doesn't exist —
+        callers must never guess or default a company identity."""
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support company lookup.")
+
+    def get_vouchers(self, *, company: str, voucher_type: str | None = None, from_date=None,
+                      to_date=None, party: str | None = None) -> dict:
+        """Real voucher extraction for one company, filtered by type/date
+        range/party. Returns {"vouchers": [...normalized rows...]}.
+
+        No cursor/limit params: TallyPrime's own Collection-export TDL
+        protocol has no server-side pagination — a Collection request
+        returns its entire filtered result set in one response (this was
+        assumed otherwise in an earlier draft of this interface and
+        corrected once the real TDL protocol was implemented). A caller
+        needing bounded-size extraction over a large date span must chunk
+        by from_date/to_date itself and issue multiple calls — see
+        services/tally_extraction_service.py, which does exactly that,
+        bounded by settings.tally_max_concurrent_requests."""
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support voucher extraction.")
+
+    def get_purchase_vouchers(self, *, company: str, **kwargs) -> dict:
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support purchase voucher extraction.")
+
+    def get_sales_vouchers(self, *, company: str, **kwargs) -> dict:
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support sales voucher extraction.")
+
+    def get_party_master(self, *, company: str, party_type: str | None = None, **kwargs) -> dict:
+        """Supplier AND customer master data through one verb —
+        party_type filters to "SUPPLIER"/"CUSTOMER" when the accounting
+        system distinguishes them, or returns every party ledger when
+        None. Deliberately not two separate get_supplier_master()/
+        get_customer_master() methods: which parties are suppliers vs.
+        customers is itself accounting-system-specific (Tally has no
+        rigid party-type flag — it's inferred from the ledger's parent
+        group), so forcing a two-method split here would push a Tally-
+        specific assumption up into the generic connector contract."""
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support party master extraction.")
+
+    def get_ledger(self, *, company: str, party: str, from_date=None, to_date=None) -> dict:
+        """One party's real ledger entries (opening balance, every
+        posting, closing balance) for the given period."""
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support ledger extraction.")
+
+    def get_payments(self, *, company: str, from_date=None, to_date=None, party: str | None = None) -> dict:
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support payment extraction.")
+
+    def get_outstanding(self, *, company: str, party: str | None = None) -> dict:
+        """Real outstanding/receivable-payable balances, as of now or as
+        of a point in time the accounting system supports."""
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support outstanding-balance extraction.")
+
+    def get_bill_allocations(self, *, company: str, party: str | None = None, **kwargs) -> dict:
+        """Bill-wise payment allocation detail, where the accounting
+        system exposes it (e.g. Tally's bill-wise details) — which
+        specific invoice(s) a given payment was applied against."""
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support bill-wise allocation extraction.")
+
+    def create_voucher(self, voucher: dict, *, company: str, idempotency_key: str | None = None) -> dict:
+        """Real voucher creation. Only ever called after this codebase's
+        own validation/duplicate-check/human-approval gate has passed —
+        see services/tally/tally_write_service.py. Returns the
+        accounting system's own response verbatim (never a synthesized
+        success shape); raises ConnectorError on rejection."""
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support voucher creation.")
+
+    def validate_voucher(self, voucher: dict, *, company: str) -> dict:
+        """A dry-run/check call against the accounting system's own
+        validation, where it exposes one, distinct from this codebase's
+        own pre-write validation — both run, neither substitutes for the
+        other."""
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support voucher validation.")
+
+    def cancel_voucher(self, voucher_id: str, *, company: str) -> dict:
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support voucher cancellation.")
+
     def _scrub(self, message: str) -> str:
         """Instance-method convenience wrapper around the module-level
         scrub_secrets() — see its docstring for the full rationale."""

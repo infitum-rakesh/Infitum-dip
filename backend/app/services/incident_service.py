@@ -77,6 +77,8 @@ _AI_TEMPLATES = {
     IncidentSource.DATA_QUALITY: "An anomaly was detected in{dataset_clause} volume/shape compared to its historical baseline.",
     IncidentSource.INVOICE_ERP_POSTING: "The ERP posting attempt{dataset_clause} exhausted its retry budget (or was blocked by an open circuit breaker) — consistent with the ERP connection being unreachable or a genuine business-validation rejection recurring across attempts.",
     IncidentSource.INVOICE_RECONCILIATION: "A post-success reconciliation{dataset_clause} found a field-level mismatch against the ERP's own record — consistent with a correction made after posting, or the ERP silently normalizing a submitted value.",
+    IncidentSource.TALLY_WRITEBACK: "The Tally write-back attempt{dataset_clause} exhausted its retry budget (or was blocked by an open circuit breaker) — consistent with the TallyPrime HTTP gateway being unreachable or a genuine voucher-validation rejection recurring across attempts.",
+    IncidentSource.TALLY_RECONCILIATION: "A scheduled Tally reconciliation run{dataset_clause} failed before completing — consistent with the TallyPrime connection being unreachable, deleted, or a data-extraction error partway through the run.",
 }
 
 

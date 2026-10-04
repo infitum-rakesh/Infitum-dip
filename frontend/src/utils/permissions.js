@@ -51,6 +51,7 @@ export const MODULE_META = {
   [MODULES.INVOICE_INTELLIGENCE]:  { label: 'Invoice Intelligence',  icon: '🧾', group: 'Intelligence' },
   [MODULES.PAYMENT_APPROVAL]:      { label: 'Payment Approvals',     icon: '🔏', group: 'Operations' },
   [MODULES.BULK_MIGRATION]:        { label: 'Bulk Object Migration', icon: '📦', group: 'Pipeline' },
+  [MODULES.TALLY_INTEGRATION]:     { label: 'Tally Integration',     icon: '🧮', group: 'Intelligence' },
 };
 
 export const SUBSCRIPTION_PLANS = {

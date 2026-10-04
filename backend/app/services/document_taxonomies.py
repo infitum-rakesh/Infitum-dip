@@ -46,6 +46,8 @@ INVOICE_FIELDS: list[tuple[str, str, str]] = [
     ("vendor_postal_code", "string", "Vendor postal/ZIP code"),
     ("vendor_country", "string", "Vendor country"),
     ("vendor_tax_id", "string", "Vendor's tax ID / VAT number / GSTIN / EIN"),
+    ("vendor_gstin", "string", "Vendor's GSTIN (Goods and Services Tax Identification Number), if this is an Indian GST invoice — leave blank if not shown separately from vendor_tax_id"),
+    ("vendor_pan", "string", "Vendor's PAN (Permanent Account Number), if shown separately from GSTIN"),
     ("vendor_email", "string", "Vendor contact email"),
     ("vendor_phone", "string", "Vendor contact phone number"),
     ("vendor_website", "string", "Vendor website"),
@@ -58,6 +60,8 @@ INVOICE_FIELDS: list[tuple[str, str, str]] = [
     ("bill_to_state", "string", "Bill-to state/province/region"),
     ("bill_to_postal_code", "string", "Bill-to postal/ZIP code"),
     ("bill_to_country", "string", "Bill-to country"),
+    ("buyer_gstin", "string", "Buyer/recipient's GSTIN, if an Indian GST invoice"),
+    ("place_of_supply", "string", "Place of supply state name or code, for Indian GST invoices"),
 
     # Ship-to — where goods were/are shipped, if different from bill-to
     ("ship_to_name", "string", "The person or company goods were shipped to, if stated separately from bill-to"),
@@ -74,6 +78,10 @@ INVOICE_FIELDS: list[tuple[str, str, str]] = [
     ("discount_amount", "number", "Total discount applied, if any"),
     ("tax_rate", "string", "Tax rate applied (e.g. a percentage)"),
     ("tax_amount", "number", "Total tax amount"),
+    ("cgst_amount", "number", "Total Central GST (CGST) amount, for intra-state Indian GST invoices"),
+    ("sgst_amount", "number", "Total State GST (SGST/UTGST) amount, for intra-state Indian GST invoices"),
+    ("igst_amount", "number", "Total Integrated GST (IGST) amount, for inter-state Indian GST invoices"),
+    ("cess_amount", "number", "Total cess amount, if any, for Indian GST invoices"),
     ("shipping_amount", "number", "Shipping/freight charge, if any"),
     ("total_amount", "number", "The final total amount due on the invoice"),
     ("amount_paid", "number", "Amount already paid, if any is shown"),
@@ -82,9 +90,15 @@ INVOICE_FIELDS: list[tuple[str, str, str]] = [
     # Payment
     ("payment_terms", "string", "Payment terms text (e.g. Net 30, Due on Receipt) — NOT the document's own title/heading like 'TAX INVOICE', and NOT present at all on most receipts"),
     ("payment_method", "string", "How payment should be/was made"),
+    ("payment_reference", "string", "Bank UTR / cheque / transaction reference number for a payment, if this document reflects a payment"),
     ("bank_name", "string", "Bank name for wire/transfer payment, if shown"),
     ("bank_account_number", "string", "Bank account number for payment, if shown"),
     ("bank_routing_number", "string", "Bank routing/SWIFT/IFSC code for payment, if shown"),
+
+    # Indian tax-deducted-at-source
+    ("tds_section", "string", "TDS section under which tax was deducted (e.g. 194C, 194J), if applicable"),
+    ("tds_rate", "string", "TDS rate applied, if shown"),
+    ("tds_amount", "number", "TDS amount deducted, if applicable"),
 
     ("notes", "string", "Any free-text notes, remarks, or special instructions on the invoice"),
 ]
@@ -96,9 +110,17 @@ INVOICE_LINE_ITEMS_TABLE = {
     "columns": [
         {"name": "description", "type": "string"},
         {"name": "sku", "type": "string"},
+        {"name": "hsn_sac_code", "type": "string"},
+        {"name": "uom", "type": "string"},
         {"name": "quantity", "type": "number"},
         {"name": "unit_price", "type": "number"},
         {"name": "tax", "type": "string"},
+        {"name": "cgst_rate", "type": "string"},
+        {"name": "cgst_amount", "type": "number"},
+        {"name": "sgst_rate", "type": "string"},
+        {"name": "sgst_amount", "type": "number"},
+        {"name": "igst_rate", "type": "string"},
+        {"name": "igst_amount", "type": "number"},
         {"name": "amount", "type": "number"},
     ],
 }

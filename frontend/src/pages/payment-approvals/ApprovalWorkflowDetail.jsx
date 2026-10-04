@@ -87,8 +87,9 @@ export default function ApprovalWorkflowDetail() {
           <>
             <div className="pad-summary-card">
               <div className="pad-summary-grid">
-                <div><div className="pad-field-label">Invoice</div><div className="pad-field-value">{detail.invoice_number || `#${detail.invoice_id}`}</div></div>
-                <div><div className="pad-field-label">Vendor</div><div className="pad-field-value">{detail.vendor_name || '—'}</div></div>
+                {/* TALLY-H — entity_type=TALLY_VOUCHER rows have no invoice_number/invoice_id; show the voucher's own identity instead. */}
+                <div><div className="pad-field-label">{detail.entity_type === 'TALLY_VOUCHER' ? 'Voucher' : 'Invoice'}</div><div className="pad-field-value">{detail.entity_type === 'TALLY_VOUCHER' ? (detail.voucher_type || 'Tally Voucher') : (detail.invoice_number || `#${detail.invoice_id}`)}</div></div>
+                <div><div className="pad-field-label">Vendor</div><div className="pad-field-value">{detail.vendor_name || (detail.entity_type === 'TALLY_VOUCHER' ? detail.voucher_party_ledger : null) || '—'}</div></div>
                 <div><div className="pad-field-label">Amount</div><div className="pad-field-value">{formatCurrency(detail.total, detail.currency)}</div></div>
                 <div><div className="pad-field-label">Rule</div><div className="pad-field-value">{detail.rule_name ? `${detail.rule_name} v${detail.rule_version}` : 'No rule matched'}</div></div>
                 <div><div className="pad-field-label">Status</div><div className="pad-field-value"><StatusBadge variant={WORKFLOW_STATUS_VARIANT[detail.status] ?? 'gray'} dot>{detail.status.replace('_', ' ')}</StatusBadge></div></div>

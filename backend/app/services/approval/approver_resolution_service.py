@@ -261,7 +261,7 @@ async def resolve_and_assign_step(
         message = f"{step_kind} step #{step.step_number} ({step.approver_type.value}) could not be resolved. {outcome.reason}"
 
     db.add(ApprovalWorkflowAuditLog(
-        organization_id=workflow.organization_id, workflow_id=workflow.id, invoice_id=workflow.invoice_id,
+        organization_id=workflow.organization_id, workflow_id=workflow.id, entity_type=workflow.entity_type, entity_id=workflow.entity_id, invoice_id=workflow.invoice_id,
         event_type=event_type, message=message,
         details={
             "step_id": step.id, "step_number": step.step_number, "step_kind": step_kind,

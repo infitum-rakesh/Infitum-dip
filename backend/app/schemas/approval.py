@@ -57,6 +57,7 @@ class ApprovalStepOut(BaseModel):
 
 class ApprovalRuleIn(BaseModel):
     name: str
+    entity_type: str = "INVOICE"  # TALLY-H: "INVOICE" | "TALLY_VOUCHER"
     description: str | None = None
     priority: int = 100
     status: str = "ACTIVE"
@@ -81,6 +82,7 @@ class ApprovalRuleIn(BaseModel):
 class ApprovalRuleOut(BaseModel):
     id: int
     organization_id: int | None
+    entity_type: str = "INVOICE"
     name: str
     description: str | None
     version: int
@@ -121,6 +123,7 @@ class ApprovalRuleValidationErrorOut(BaseModel):
 
 
 class ApprovalSimulateRequest(BaseModel):
+    entity_type: str = "INVOICE"  # TALLY-H
     amount: float | None = None
     currency: str | None = None
     invoice_type: str | None = None
@@ -244,7 +247,12 @@ class ApprovalWorkflowAuditLogOut(BaseModel):
 class ApprovalWorkflowOut(BaseModel):
     id: int
     organization_id: int | None
-    invoice_id: int
+    entity_type: str = "INVOICE"  # TALLY-H
+    entity_id: int = 0
+    # TALLY-H — nullable now: NULL for entity_type=TALLY_VOUCHER rows (no
+    # ap_invoices row to reference). Populated exactly as before this
+    # phase for every INVOICE-type row.
+    invoice_id: int | None = None
     # PAY22 — all three nullable: an AUTO_APPROVED workflow for an
     # invoice no ApprovalRule matched at all has no rule to report (see
     # the ApprovalWorkflow model's own comment on rule_id).
@@ -276,6 +284,12 @@ class ApprovalWorkflowOut(BaseModel):
     vendor_name: str | None = None
     total: float | None = None
     currency: str | None = None
+    # TALLY-H — same "populated by the API layer, never fabricated"
+    # convention, for entity_type=TALLY_VOUCHER rows (see api/approvals.py
+    # _with_entity_fields()).
+    voucher_party_ledger: str | None = None
+    voucher_type: str | None = None
+    voucher_company_name: str | None = None
     model_config = {"from_attributes": True}
 
 
@@ -295,7 +309,8 @@ class MyApprovalItemOut(BaseModel):
     step_id: int
     step_kind: str  # "APPROVAL" | "PEER_REVIEW"
     workflow_id: int
-    invoice_id: int
+    entity_type: str = "INVOICE"  # TALLY-H
+    invoice_id: int | None = None
     rule_name: str
     step_number: int
     assigned_at: datetime | None
@@ -307,3 +322,7 @@ class MyApprovalItemOut(BaseModel):
     vendor_name: str | None = None
     total: float | None = None
     currency: str | None = None
+    # TALLY-H — same idea for entity_type=TALLY_VOUCHER rows.
+    voucher_party_ledger: str | None = None
+    voucher_type: str | None = None
+    voucher_company_name: str | None = None

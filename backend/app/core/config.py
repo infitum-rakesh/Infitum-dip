@@ -124,6 +124,14 @@ class Settings(BaseSettings):
     ocr_concurrency: int = 4
     ai_concurrency: int = 4
 
+    # TALLY-B — bounds concurrent in-flight HTTP requests to a single
+    # TallyPrime instance's local gateway during extraction (date-range
+    # chunking fans out multiple requests; Tally's gateway is a single
+    # local process with no documented concurrency guidance, so this stays
+    # conservative). Fixed at process start, same rationale as ocr/ai
+    # concurrency above.
+    tally_max_concurrent_requests: int = 3
+
 
 @lru_cache
 def get_settings() -> Settings:

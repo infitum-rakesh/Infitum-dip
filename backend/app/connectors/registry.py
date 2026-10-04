@@ -44,6 +44,7 @@ from app.connectors.api.rest import RestApiConnector
 from app.connectors.api.soap import SoapApiConnector
 from app.connectors.application.netsuite_soap import NetSuiteSoapConnector
 from app.connectors.application.oracle_erp import OracleErpConnector
+from app.connectors.application.tallyprime import TallyPrimeConnector
 from app.connectors.ocr.aws_textract import AwsTextractConnector
 from app.connectors.ocr.azure_document_intelligence import AzureDocumentIntelligenceConnector
 from app.connectors.ocr.google_vision import GoogleVisionConnector
@@ -116,6 +117,14 @@ CONNECTOR_REGISTRY: dict[str, type[BaseConnector]] = {
     # connectors/application/oracle_erp.py's docstring for the full
     # disclosure and the exact documented contract it implements.
     "ORACLE_ERP_CLOUD": OracleErpConnector,
+    # TALLY_PRIME — real XML-over-HTTP client for TallyPrime's own local
+    # gateway (TDL Export/Collection requests, no SQL dialect, no WSDL).
+    # Live-verified against a local mock Tally XML/HTTP gateway built for
+    # this integration's own tests (protocol-accurate, not a live
+    # TallyPrime install — none available in this environment); see
+    # connectors/application/tallyprime.py's docstring for the full
+    # disclosure.
+    "TALLY_PRIME": TallyPrimeConnector,
     # SALESFORCE — real simple-salesforce REST/SOQL client. Field schema
     # was corrected this session (see connection_service.py's SALESFORCE
     # entry) from a broken NetSuite-TBA-shaped set to Salesforce's actual

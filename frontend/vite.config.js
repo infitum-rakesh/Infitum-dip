@@ -27,7 +27,12 @@ export default defineConfig({
     allowedHosts: ['.trycloudflare.com'],
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        // Overridable via BACKEND_PORT for running a second, isolated dev
+        // instance against a different backend port (e.g. live-verifying
+        // in-progress backend changes without restarting the shared :8080
+        // dev server another session may be using). Defaults to 8080,
+        // unchanged from before.
+        target: `http://localhost:${process.env.BACKEND_PORT || 8080}`,
         changeOrigin: true,
       },
     },

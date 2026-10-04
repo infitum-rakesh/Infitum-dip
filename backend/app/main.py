@@ -77,6 +77,7 @@ from app.api.invoice_mappings import router as invoice_mappings_router
 from app.api.invoice_rules import router as invoice_rules_router
 from app.api.approvals import router as approvals_router
 from app.api.bulk_migration import router as bulk_migration_router
+from app.api.tally import router as tally_router
 from app.models.pipeline_source_file import PipelineSourceFile  # noqa: F401 — string FK to pipelines.id needs this imported before init_db()
 from app.models.tenant_database import TenantDatabase  # noqa: F401 — new table, needs registering before init_db()
 from app.models.tenant_migration_job import TenantMigrationJob, TenantMigrationJobLog  # noqa: F401 — new tables, need registering before init_db()
@@ -156,6 +157,25 @@ from app.models.approval.notification import ApprovalNotificationOutbox  # noqa:
 from app.models.document_batch import (  # noqa: F401
     BatchUpload, DocumentBatch, DocumentBatchFile, DocumentBatchEvent,
 )
+# Tally Integration (TALLY-B) — read-only extraction snapshot tables.
+from app.models.tally_extraction import TallyExtractionRun, TallyExtractionRecord  # noqa: F401
+# Tally Integration (TALLY-C) — canonical accounting model, materialized
+# from the above extraction snapshots.
+from app.models.tally_canonical import TallyCanonicalVoucher, TallyCanonicalParty, TallyCanonicalLedger  # noqa: F401
+# Tally Integration (TALLY-D) — account mapping + voucher preview +
+# pre-write validation.
+from app.models.tally_mapping import TallyAccountMapping, TallyVoucherPreview, TallyVoucherValidationResult  # noqa: F401
+# Tally Integration (TALLY-E) — reconciliation between ApInvoice and
+# TallyCanonicalVoucher/Party, reusing app/reconciliation/engine.py's
+# real row-diffing (see that module's own docstring for why).
+from app.models.tally_reconciliation import TallyReconciliationRun, TallyReconciliationException  # noqa: F401
+# Tally Integration (TALLY-I) — the actual write-back attempt/verification
+# tables, gated behind TALLY-H's approval workflow.
+from app.models.tally_writeback import TallyVoucherWriteBackTransaction, TallyVoucherWriteBackVerification  # noqa: F401
+# Tally Integration (TALLY-J) — scheduled/batch reconciliation config,
+# additive extension of the Schedules module (see that model's own
+# docstring for the AD12/Scheduled-Document-Intelligence precedent it follows).
+from app.models.tally_schedule import TallyReconciliationScheduleConfig  # noqa: F401
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -197,6 +217,7 @@ async def lifespan(app: FastAPI):
     await _recover_document_schedules()
     await _recover_bulk_migration_tasks()
     await _recover_document_batches()
+    await _recover_tally_extraction_runs()
     scheduler = _start_billing_scheduler()
     yield
     scheduler.shutdown(wait=False)
@@ -236,6 +257,17 @@ async def _recover_document_batches() -> None:
     stats = await recover_stuck_document_batches()
     if stats["recovered_batches"] or stats["requeued_files"] or stats["failed_files"]:
         logger.info("Document batch recovery: %s", stats)
+
+
+async def _recover_tally_extraction_runs() -> None:
+    """TALLY-J startup recovery — same place and same shape as
+    _recover_document_schedules() above. See
+    tally_extraction_service.recover_stuck_tally_extraction_runs()."""
+    from app.services.tally_extraction_service import recover_stuck_tally_extraction_runs
+
+    stats = await recover_stuck_tally_extraction_runs()
+    if stats["recovered_runs"]:
+        logger.info("Tally extraction recovery: %s", stats)
 
 
 async def _restore_db_from_backup_if_needed() -> None:
@@ -566,6 +598,7 @@ app.include_router(invoice_mappings_router, prefix="/api")
 app.include_router(invoice_rules_router, prefix="/api")
 app.include_router(approvals_router, prefix="/api")
 app.include_router(bulk_migration_router, prefix="/api")
+app.include_router(tally_router, prefix="/api")
 
 if _FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")), name="frontend_assets")

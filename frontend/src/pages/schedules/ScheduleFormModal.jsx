@@ -41,6 +41,13 @@ const DOCUMENT_TYPES = [
 // taxonomy wired to either path today.
 const DATABASE_DOCUMENT_TYPES = [{ value: 'INVOICE', label: 'Invoice (Invoice Intelligence)' }];
 
+// TALLY-J3 — a scheduled reconciliation run against one TALLY_PRIME
+// connection/company. Lives in its own side table (TallyReconciliationScheduleConfig)
+// rather than a bare FK column, since (unlike AnomalyJob) there's no
+// pre-existing "TallyJob" row to point at — mirrors DocumentScheduleConfig's
+// 1:1 side-table shape instead.
+const EMPTY_TALLY_CONFIG = { connection_id: '', company_name: '', tolerance: 0.02, lookback_days: 7 };
+
 const API_PAGINATION_STYLES = [
   { value: 'none', label: 'None — single request' },
   { value: 'page', label: 'Page number (?page=1&page_size=…)' },
@@ -93,12 +100,14 @@ function toLocalParts(iso, timeZone) {
 export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [pipelines, setPipelines] = useState([]);
-  const [sourceType, setSourceType] = useState('PIPELINE'); // 'PIPELINE' | 'DOCUMENT_SOURCE' | 'INVOICE_SOURCE'
+  const [sourceType, setSourceType] = useState('PIPELINE'); // 'PIPELINE' | 'DOCUMENT_SOURCE' | 'INVOICE_SOURCE' | 'TALLY_RECONCILIATION'
   const [docConfig, setDocConfig] = useState(EMPTY_DOCUMENT_CONFIG);
+  const [tallyConfig, setTallyConfig] = useState(EMPTY_TALLY_CONFIG);
   const [storageConnections, setStorageConnections] = useState([]);
   const [dbConnections, setDbConnections] = useState([]);
   const [apiConnections, setApiConnections] = useState([]);
   const [erpConnections, setErpConnections] = useState([]);
+  const [tallyConnections, setTallyConnections] = useState([]);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -123,6 +132,8 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
     connectionApi.list({ category: 'APPLICATION', page_size: 200 })
       .then((r) => setErpConnections((r.items ?? []).filter((c) => c.connection_type === 'ORACLE_ERP_CLOUD')))
       .catch(() => {});
+    // TALLY_PRIME connections (TALLY-J3) — same generic Connections reuse rule.
+    connectionApi.list({ connection_type: 'TALLY_PRIME', page_size: 200 }).then((r) => setTallyConnections(r.items ?? [])).catch(() => {});
   }, [open]);
 
   useEffect(() => {
@@ -156,14 +167,20 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
           source_api_pagination_style: pagination.style || 'none',
           source_api_pagination_page_size: pagination.page_size ?? '',
         });
+      } else if (schedule.tally_config) {
+        setSourceType('TALLY_RECONCILIATION');
+        setTallyConfig({ ...EMPTY_TALLY_CONFIG, ...schedule.tally_config });
+        setDocConfig(EMPTY_DOCUMENT_CONFIG);
       } else {
         setSourceType('PIPELINE');
         setDocConfig(EMPTY_DOCUMENT_CONFIG);
+        setTallyConfig(EMPTY_TALLY_CONFIG);
       }
     } else {
       setForm({ ...EMPTY_FORM, start_date: todayISO() });
       setSourceType('PIPELINE');
       setDocConfig(EMPTY_DOCUMENT_CONFIG);
+      setTallyConfig(EMPTY_TALLY_CONFIG);
     }
     setError(null);
     setAdvancedOpen(false);
@@ -179,6 +196,11 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
     setDocConfig((c) => ({ ...c, [key]: val }));
   };
 
+  const setTally = (key) => (e) => {
+    const val = e?.target ? e.target.value : e;
+    setTallyConfig((c) => ({ ...c, [key]: val }));
+  };
+
   const setPipeline = (id) => {
     const p = pipelines.find((x) => x.id === id);
     setForm((f) => ({ ...f, pipeline_id: id, pipeline_name: p?.name ?? '' }));
@@ -189,6 +211,7 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
     setError(null);
     try {
       const isDocSource = sourceType === 'DOCUMENT_SOURCE' || sourceType === 'INVOICE_SOURCE';
+      const isTallySource = sourceType === 'TALLY_RECONCILIATION';
       const body = {
         name: form.name,
         pipeline_id: sourceType === 'PIPELINE' ? form.pipeline_id : '',
@@ -246,6 +269,14 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
             ? Number(docConfig.invoice_erp_connection_id) : null,
         };
       }
+      if (isTallySource) {
+        body.tally_config = {
+          connection_id: Number(tallyConfig.connection_id),
+          company_name: tallyConfig.company_name,
+          tolerance: Number(tallyConfig.tolerance),
+          lookback_days: Number(tallyConfig.lookback_days),
+        };
+      }
       if (schedule) await scheduleApi.update(schedule.id, body);
       else await scheduleApi.create(body);
       onSaved();
@@ -270,10 +301,14 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
     && Number(docConfig.accuracy_threshold) >= 0 && Number(docConfig.accuracy_threshold) <= 100
     && (!docConfig.invoice_auto_post || ((sourceType === 'INVOICE_SOURCE' || docConfig.document_type === 'INVOICE') && docConfig.invoice_erp_connection_id))
   );
+  const tallyConfigValid = sourceType !== 'TALLY_RECONCILIATION' || (
+    tallyConfig.connection_id && tallyConfig.company_name.trim()
+    && Number(tallyConfig.tolerance) >= 0 && Number(tallyConfig.lookback_days) > 0
+  );
   const valid = form.name && form.start_date && form.start_time
     && (form.frequency !== 'CUSTOM_CRON' || form.cron_expression)
     && (sourceType === 'PIPELINE' ? form.pipeline_id : true)
-    && docSourceValid;
+    && docSourceValid && tallyConfigValid;
 
   return (
     <Modal
@@ -296,11 +331,17 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
             <option value="PIPELINE">Pipeline Builder Pipeline</option>
             <option value="DOCUMENT_SOURCE">Document Source (Scheduled Document Intelligence)</option>
             <option value="INVOICE_SOURCE">Invoice Source (Scheduled Invoice Intelligence)</option>
+            <option value="TALLY_RECONCILIATION">Tally Reconciliation (Scheduled)</option>
           </select>
           {sourceType === 'INVOICE_SOURCE' && (
             <div className="sched-field-hint">
               Same real intake/OCR/AI pipeline as Document Source, pinned to the Invoice taxonomy — batches straight into Invoice Intelligence
               (Review Queue or straight-through ERP posting), not the generic Documents list.
+            </div>
+          )}
+          {sourceType === 'TALLY_RECONCILIATION' && (
+            <div className="sched-field-hint">
+              Refreshes vouchers/parties from Tally (incremental), runs the two-sided reconciliation engine, and escalates any exceptions to Review Queue — same engine as the manual "Run Reconciliation" action on the Tally Reconciliation page.
             </div>
           )}
         </div>
@@ -656,6 +697,39 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
               </div>
             </>
           )}
+        </>
+      )}
+
+      {sourceType === 'TALLY_RECONCILIATION' && (
+        <>
+          <div className="sched-form-divider" />
+          <div className="sched-section-title">Tally Reconciliation</div>
+          <div className="sched-field-grid">
+            <div className="sched-field">
+              <label className="sched-field-label">Tally Connection<span className="sched-required">*</span></label>
+              <select className="sched-input" value={tallyConfig.connection_id} onChange={setTally('connection_id')}>
+                <option value="">Select a connection…</option>
+                {tallyConnections.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              {tallyConnections.length === 0 && (
+                <div className="sched-field-hint">No TallyPrime connections yet — create one on the Connections page first.</div>
+              )}
+            </div>
+            <div className="sched-field">
+              <label className="sched-field-label">Tally Company<span className="sched-required">*</span></label>
+              <input className="sched-input" value={tallyConfig.company_name} onChange={setTally('company_name')} placeholder="Exact company name in Tally" />
+            </div>
+            <div className="sched-field">
+              <label className="sched-field-label">Tolerance (₹)</label>
+              <input type="number" min="0" step="0.01" className="sched-input" value={tallyConfig.tolerance} onChange={setTally('tolerance')} />
+              <div className="sched-field-hint">Amount mismatches at or below this are treated as matched.</div>
+            </div>
+            <div className="sched-field">
+              <label className="sched-field-label">Lookback Window (days)</label>
+              <input type="number" min="1" className="sched-input" value={tallyConfig.lookback_days} onChange={setTally('lookback_days')} />
+              <div className="sched-field-hint">How far back the incremental voucher/party refresh looks before reconciling.</div>
+            </div>
+          </div>
         </>
       )}
 
