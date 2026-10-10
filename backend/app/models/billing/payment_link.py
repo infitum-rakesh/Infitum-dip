@@ -35,7 +35,7 @@ class PaymentLink(PlatformBase):
     # Opaque token used by the Custom Gateway's public /pay/{token} route
     # (see payment_gateways/custom_provider.py) — other providers' links
     # point straight at their own hosted checkout and don't need this.
-    token: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    token: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
 
     status: Mapped[PaymentLinkStatus] = mapped_column(Enum(PaymentLinkStatus), default=PaymentLinkStatus.ACTIVE, index=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

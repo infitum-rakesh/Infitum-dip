@@ -1,6 +1,6 @@
 import json
 
-from sqlalchemy import event
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.pool import NullPool
@@ -139,3 +139,15 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(PlatformBase.metadata.create_all)
         await conn.run_sync(TenantBase.metadata.create_all)
+
+        # payment_links.token was VARCHAR(64) but the Custom Gateway's real
+        # signed token (base64 of a SHA256-HMAC payload) runs ~110+ chars —
+        # invisible on SQLite (no VARCHAR length enforcement there), fatal
+        # on Postgres (StringDataRightTruncationError), found live
+        # generating a real payment link. create_all() never alters an
+        # existing column, so widen it explicitly; re-running this ALTER on
+        # an already-VARCHAR(255) column is a harmless no-op metadata
+        # change, no table rewrite, safe to leave here permanently without
+        # Alembic.
+        if not _is_sqlite:
+            await conn.execute(text("ALTER TABLE payment_links ALTER COLUMN token TYPE VARCHAR(255)"))
