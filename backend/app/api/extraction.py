@@ -47,7 +47,7 @@ async def detect_schema(body: DetectSchemaRequest, user: User = Depends(_execute
         extra_names = await document_service.discover_known_field_names(db, org_id) if body.document_type else None
         fields = await svc.detect_schema(
             db, doc, body.connection_id, org_id,
-            document_type=body.document_type, extra_field_names=extra_names,
+            document_type=body.document_type, extra_field_names=extra_names, acting_user_id=user.id,
         )
     except svc.ExtractionError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
@@ -60,6 +60,7 @@ async def extract(body: ExtractRequest, user: User = Depends(_execute), db: Asyn
     try:
         result = await svc.extract_fields(
             db, doc, [f.model_dump() for f in body.fields], body.connection_id, _effective_org_id(user),
+            acting_user_id=user.id,
         )
     except svc.ExtractionError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))

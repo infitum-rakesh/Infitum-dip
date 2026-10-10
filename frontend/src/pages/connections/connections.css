@@ -132,3 +132,73 @@
   .conn-field-grid { grid-template-columns: 1fr; }
   .conn-type-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ============================================================
+   AI Connection access management (AIC-P5)
+   ============================================================ */
+
+.conn-category-tag {
+  display: inline-block; padding: 2px 8px; border-radius: var(--radius-sm, 4px);
+  background: var(--bg-body); color: var(--text-muted); font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.3px;
+}
+
+/* Scrolls inside its own region past a handful of connections, rather
+   than growing the whole modal indefinitely — the Modal's footer (Close
+   button) stays reachable without scrolling past every connection card. */
+.ai-access-list { display: flex; flex-direction: column; gap: 14px; max-height: 60vh; overflow-y: auto; padding-right: 4px; }
+
+.ai-access-card {
+  border: 1px solid var(--border); border-radius: var(--radius-md); padding: 14px;
+}
+
+/* Same reasoning, one level down — a connection with many individual
+   grants shouldn't push its own add-grant form (or the next card) out
+   of view. */
+.ai-access-grant-table-scroll { max-height: 180px; overflow-y: auto; margin-bottom: 10px; }
+.ai-access-grant-table-scroll .ai-access-grant-table { margin-bottom: 0; }
+
+.ai-access-card-error { margin-bottom: 8px; }
+
+.ai-access-card-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: 10px; flex-wrap: wrap;
+}
+
+.ai-access-default-btn {
+  display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px;
+  border-radius: var(--radius-md); font-size: 12.5px; font-weight: 600;
+  border: 1px solid var(--border); background: white; color: var(--text-muted); cursor: pointer;
+}
+.ai-access-default-btn.on { background: var(--color-warning-bg); color: var(--color-warning-dark); border-color: transparent; }
+.ai-access-default-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.ai-access-public-btn, .ai-access-public-readonly {
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px;
+  border-radius: var(--radius-md); font-size: 12.5px; font-weight: 600;
+}
+.ai-access-public-btn { border: 1px solid var(--border); background: white; cursor: pointer; }
+.ai-access-public-btn.on { background: var(--color-success-bg); color: var(--color-success-dark); border-color: transparent; }
+.ai-access-public-btn.off { background: var(--bg-body); color: var(--text-muted); }
+.ai-access-public-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.ai-access-public-readonly { background: var(--bg-body); color: var(--text-muted); }
+
+.ai-access-usage {
+  background: var(--bg-body); border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 10px 12px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 6px;
+}
+.ai-access-usage-row { display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; }
+.ai-access-usage-label { color: var(--text-muted); }
+.ai-access-usage-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+.ai-access-usage-bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.ai-access-usage-bar-fill { height: 100%; border-radius: 3px; transition: width 0.2s ease; }
+
+.ai-access-grant-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-bottom: 10px; }
+.ai-access-grant-table th { text-align: left; padding: 6px 8px; color: var(--text-muted); font-weight: 600; border-bottom: 1px solid var(--border); }
+.ai-access-grant-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.ai-access-empty-row { color: var(--text-muted); font-style: italic; }
+.ai-access-remove-btn { background: none; border: none; color: var(--color-danger); cursor: pointer; padding: 2px; }
+
+.ai-access-add-grant { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ai-access-add-grant .conn-input { width: auto; min-width: 140px; }
+.ai-access-checkbox { display: flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--text-muted); }

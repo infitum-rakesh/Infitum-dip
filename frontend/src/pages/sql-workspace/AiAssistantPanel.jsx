@@ -30,15 +30,29 @@ export default function AiAssistantPanel({ connectionId, schemaName, currentSql,
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
 
-  // Load AI Agent connections once, default to the first active one —
-  // same pattern as document-intelligence/AIExtraction.jsx.
+  // Load AI Agent connections once, default to this org's real resolved
+  // default connection (AIC-P6) rather than whichever one happens to
+  // sort first — same fix and same reasoning as
+  // document-intelligence/AIExtraction.jsx's useEffect (see its comment):
+  // picking id-ascending items[0] could silently prefer a seller-managed
+  // connection over the org's own.
   useEffect(() => {
-    connectionApi.list({ category: 'AI_PROVIDER', page_size: 50 })
+    connectionApi.listUsableAiConnections()
       .then((r) => {
         const items = r.items ?? [];
         setAiConnections(items);
-        const active = items.find((c) => c.status === 'ACTIVE') ?? items[0];
-        if (active) setAiConnectionId(active.id);
+        return connectionApi.getAiDefaults()
+          .then((defaults) => {
+            const effectiveId = defaults?.effective_connection_id;
+            const resolved = effectiveId != null ? items.find((c) => c.id === effectiveId) : null;
+            const fallback = items.find((c) => c.status === 'ACTIVE') ?? items[0];
+            const chosen = resolved ?? fallback;
+            if (chosen) setAiConnectionId(chosen.id);
+          })
+          .catch(() => {
+            const fallback = items.find((c) => c.status === 'ACTIVE') ?? items[0];
+            if (fallback) setAiConnectionId(fallback.id);
+          });
       })
       .catch(() => {})
       .finally(() => setLoadingAi(false));
@@ -88,7 +102,11 @@ export default function AiAssistantPanel({ connectionId, schemaName, currentSql,
             value={aiConnectionId ?? ''}
             onChange={(e) => setAiConnectionId(e.target.value ? Number(e.target.value) : null)}
           >
-            {aiConnections.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            {aiConnections.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name} — {c.connection_type}{c.is_seller_managed ? ' · Seller-managed' : ''}
+              </option>
+            ))}
           </select>
         )}
       </div>

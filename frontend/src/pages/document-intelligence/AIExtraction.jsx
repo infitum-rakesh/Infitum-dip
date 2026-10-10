@@ -50,15 +50,36 @@ export function AIExtraction({ ocrData, onComplete, onBack }) {
   const [viewMode, setViewMode]           = useState('table'); // 'table' | 'json'
   const [error, setError]                 = useState('');
 
-  // Load AI Agent connections once, default to the first active one — or
-  // to the Custom Extraction Engine (sentinel id 0) when none exist.
+  // Load AI Agent connections once, default to this org's real resolved
+  // default (AIC-P6: user default -> org default -> Settings fallback,
+  // which itself prefers an org-owned connection over a seller-managed
+  // one — see ai_connection_resolver_service.py) rather than whichever
+  // connection happens to sort first. Real bug found live: this used to
+  // pick items.find(status==='ACTIVE') ?? items[0] straight from the
+  // id-ascending /ai-usable list, so once an org purchased a seller-
+  // managed AI subscription (which typically has a lower id than a
+  // connection the org configured later), extraction silently started
+  // running through the SELLER's shared connection instead of the org's
+  // own already-configured one — reported live as "it's overwriting
+  // their openai connection." Falls back to the old first-active
+  // heuristic only when no default has ever been resolved, or to the
+  // Custom Extraction Engine (sentinel id 0) when no connections exist.
   useEffect(() => {
-    connectionApi.list({ category: 'AI_PROVIDER', page_size: 50 })
+    connectionApi.listUsableAiConnections()
       .then((r) => {
         const items = r.items ?? [];
         setConnections(items);
-        const active = items.find((c) => c.status === 'ACTIVE') ?? items[0];
-        setConnectionId(active ? active.id : 0);
+        return connectionApi.getAiDefaults()
+          .then((defaults) => {
+            const effectiveId = defaults?.effective_connection_id;
+            const resolved = effectiveId != null ? items.find((c) => c.id === effectiveId) : null;
+            const fallback = items.find((c) => c.status === 'ACTIVE') ?? items[0];
+            setConnectionId((resolved ?? fallback) ? (resolved ?? fallback).id : 0);
+          })
+          .catch(() => {
+            const fallback = items.find((c) => c.status === 'ACTIVE') ?? items[0];
+            setConnectionId(fallback ? fallback.id : 0);
+          });
       })
       .catch(() => setConnectionId(0))
       .finally(() => setLoadingConns(false));
@@ -73,7 +94,7 @@ export function AIExtraction({ ocrData, onComplete, onBack }) {
       const detected = await extractionApi.detectSchema(doc.id, connectionId, documentType || null);
       setSchema(detected);
     } catch (err) {
-      setError(err?.response?.data?.detail ?? 'Could not auto-detect a schema from this document.');
+      setError(err?.message || 'Could not auto-detect a schema from this document.');
       setSchema([]);
     } finally {
       setDetecting(false);
@@ -109,7 +130,7 @@ export function AIExtraction({ ocrData, onComplete, onBack }) {
       const result = await extractionApi.extract(doc.id, connectionId, validFields);
       setResult(result);
     } catch (err) {
-      setError(err?.response?.data?.detail ?? 'AI extraction failed. Please try again.');
+      setError(err?.message || 'AI extraction failed. Please try again.');
     } finally {
       setExtracting(false);
     }
@@ -154,15 +175,21 @@ export function AIExtraction({ ocrData, onComplete, onBack }) {
               onChange={(e) => { setConnectionId(Number(e.target.value)); setResult(null); }}
             >
               {connections.map((c) => (
-                <option key={c.id} value={c.id}>{c.name || `Connection #${c.id}`} — {c.connection_type}{c.status !== 'ACTIVE' ? ` (${c.status.toLowerCase()})` : ''}</option>
+                <option key={c.id} value={c.id}>
+                  {c.name || `Connection #${c.id}`} — {c.connection_type}
+                  {c.is_seller_managed ? ' · Seller-managed' : ''}
+                  {c.status !== 'ACTIVE' ? ` (${c.status.toLowerCase()})` : ''}
+                </option>
               ))}
               <option value={0}>Custom (No AI Required)</option>
             </select>
-            {noConnections && (
+            {noConnections ? (
               <>
                 <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No AI Agent connection configured — using the Custom Extraction Engine.</span>
                 <Button variant="ghost" size="sm" onClick={() => navigate('/app/connections')}>Add an AI connection →</Button>
               </>
+            ) : (
+              <Button variant="ghost" size="sm" onClick={() => navigate('/app/connections')}>Don't see a connection? Manage AI Access →</Button>
             )}
           </>
         )}

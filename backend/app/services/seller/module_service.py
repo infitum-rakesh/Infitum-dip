@@ -67,6 +67,7 @@ MODULE_CATALOG: dict[str, dict] = {
     "PAYMENT_APPROVAL":     {"label": "Payment Approvals",      "category": "OPERATIONS"},
     "BULK_MIGRATION":       {"label": "Bulk Object Migration",  "category": "OPERATIONS"},
     "TALLY_INTEGRATION":    {"label": "Tally Integration",      "category": "OPERATIONS"},
+    "AI_CONNECTION":        {"label": "AI Connections",         "category": "OPERATIONS"},
 }
 CATALOG_VERSION = "1.0.0"  # matches main.py's FastAPI(version=...) — one platform release, no per-module versioning exists
 
@@ -254,6 +255,11 @@ async def get_customer_modules(db: AsyncSession, organization_id: int) -> list[d
             "expiry_date": row.expiry_date if row else None,
             "dependencies": deps,
             "dependencies_met": all(d in enabled_now for d in deps),
+            "max_tokens": row.max_tokens if row else None,
+            "token_period": row.token_period if row else None,
+            "ai_provider_bundle": row.ai_provider_bundle if row else None,
+            "ai_rate_limit": row.ai_rate_limit if row else None,
+            "ai_concurrency_limit": row.ai_concurrency_limit if row else None,
             # Only surface as "pending payment" when the grant itself isn't
             # ACTIVE — an already-active row can still have an old, since-
             # superseded unpaid invoice sitting on the same subscription
@@ -278,11 +284,54 @@ def _block_reason(org: Organization, sub: Subscription | None, module: str) -> s
     return None
 
 
+def _apply_limit_fields(row: CustomerModule, body) -> None:
+    """Shared by both set_module() paths (first-grant-via-add_module AND
+    edit-an-existing-row) — see model_fields_set's docstring note at the
+    call site for why this can't be a bare `is not None` check. Real bug
+    found live: the first-grant path (add_module()) used to return the
+    newly-created row completely as-is, silently dropping every limit
+    field (max_users/monthly_credits/max_documents/expiry_date, and now
+    the AI Connection ones) the SAME request body carried — a Seller
+    enabling a module and setting its limits in one Configure-modal save
+    (the only way the frontend ever calls this) had the limits vanish.
+    enabled/status/start_date are intentionally NOT set here — the two
+    call sites manage those themselves (add_module() already created the
+    row ACTIVE/enabled; the edit path's enable/disable toggle has its own
+    logic right above/below each call site)."""
+    provided = body.model_fields_set
+    if "license_type" in provided:
+        row.license_type = body.license_type
+    if "max_users" in provided:
+        row.max_users = body.max_users
+    if "monthly_credits" in provided:
+        row.monthly_credits = body.monthly_credits
+    if "max_documents" in provided:
+        row.max_documents = body.max_documents
+    if "expiry_date" in provided:
+        row.expiry_date = body.expiry_date
+    # AI Connection Subscription limits (AIC-P4) — meaningful only when
+    # module == AI_CONNECTION, but harmless to persist unconditionally
+    # like every other limit field here.
+    if "max_tokens" in provided:
+        row.max_tokens = body.max_tokens
+    if "token_period" in provided:
+        row.token_period = body.token_period
+    if "ai_provider_bundle" in provided:
+        row.ai_provider_bundle = body.ai_provider_bundle
+    if "ai_rate_limit" in provided:
+        row.ai_rate_limit = body.ai_rate_limit
+    if "ai_concurrency_limit" in provided:
+        row.ai_concurrency_limit = body.ai_concurrency_limit
+
+
 def _row_out(row: CustomerModule, pending_invoice_id: int | None = None) -> dict:
     return {
         "module": row.module, "enabled": row.enabled, "status": row.status, "license_type": row.license_type,
         "max_users": row.max_users, "monthly_credits": row.monthly_credits, "max_documents": row.max_documents,
         "start_date": row.start_date, "expiry_date": row.expiry_date,
+        "max_tokens": row.max_tokens, "token_period": row.token_period,
+        "ai_provider_bundle": row.ai_provider_bundle, "ai_rate_limit": row.ai_rate_limit,
+        "ai_concurrency_limit": row.ai_concurrency_limit,
         "pending_invoice_id": pending_invoice_id,
     }
 
@@ -333,6 +382,13 @@ async def set_module(db: AsyncSession, *, organization_id: int, module: str, bod
                 select(CustomerModule).where(CustomerModule.subscription_id == new_sub.id, CustomerModule.module == module)
             )
             row = row_result.scalar_one()
+            # Apply any limit fields the SAME request carried (see
+            # _apply_limit_fields()'s docstring for the real bug this
+            # fixes) before committing — add_module() only sets up the
+            # bare entitlement, never these.
+            _apply_limit_fields(row, body)
+            await db.commit()
+            await db.refresh(row)
             pending_invoice_id = None
             if row.status != "ACTIVE":
                 # Non-trial org: add_module() left this row SUSPENDED
@@ -387,21 +443,12 @@ async def set_module(db: AsyncSession, *, organization_id: int, module: str, bod
 
     # A bare `is not None` check can't tell "field omitted" from "field
     # explicitly sent as null to clear it back to unlimited" — both look
-    # like None on body.max_users etc. Use Pydantic's model_fields_set so
-    # an explicit `{"max_users": null}` genuinely clears the limit instead
-    # of being silently ignored (bug caught live during Phase 5 testing).
-    provided = body.model_fields_set
+    # like None on body.max_users etc. _apply_limit_fields() uses Pydantic's
+    # model_fields_set so an explicit `{"max_users": null}` genuinely
+    # clears the limit instead of being silently ignored (bug caught live
+    # during Phase 5 testing).
     row.enabled = body.enabled
-    if "license_type" in provided:
-        row.license_type = body.license_type
-    if "max_users" in provided:
-        row.max_users = body.max_users
-    if "monthly_credits" in provided:
-        row.monthly_credits = body.monthly_credits
-    if "max_documents" in provided:
-        row.max_documents = body.max_documents
-    if "expiry_date" in provided:
-        row.expiry_date = body.expiry_date
+    _apply_limit_fields(row, body)
     if row.start_date is None and body.enabled:
         row.start_date = datetime.now(timezone.utc)
 

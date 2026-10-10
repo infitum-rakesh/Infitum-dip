@@ -219,6 +219,19 @@ class BaseConnector(abc.ABC):
         # registered connector class has one constructor signature — see
         # connectors/registry.py get_connector().
         self._cache_key = cache_key
+        # Set by generate()/generate_vision() on connectors/ai/* right
+        # after a real call, from whatever usage object the provider's
+        # OWN response actually included (see each connector's docstring)
+        # — never synthesized. Shape when present:
+        # {"input_tokens": int|None, "output_tokens": int|None,
+        #  "total_tokens": int|None}. None when the call hasn't happened
+        # yet, or the provider's response genuinely carried no usage data
+        # — callers (services/ai_quota_service.py) must treat that as
+        # AIUsageSource.UNAVAILABLE, never estimate or fabricate a number
+        # to fill the gap. Read this IMMEDIATELY after the generate call
+        # on the SAME connector instance — it is overwritten by the next
+        # call, not a history.
+        self.last_usage: dict | None = None
 
     @abc.abstractmethod
     def test_connection(self) -> ConnectionTestResult:

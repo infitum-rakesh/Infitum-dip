@@ -68,9 +68,23 @@ class OpenAiConnector(BaseConnector):
             if resp.status_code >= 400:
                 raise ConnectorError(self._scrub(f"OpenAI generation failed: HTTP {resp.status_code} {resp.text[:300]}"))
             data = resp.json()
+            self.last_usage = self._parse_usage(data)
             return data["choices"][0]["message"]["content"]
         except httpx.RequestError as exc:
             raise ConnectorError(self._scrub(f"Could not reach OpenAI: {exc}")) from exc
+
+    @staticmethod
+    def _parse_usage(data: dict) -> dict | None:
+        """Chat Completions' own `usage` object — real provider-reported
+        counts (see base.py's last_usage docstring), never computed here."""
+        usage = data.get("usage")
+        if not usage:
+            return None
+        return {
+            "input_tokens": usage.get("prompt_tokens"),
+            "output_tokens": usage.get("completion_tokens"),
+            "total_tokens": usage.get("total_tokens"),
+        }
 
     def supports_vision(self) -> bool:
         model = self._model().lower()
@@ -94,6 +108,7 @@ class OpenAiConnector(BaseConnector):
             if resp.status_code >= 400:
                 raise ConnectorError(self._scrub(f"OpenAI vision generation failed: HTTP {resp.status_code} {resp.text[:300]}"))
             data = resp.json()
+            self.last_usage = self._parse_usage(data)
             return data["choices"][0]["message"]["content"]
         except httpx.RequestError as exc:
             raise ConnectorError(self._scrub(f"Could not reach OpenAI: {exc}")) from exc

@@ -176,6 +176,14 @@ from app.models.tally_writeback import TallyVoucherWriteBackTransaction, TallyVo
 # additive extension of the Schedules module (see that model's own
 # docstring for the AD12/Scheduled-Document-Intelligence precedent it follows).
 from app.models.tally_schedule import TallyReconciliationScheduleConfig  # noqa: F401
+# AI Connection Subscription & Organisation-Level Access Management —
+# per-user/per-role connection grants, default-connection resolution,
+# token usage ledger, and atomic quota reservations. Connection.is_public
+# and CustomerModule's new AI limit columns are additive edits to those
+# existing model files, not new tables, so they need no import here.
+from app.models.ai_connection import (  # noqa: F401
+    AIConnectionPermission, AIConnectionDefault, AITokenUsageEvent, AIQuotaReservation,
+)
 
 settings = get_settings()
 logger = logging.getLogger(__name__)

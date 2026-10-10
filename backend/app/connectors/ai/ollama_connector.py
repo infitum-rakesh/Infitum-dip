@@ -76,9 +76,24 @@ class OllamaConnector(BaseConnector):
             if resp.status_code >= 400:
                 raise ConnectorError(self._scrub(f"Ollama generation failed: HTTP {resp.status_code} {resp.text[:300]}"))
             data = resp.json()
+            self.last_usage = self._parse_usage(data)
             return data.get("response", "")
         except httpx.RequestError as exc:
             raise ConnectorError(self._scrub(f"Could not reach Ollama at {self._base_url()}: {exc}")) from exc
+
+    @staticmethod
+    def _parse_usage(data: dict) -> dict | None:
+        """Ollama's own `prompt_eval_count`/`eval_count` fields (returned
+        on a non-streaming /api/generate response) — real provider-
+        reported counts (see base.py's last_usage docstring), not an
+        estimate. None when the server genuinely omits them (older Ollama
+        versions, or a model/runner that doesn't report them)."""
+        input_tokens = data.get("prompt_eval_count")
+        output_tokens = data.get("eval_count")
+        if input_tokens is None and output_tokens is None:
+            return None
+        total = (input_tokens or 0) + (output_tokens or 0)
+        return {"input_tokens": input_tokens, "output_tokens": output_tokens, "total_tokens": total}
 
     def supports_vision(self) -> bool:
         model = self._model().lower()
@@ -101,6 +116,7 @@ class OllamaConnector(BaseConnector):
             if resp.status_code >= 400:
                 raise ConnectorError(self._scrub(f"Ollama vision generation failed: HTTP {resp.status_code} {resp.text[:300]}"))
             data = resp.json()
+            self.last_usage = self._parse_usage(data)
             return data.get("response", "")
         except httpx.RequestError as exc:
             raise ConnectorError(self._scrub(f"Could not reach Ollama at {self._base_url()}: {exc}")) from exc

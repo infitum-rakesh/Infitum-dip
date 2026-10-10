@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Plus, RefreshCcw, X, Eye, Pencil, PlayCircle, MoreVertical, Copy, Power, Trash2,
+  Plus, RefreshCcw, X, Eye, Pencil, PlayCircle, MoreVertical, Copy, Power, Trash2, Shield,
 } from 'lucide-react';
 import { Button, StatusBadge, DataTable, SearchBox, EmptyState, PermissionGate } from '@/components/common/index.js';
 import { PAGINATION, CONNECTION_PERMISSIONS } from '@/utils/constants.js';
@@ -15,6 +15,7 @@ import { formatDateTime } from '@/utils/formatters.js';
 import { connectionApi } from '@/services/api/connectionApi.js';
 import { NewConnectionModal } from './NewConnectionModal.jsx';
 import { ConnectionFormModal } from './ConnectionFormModal.jsx';
+import { ManageAiAccessModal } from './ManageAiAccessModal.jsx';
 import './connections.css';
 
 const STATUS_VARIANT = { ACTIVE: 'success', INACTIVE: 'gray', ERROR: 'danger', UNTESTED: 'info', UNSUPPORTED: 'warning' };
@@ -38,6 +39,7 @@ export default function Connections() {
 
   const [newModalOpen, setNewModalOpen] = useState(false);
   const [formTarget, setFormTarget] = useState(null); // { category, connectionType, connection, startEditable } | null
+  const [aiAccessOpen, setAiAccessOpen] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => { setSearch(searchInput); setPage(1); }, 300);
@@ -138,6 +140,9 @@ export default function Connections() {
           </div>
           <div className="conn-header-actions">
             <Button variant="secondary" icon={<RefreshCcw size={14} />} onClick={refreshAll}>Refresh</Button>
+            <PermissionGate {...CONNECTION_PERMISSIONS.CONNECTION_EDIT} fallback={null}>
+              <Button variant="secondary" icon={<Shield size={14} />} onClick={() => setAiAccessOpen(true)}>Manage AI Access</Button>
+            </PermissionGate>
             <PermissionGate {...CONNECTION_PERMISSIONS.CONNECTION_CREATE} fallback={null}>
               <Button variant="primary" icon={<Plus size={14} />} onClick={() => setNewModalOpen(true)}>New Connection</Button>
             </PermissionGate>
@@ -202,6 +207,8 @@ export default function Connections() {
       </div>
 
       <NewConnectionModal open={newModalOpen} onClose={() => setNewModalOpen(false)} catalogue={catalogue} onSelect={openNewType} />
+
+      <ManageAiAccessModal open={aiAccessOpen} onClose={() => setAiAccessOpen(false)} />
 
       {formTarget && (
         <ConnectionFormModal

@@ -133,6 +133,17 @@ class Connection(TenantBase):
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)  # soft-delete flag
 
+    # AI Connection Subscription & Organisation-Level Access Management —
+    # organisation-wide visibility for an AI_PROVIDER connection, same
+    # precedent as SqlWorkspaceQuery.is_shared: False by default (private
+    # until the owner/admin explicitly makes it public), discoverable by
+    # every eligible user in the SAME organization only when True (never
+    # across tenants). Meaningful for every connection category, not just
+    # AI_PROVIDER, but AI Connection access is the first feature to read
+    # it — see models/ai_connection.py's AIConnectionPermission for the
+    # per-user/per-role grant table this complements.
+    is_public: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

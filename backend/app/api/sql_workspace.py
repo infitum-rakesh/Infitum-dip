@@ -276,7 +276,7 @@ async def ai_generate_sql(connection_id: int, body: AiGenerateSqlRequest, user: 
         result = await sql_ai_service.generate_sql(
             db, organization_id=_effective_org_id(user), connection_id=connection_id,
             ai_connection_id=body.ai_connection_id, question=body.question,
-            schema_name=body.schema_name, current_sql=body.current_sql,
+            schema_name=body.schema_name, current_sql=body.current_sql, acting_user=user,
         )
     except sql_ai_service.SqlAiError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))

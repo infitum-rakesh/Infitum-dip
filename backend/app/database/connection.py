@@ -151,3 +151,21 @@ async def init_db() -> None:
         # Alembic.
         if not _is_sqlite:
             await conn.execute(text("ALTER TABLE payment_links ALTER COLUMN token TYPE VARCHAR(255)"))
+
+            # AI Connection Subscription & Organisation-Level Access
+            # Management — new columns on the existing connections/
+            # customer_modules tables, added only to the SQLite migration
+            # script (scripts/migrate_ai_connection.py), which never runs
+            # against Postgres (see run_all_migrations.py's non-SQLite
+            # no-op). create_all() never alters an existing table, so
+            # without this every request touching Connection or
+            # CustomerModule — nearly every route via require_action() —
+            # would 500 with UndefinedColumn on Postgres. IF NOT EXISTS
+            # makes each ADD COLUMN a harmless no-op to re-run every boot.
+            await conn.execute(text("ALTER TABLE connections ADD COLUMN IF NOT EXISTS is_public BOOLEAN DEFAULT FALSE"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_connections_is_public ON connections (is_public)"))
+            await conn.execute(text("ALTER TABLE customer_modules ADD COLUMN IF NOT EXISTS max_tokens INTEGER"))
+            await conn.execute(text("ALTER TABLE customer_modules ADD COLUMN IF NOT EXISTS token_period VARCHAR(20)"))
+            await conn.execute(text("ALTER TABLE customer_modules ADD COLUMN IF NOT EXISTS ai_provider_bundle JSON"))
+            await conn.execute(text("ALTER TABLE customer_modules ADD COLUMN IF NOT EXISTS ai_rate_limit INTEGER"))
+            await conn.execute(text("ALTER TABLE customer_modules ADD COLUMN IF NOT EXISTS ai_concurrency_limit INTEGER"))

@@ -10,7 +10,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.connectors.base import ConnectorError, ConnectorUnsupportedError, ConnectorValidationError
 from app.core.deps import ROLE_ACTIONS, require_action
 from app.database.tenant_routing import get_tenant_db
+from app.models.ai_connection import ORG_DEFAULT_USER_ID
+from app.models.connection import Connection, ConnectionCategory
 from app.models.user import User, UserRole
+from app.services import ai_connection_permission_service as ai_access_svc
+from app.services import ai_connection_resolver_service as ai_default_svc
+from app.services.ai_connection_access_service import ai_connection_access_service
+from app.schemas.ai_connection_access import (
+    AiAccessListOut,
+    AiDefaultsOut,
+    GrantOut,
+    GrantRequest,
+    GranteeOptionsOut,
+    SetDefaultRequest,
+    SetPublicRequest,
+    UsableAiConnectionOut,
+    UsableAiConnectionsOut,
+)
 from app.schemas.connections import (
     ApiPreviewRequest,
     ColumnListOut,
@@ -63,6 +79,16 @@ async def _get_or_404(db: AsyncSession, connection_id: int, user: User):
     return conn
 
 
+def _require_org(user: User) -> int:
+    """AI Connection access management (AIC-P5) is an org-admin self-
+    service feature — see ai_connection_permission_service.py's module
+    docstring for why SUPER_ADMIN/SELLER (structurally org-less) are out
+    of scope rather than silently resolved to some org."""
+    if user.organization_id is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This feature is scoped to a single organization's own admin — not available for platform-level accounts.")
+    return user.organization_id
+
+
 def _require_secret_permission(user: User, conn, raw_config: dict) -> None:
     """CONNECTION_MANAGE_SECRET (ADMIN-tier) gate — only enforced when the
     payload actually attempts to set/rotate a secret field, AND the caller
@@ -85,6 +111,53 @@ def _require_secret_permission(user: User, conn, raw_config: dict) -> None:
             status.HTTP_403_FORBIDDEN,
             "Rotating or setting connection credentials requires secret-management permission.",
         )
+
+
+def _require_ai_owner_or_admin(user: User, conn: Connection) -> None:
+    """AI Provider connections only: being GRANTED view/use access
+    (AIConnectionPermission, AIC-P5) never implies being allowed to manage
+    the connection itself — only an admin-tier user (ORG_ADMIN/SUPER_ADMIN,
+    via the existing "ADMIN" role action) or the connection's own creator
+    may edit its config, change its sharing/grants, or remove it. Real gap
+    found live: the plain Connections "EDIT" role action — held even by
+    DATA_ENGINEER, the default non-admin role (see QQ1) — was the ONLY
+    gate on these routes, so any user who could reach a connection id at
+    all (anyone in the org with VIEW, since list/get aren't owner-scoped
+    either) could rename/reconfigure a colleague's shared AI connection or
+    reassign who else it's shared with, as long as the payload didn't
+    touch a secret field (the one thing _require_secret_permission above
+    already protected). Reported live: "when Admin created connection and
+    shared to user then it should not be editable, only user can view the
+    connection and use it.\""""
+    is_owner = conn.owner_id is not None and conn.owner_id == user.id
+    if not (is_owner or _has_action(user, "ADMIN")):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "You don't own this AI connection and don't have admin access — you can view and use it "
+            "(if granted), but only its owner or an organization admin can edit, share, or remove it.",
+        )
+
+
+def _require_ai_connection_manage(user: User, conn: Connection) -> None:
+    """Stricter guard for the routes that actually mutate/remove an AI
+    Provider connection's own config (edit/disable/delete/clone) — as
+    opposed to managing who else can use it (see _require_ai_owner_or_admin
+    above, used for the grant-management routes, where a seller-managed
+    connection is a legitimate target). A seller-managed connection
+    (organization_id IS NULL) is never editable/disableable/deletable/
+    cloneable by ANY customer-org actor, not even an org admin — it can
+    only be used. In practice `_get_or_404` already 404s a seller-managed
+    id for every caller except SUPER_ADMIN (get_connection()'s org filter
+    excludes NULL-org rows), so this is explicit defense-in-depth, not the
+    only thing stopping it."""
+    if conn.category != ConnectionCategory.AI_PROVIDER:
+        return
+    if conn.organization_id is None:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Seller-managed AI connections can only be used — they can't be edited, disabled, deleted, or cloned by a customer organization.",
+        )
+    _require_ai_owner_or_admin(user, conn)
 
 
 # ── KPIs / type catalogue ─────────────────────────────────────────
@@ -128,6 +201,141 @@ async def list_connections(
     return ConnectionListOut(items=items, total=total, page=page, page_size=page_size)
 
 
+# ── AI connection picker (AIC-P8) ──────────────────────────────────
+# Real gap found live: the plain list route above (and connectionApi.list()
+# on the frontend) filters organization_id == caller's org, so it can
+# NEVER surface a seller-managed (NULL-org) connection — the exact same
+# shape of bug AIC-P7 already fixed for the FETCH-by-id path. Every AI
+# connection picker (Document Intelligence's AI Extraction stage, the
+# Documents/Review Queue "Run AI Extraction" control, the SQL Workspace AI
+# Assistant panel) must use this route instead, so a connection a user was
+# actually granted access to (AIC-P5) is one they can actually select.
+
+@router.get("/ai-usable", response_model=UsableAiConnectionsOut)
+async def list_usable_ai_connections(user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
+    org_id = _require_org(user)
+    connections = await ai_connection_access_service.list_usable_connections(db, organization_id=org_id, acting_user=user)
+    return UsableAiConnectionsOut(items=[
+        UsableAiConnectionOut(
+            id=c.id, name=c.name or f"{c.connection_type.value} connection #{c.id}",
+            connection_type=c.connection_type.value, status=c.status.value,
+            is_seller_managed=c.organization_id is None,
+        )
+        for c in connections
+    ])
+
+
+# ── AI Connection access management (AIC-P5) ──────────────────────
+# Org-admin self-service: who in my organization can see/use which AI
+# connection, and (for connections my org owns) whether it's public to
+# everyone in my org. See ai_connection_permission_service.py. These
+# literal-path routes must stay registered before /{connection_id}
+# below — same reasoning as /stats and /types above.
+
+@router.get("/ai-access", response_model=AiAccessListOut)
+async def list_ai_access(user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
+    org_id = _require_org(user)
+    items = await ai_access_svc.list_access(db, organization_id=org_id)
+    return AiAccessListOut(items=items)
+
+
+@router.get("/ai-access/grantees", response_model=GranteeOptionsOut)
+async def list_ai_access_grantees(user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
+    org_id = _require_org(user)
+    options = await ai_access_svc.grantee_options(db, organization_id=org_id)
+    return GranteeOptionsOut(**options)
+
+
+# ── Default AI connection selection (AIC-P6) ──────────────────────
+# Same literal-path-before-/{connection_id} requirement as /ai-access above.
+
+@router.get("/ai-defaults", response_model=AiDefaultsOut)
+async def get_ai_defaults(user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
+    org_id = _require_org(user)
+    defaults = await ai_default_svc.get_defaults(db, organization_id=org_id, acting_user=user)
+    return AiDefaultsOut(**defaults)
+
+
+@router.put("/ai-defaults/mine", response_model=AiDefaultsOut)
+async def set_my_ai_default(body: SetDefaultRequest, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
+    org_id = _require_org(user)
+    try:
+        await ai_default_svc.set_user_default(db, organization_id=org_id, user_id=user.id, connection_id=body.connection_id, created_by=user.id)
+    except ai_default_svc.AiDefaultError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    defaults = await ai_default_svc.get_defaults(db, organization_id=org_id, acting_user=user)
+    return AiDefaultsOut(**defaults)
+
+
+@router.delete("/ai-defaults/mine", response_model=AiDefaultsOut)
+async def clear_my_ai_default(user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
+    org_id = _require_org(user)
+    await ai_default_svc.clear_default(db, organization_id=org_id, user_id=user.id)
+    defaults = await ai_default_svc.get_defaults(db, organization_id=org_id, acting_user=user)
+    return AiDefaultsOut(**defaults)
+
+
+@router.put("/ai-defaults/org", response_model=AiDefaultsOut)
+async def set_org_ai_default(body: SetDefaultRequest, user: User = Depends(_edit), db: AsyncSession = Depends(get_tenant_db)):
+    org_id = _require_org(user)
+    try:
+        await ai_default_svc.set_org_default(db, organization_id=org_id, connection_id=body.connection_id, created_by=user.id)
+    except ai_default_svc.AiDefaultError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    defaults = await ai_default_svc.get_defaults(db, organization_id=org_id, acting_user=user)
+    return AiDefaultsOut(**defaults)
+
+
+@router.delete("/ai-defaults/org", response_model=AiDefaultsOut)
+async def clear_org_ai_default(user: User = Depends(_edit), db: AsyncSession = Depends(get_tenant_db)):
+    org_id = _require_org(user)
+    await ai_default_svc.clear_default(db, organization_id=org_id, user_id=ORG_DEFAULT_USER_ID)
+    defaults = await ai_default_svc.get_defaults(db, organization_id=org_id, acting_user=user)
+    return AiDefaultsOut(**defaults)
+
+
+@router.put("/{connection_id}/ai-access/public", response_model=AiAccessListOut)
+async def set_ai_access_public(connection_id: int, body: SetPublicRequest, user: User = Depends(_edit), db: AsyncSession = Depends(get_tenant_db)):
+    org_id = _require_org(user)
+    conn = await db.get(Connection, connection_id)
+    if conn is not None:
+        _require_ai_owner_or_admin(user, conn)
+    try:
+        await ai_access_svc.set_public(db, connection_id=connection_id, organization_id=org_id, is_public=body.is_public)
+    except ai_access_svc.AiAccessError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    items = await ai_access_svc.list_access(db, organization_id=org_id)
+    return AiAccessListOut(items=items)
+
+
+@router.post("/{connection_id}/ai-access/grants", response_model=GrantOut, status_code=status.HTTP_201_CREATED)
+async def create_ai_access_grant(connection_id: int, body: GrantRequest, user: User = Depends(_edit), db: AsyncSession = Depends(get_tenant_db)):
+    org_id = _require_org(user)
+    conn = await db.get(Connection, connection_id)
+    if conn is not None:
+        _require_ai_owner_or_admin(user, conn)
+    try:
+        grant = await ai_access_svc.upsert_grant(
+            db, connection_id=connection_id, organization_id=org_id, grantee_type=body.grantee_type,
+            grantee_id=body.grantee_id, can_view=body.can_view, can_use=body.can_use, granted_by=user.id,
+        )
+    except ai_access_svc.AiAccessError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    return GrantOut(**grant)
+
+
+@router.delete("/{connection_id}/ai-access/grants/{grant_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_ai_access_grant(connection_id: int, grant_id: int, user: User = Depends(_edit), db: AsyncSession = Depends(get_tenant_db)):
+    org_id = _require_org(user)
+    conn = await db.get(Connection, connection_id)
+    if conn is not None:
+        _require_ai_owner_or_admin(user, conn)
+    try:
+        await ai_access_svc.remove_grant(db, connection_id=connection_id, organization_id=org_id, grant_id=grant_id)
+    except ai_access_svc.AiAccessError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+
+
 @router.get("/{connection_id}", response_model=ConnectionOut)
 async def get_connection(connection_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
     conn = await _get_or_404(db, connection_id, user)
@@ -162,6 +370,7 @@ async def update_connection(
     db: AsyncSession = Depends(get_tenant_db),
 ):
     conn = await _get_or_404(db, connection_id, user)
+    _require_ai_connection_manage(user, conn)
     if body.config:
         _require_secret_permission(user, conn, body.config)
     conn = await svc.update_connection(db, conn, name=body.name, environment=body.environment, raw_config=body.config)
@@ -172,6 +381,7 @@ async def update_connection(
 @router.delete("/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_connection(connection_id: int, user: User = Depends(_delete), db: AsyncSession = Depends(get_tenant_db)):
     conn = await _get_or_404(db, connection_id, user)
+    _require_ai_connection_manage(user, conn)
     await svc.delete_connection(db, conn)
 
 
@@ -187,6 +397,7 @@ async def test_connection(connection_id: int, user: User = Depends(_execute), db
 @router.post("/{connection_id}/disable", response_model=ConnectionOut)
 async def disable_connection(connection_id: int, user: User = Depends(_edit), db: AsyncSession = Depends(get_tenant_db)):
     conn = await _get_or_404(db, connection_id, user)
+    _require_ai_connection_manage(user, conn)
     conn = await svc.toggle_disabled(db, conn)
     name_map = await svc.owner_name_map(db, {conn.owner_id} if conn.owner_id else set())
     return svc.to_out(conn, name_map.get(conn.owner_id))
@@ -195,6 +406,7 @@ async def disable_connection(connection_id: int, user: User = Depends(_edit), db
 @router.post("/{connection_id}/clone", response_model=ConnectionOut, status_code=status.HTTP_201_CREATED)
 async def clone_connection(connection_id: int, user: User = Depends(_create), db: AsyncSession = Depends(get_tenant_db)):
     conn = await _get_or_404(db, connection_id, user)
+    _require_ai_connection_manage(user, conn)
     clone = await svc.clone_connection(db, conn, user.id)
     return svc.to_out(clone, user.full_name)
 

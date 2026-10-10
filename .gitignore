@@ -16,6 +16,7 @@ frontend/node_modules/
 !*.env.example
 
 # Runtime data / generated artifacts (not source)
+*.log
 backend/*.db
 backend/*.db-shm
 backend/*.db-wal

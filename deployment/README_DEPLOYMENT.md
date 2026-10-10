@@ -138,6 +138,48 @@ AI providers (OpenAI / Anthropic / Ollama) are configured as
 **Connection rows inside the running app** (Settings → Connections),
 not via `.env`. There's nothing for this installer to collect up front.
 
+### 5a. AI Connection Subscription & organisation-level access
+
+Two independent ownership shapes exist for an AI Provider connection, both
+enforced by the same server-side check on every real AI call — picking a
+connection in a UI dropdown is never sufficient on its own, not even for an
+org admin:
+
+- **Customer-owned** — an org creates its own connection with its own API
+  key. No Seller billing relationship is involved; access is governed purely
+  by that connection's `is_public` flag or an explicit per-user/role grant
+  (Connections page → **Manage AI Access**). There is no "org admin" or
+  "connection owner" bypass — an admin who created a connection still needs
+  to either make it public or grant themselves access before they (or anyone
+  else in the org) can use it for a real extraction/SQL-assist call.
+- **Seller-managed** — a connection with no `organization_id` that the
+  Seller sells to customer orgs as a subscription (Seller Admin → Purchased
+  Modules → Configure the `AI_CONNECTION` module for a customer, setting
+  `max_tokens` / `token_period` / `ai_provider_bundle` / `ai_rate_limit` /
+  `ai_concurrency_limit`). Holding an active subscription is **not** enough
+  by itself — per spec, "a subscription must not automatically grant every
+  user permission." The connection also needs either `is_public` or an
+  explicit grant before any user in that org can use it, same as above.
+
+No new `.env` variables exist for this feature — every limit above is
+configured per-customer through the Seller/org-admin UI, not environment
+configuration. The one schema migration this feature needs
+(`backend/scripts/migrate_ai_connection.py`, adds `connections.is_public`
+and the new `ai_quota_reservations`/`ai_token_usage_events`/
+`ai_connection_permissions`/`ai_connection_defaults` tables) runs
+automatically as part of `run_all_migrations.py`'s existing `migrate_*.py`
+auto-discovery — no separate install step.
+
+**SQLite version requirement.** Real token-usage/quota enforcement
+(`ai_quota_service.check_and_reserve()`) uses an atomic
+`INSERT ... SELECT ... WHERE ... RETURNING` statement so that concurrent
+requests against the same connection's concurrency/rate/token-budget limits
+cannot race past each other — this needs **SQLite 3.35.0 or newer** (March
+2021) for `RETURNING` support. Check with `python3 -c "import sqlite3;
+print(sqlite3.sqlite_version)"`; anything from a reasonably current Python
+3.9+ install already clears this. A production deployment on Postgres is
+unaffected (Postgres has supported `RETURNING` since 8.2).
+
 ## 6. Storage configuration
 
 `UPLOAD_STORAGE_PATH` in `.env` (default `./uploads`, i.e. a sibling of

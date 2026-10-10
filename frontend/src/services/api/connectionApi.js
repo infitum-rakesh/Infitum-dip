@@ -85,4 +85,40 @@ export const connectionApi = {
   /** Real REST API preview — body: { endpoint, method, query_params, headers, json_path, pagination, limit }.
    * See backend/app/connectors/api/rest.py — genuinely paginates. */
   previewApi: (id, body) => apiClient.post(`/connections/${id}/preview-api`, body, { timeout: connectionApi.BROWSE_TIMEOUT }).then((r) => r.data),
+
+  // ── AI connection picker (AIC-P8) ──────────────────────────────────
+  // Every "pick an AI connection to use" dropdown (AI Extraction stage,
+  // Run AI Extraction control, SQL Workspace AI Assistant) must call
+  // this instead of the plain list() — it's the only one that includes
+  // seller-managed connections this user is actually entitled to use.
+
+  listUsableAiConnections: () => apiClient.get('/connections/ai-usable').then((r) => r.data),
+
+  // ── AI Connection access management (AIC-P5) ──────────────────────
+  // Org-admin self-service: who in my organization can see/use which AI
+  // connection, and (for connections my org owns) whether it's public.
+
+  listAiAccess: () => apiClient.get('/connections/ai-access').then((r) => r.data),
+
+  getAiAccessGrantees: () => apiClient.get('/connections/ai-access/grantees').then((r) => r.data),
+
+  setAiAccessPublic: (id, isPublic) =>
+    apiClient.put(`/connections/${id}/ai-access/public`, { is_public: isPublic }).then((r) => r.data),
+
+  /** body: { grantee_type: 'USER'|'ROLE', grantee_id, can_view, can_use } */
+  createAiAccessGrant: (id, body) => apiClient.post(`/connections/${id}/ai-access/grants`, body).then((r) => r.data),
+
+  deleteAiAccessGrant: (id, grantId) => apiClient.delete(`/connections/${id}/ai-access/grants/${grantId}`),
+
+  // ── Default AI connection selection (AIC-P6) ──────────────────────
+
+  getAiDefaults: () => apiClient.get('/connections/ai-defaults').then((r) => r.data),
+
+  setMyAiDefault: (connectionId) => apiClient.put('/connections/ai-defaults/mine', { connection_id: connectionId }).then((r) => r.data),
+
+  clearMyAiDefault: () => apiClient.delete('/connections/ai-defaults/mine').then((r) => r.data),
+
+  setOrgAiDefault: (connectionId) => apiClient.put('/connections/ai-defaults/org', { connection_id: connectionId }).then((r) => r.data),
+
+  clearOrgAiDefault: () => apiClient.delete('/connections/ai-defaults/org').then((r) => r.data),
 };

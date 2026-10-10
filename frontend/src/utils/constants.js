@@ -46,6 +46,7 @@ export const MODULES = {
   PAYMENT_APPROVAL:      'PAYMENT_APPROVAL',
   BULK_MIGRATION:        'BULK_MIGRATION',
   TALLY_INTEGRATION:     'TALLY_INTEGRATION',
+  AI_CONNECTION:         'AI_CONNECTION',
 };
 
 /** License status */
@@ -369,6 +370,23 @@ export const BULK_MIGRATION_PERMISSIONS = {
 export const TALLY_PERMISSIONS = {
   TALLY_VIEW:     { module: MODULES.TALLY_INTEGRATION, action: ACTIONS.VIEW },
   TALLY_DISCOVER: { module: MODULES.TALLY_INTEGRATION, action: ACTIONS.EXECUTE },
+};
+
+/**
+ * AI Connection Subscription & Organisation-Level Access Management.
+ * AI_USE is deliberately separate from AI_VIEW (per spec: "view permission
+ * does not automatically imply use permission") — the frontend still only
+ * ever uses this as a baseline module-gate; the real per-connection
+ * view/use decision is server-side (AIConnectionAccessService), never
+ * decided purely by this client-side permission object.
+ */
+export const AI_CONNECTIONS_PERMISSIONS = {
+  AI_CONNECTION_VIEW:               { module: MODULES.AI_CONNECTION, action: ACTIONS.VIEW },
+  AI_CONNECTION_USE:                { module: MODULES.AI_CONNECTION, action: ACTIONS.EXECUTE },
+  AI_CONNECTION_CREATE:             { module: MODULES.AI_CONNECTION, action: ACTIONS.CREATE },
+  AI_CONNECTION_EDIT:               { module: MODULES.AI_CONNECTION, action: ACTIONS.EDIT },
+  AI_CONNECTION_DELETE:             { module: MODULES.AI_CONNECTION, action: ACTIONS.DELETE },
+  AI_CONNECTION_MANAGE_PERMISSIONS: { module: MODULES.AI_CONNECTION, action: ACTIONS.ADMIN },
 };
 
 /**

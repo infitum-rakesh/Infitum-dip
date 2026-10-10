@@ -695,6 +695,7 @@ async def run_extraction(
             db, doc,
             document_type=(body.document_type if body else None),
             connection_id=(body.connection_id if body else None),
+            acting_user_id=user.id,
         )
     except ManualExtractionError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))

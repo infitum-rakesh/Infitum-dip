@@ -22,14 +22,17 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors.base import ConnectorError
 from app.extraction import custom_engine
 from app.models.document import Document
-from app.services import document_taxonomies
-from app.services.connection_service import build_connector, get_connection
+from app.models.user import User
+from app.services import ai_quota_service, document_taxonomies
+from app.services.ai_connection_access_service import ai_connection_access_service
+from app.services.connection_service import build_connector, get_ai_connection
 
 OCR_TEXT_CAP = 60000  # page-aware OCR characters sent per call; bounded but lets every page contribute
 
@@ -320,19 +323,41 @@ def _merge_extraction_fields(schema: list[dict], chunks: list[list[dict]]) -> li
     return merged
 
 
-async def _get_connector(db: AsyncSession, connection_id: int, organization_id: int | None):
-    conn = await get_connection(db, connection_id, organization_id)
+async def _get_connector(db: AsyncSession, connection_id: int, organization_id: int | None, acting_user_id: int | None = None):
+    conn = await get_ai_connection(db, connection_id, organization_id)
     if conn is None:
         raise ExtractionError("AI connection not found (it may have been deleted, or belongs to a different organization).")
     if conn.category.value != "AI_PROVIDER":
         raise ExtractionError(f"Connection '{conn.name}' is a {conn.category.value} connection, not an AI Provider — pick one from the AI Agent category.")
+
+    # AI Connection Subscription & Organisation-Level Access Management —
+    # get_ai_connection() above already widened the FETCH to include a
+    # seller-managed (NULL-org) connection; this check_access() call is
+    # what performs the REAL authorization — per-user/role grant, public-
+    # visibility, and
+    # (for seller-managed connections) subscription-entitlement rules.
+    # acting_user_id is None for automated/background extraction (see
+    # ai_connection_access_service's own docstring for why that only
+    # allows a connection made public, never one gated behind a specific
+    # person's individual grant).
+    acting_user = await db.get(User, acting_user_id) if acting_user_id is not None else None
+    access = await ai_connection_access_service.check_access(
+        db, organization_id=organization_id, acting_user=acting_user, connection_id=connection_id, required="use",
+    )
+    if not access.granted:
+        raise ExtractionError(access.denial_message)
+
     try:
-        return build_connector(conn)
+        connector = build_connector(conn)
     except ConnectorError as exc:
         raise ExtractionError(str(exc)) from exc
+    return connector, conn
 
 
-async def _generate_json(connector, prompt: str, system: str, max_tokens: int):
+async def _generate_json(
+    db: AsyncSession, connector, conn, *, organization_id: int | None, user_id: int | None,
+    feature: str, prompt: str, system: str, max_tokens: int,
+):
     """Calls the connector and parses its response as JSON, with ONE
     corrective retry if the first response isn't valid JSON at all (not
     even via _parse_json's fence-stripping/bracket-repair fallbacks) —
@@ -344,15 +369,56 @@ async def _generate_json(connector, prompt: str, system: str, max_tokens: int):
     correct itself — recovers the common case without failing the whole
     extraction outright on a model that just needs a second, sterner ask.
     If the retry ALSO isn't valid JSON, this raises ExtractionError same
-    as before — a genuine final failure, not silently swallowed."""
+    as before — a genuine final failure, not silently swallowed.
+
+    Quota enforcement (AIC-P7): one AIQuotaReservation is held for this
+    whole logical attempt — including the corrective retry above, which
+    is the SAME attempt asking the same model to fix its own answer, not
+    a second independent request — and one request_id is reused across
+    both real calls so ai_quota_service.commit_usage() records a single
+    ledger row with their combined real token usage (never a fabricated
+    estimate — see connector.last_usage's own docstring)."""
+    try:
+        reservation = await ai_quota_service.check_and_reserve(
+            db, organization_id=organization_id, connection=conn, user_id=user_id, prompt=prompt, max_tokens=max_tokens,
+        )
+    except ai_quota_service.AiQuotaExceededError as exc:
+        raise ExtractionError(str(exc)) from exc
+
+    request_id = str(uuid.uuid4())
+    usage_sum = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    usage_seen = False
+
+    def _accumulate() -> None:
+        nonlocal usage_seen
+        u = connector.last_usage
+        if u:
+            usage_seen = True
+            usage_sum["input_tokens"] += u.get("input_tokens") or 0
+            usage_sum["output_tokens"] += u.get("output_tokens") or 0
+            usage_sum["total_tokens"] += u.get("total_tokens") or 0
+
+    async def _commit(status: str, error_message: str | None):
+        await ai_quota_service.commit_usage(
+            db, reservation=reservation, organization_id=organization_id, connection_id=conn.id, user_id=user_id,
+            feature=feature, request_id=request_id, usage=usage_sum if usage_seen else None,
+            status=status, error_message=error_message,
+        )
+
     try:
         raw = await asyncio.to_thread(connector.generate, prompt, system=system, max_tokens=max_tokens)
     except ConnectorError as exc:
+        await ai_quota_service.release(db, reservation)
         raise ExtractionError(str(exc)) from exc
+    _accumulate()
     try:
-        return _parse_json(raw)
+        result = _parse_json(raw)
     except ExtractionError:
-        pass  # fall through to the corrective retry below
+        result = None  # fall through to the corrective retry below
+
+    if result is not None:
+        await _commit("SUCCESS", None)
+        return result
 
     repair_prompt = (
         f"{prompt}\n\n---\nYour previous response was NOT valid JSON — it started with:\n"
@@ -362,8 +428,16 @@ async def _generate_json(connector, prompt: str, system: str, max_tokens: int):
     try:
         raw2 = await asyncio.to_thread(connector.generate, repair_prompt, system=system, max_tokens=max_tokens)
     except ConnectorError as exc:
+        await _commit("FAILED", str(exc))
         raise ExtractionError(str(exc)) from exc
-    return _parse_json(raw2)
+    _accumulate()
+    try:
+        result = _parse_json(raw2)
+    except ExtractionError as exc:
+        await _commit("FAILED", str(exc))
+        raise
+    await _commit("SUCCESS", None)
+    return result
 
 
 DETECT_SCHEMA_SYSTEM = (
@@ -443,7 +517,7 @@ EXTRACT_SYSTEM = (
 
 async def detect_schema(
     db: AsyncSession, doc: Document, connection_id: int, organization_id: int | None,
-    *, document_type: str | None = None, extra_field_names: set[str] | None = None,
+    *, document_type: str | None = None, extra_field_names: set[str] | None = None, acting_user_id: int | None = None,
 ) -> list[dict]:
     """When document_type names a known canonical taxonomy (e.g. "INVOICE"
     — see document_taxonomies.py), skip the ad-hoc "guess 5-12 fields"
@@ -470,9 +544,12 @@ async def detect_schema(
             return seed_schema
 
     text, pages_used, total_pages = _page_aware_ocr_context(doc)
-    connector = await _get_connector(db, connection_id, organization_id)
+    connector, conn = await _get_connector(db, connection_id, organization_id, acting_user_id)
     prompt = f"Document type: {doc.doc_type.value}\nPages included: {len(pages_used)} of {total_pages}\n\nOCR TEXT BY PAGE:\n{text}"
-    parsed = await _generate_json(connector, prompt, DETECT_SCHEMA_SYSTEM, 2500)
+    parsed = await _generate_json(
+        db, connector, conn, organization_id=organization_id, user_id=acting_user_id,
+        feature="SCHEMA_DETECTION", prompt=prompt, system=DETECT_SCHEMA_SYSTEM, max_tokens=2500,
+    )
     if not isinstance(parsed, list):
         raise ExtractionError("The AI model's schema proposal wasn't a JSON array.")
 
@@ -508,6 +585,7 @@ async def detect_schema(
 
 async def extract_fields(
     db: AsyncSession, doc: Document, schema: list[dict], connection_id: int, organization_id: int | None,
+    acting_user_id: int | None = None,
 ) -> dict:
     if not schema:
         raise ExtractionError("No fields to extract.")
@@ -521,7 +599,7 @@ async def extract_fields(
         except custom_engine.CustomEngineError as exc:
             raise ExtractionError(str(exc)) from exc
     text, pages_used, total_pages = _page_aware_ocr_context(doc)
-    connector = await _get_connector(db, connection_id, organization_id)
+    connector, conn = await _get_connector(db, connection_id, organization_id, acting_user_id)
 
     def _describe(f: dict) -> str:
         if f.get("type") == "table":
@@ -547,7 +625,10 @@ async def extract_fields(
         pages_seen: set[int] = set()
         for chunk_text, chunk_pages, _total_pages in _page_chunks_for_ocr_context(doc):
             chunk_prompt = f"FIELDS TO EXTRACT:\n{schema_desc}\n\nPages included: {len(chunk_pages)} of {_total_pages}\n\nOCR TEXT BY PAGE:\n{chunk_text}"
-            parsed = await _generate_json(connector, chunk_prompt, EXTRACT_SYSTEM, max_tokens)
+            parsed = await _generate_json(
+                db, connector, conn, organization_id=organization_id, user_id=acting_user_id,
+                feature="FIELD_EXTRACTION", prompt=chunk_prompt, system=EXTRACT_SYSTEM, max_tokens=max_tokens,
+            )
             if not isinstance(parsed, dict):
                 raise ExtractionError("The AI model's extraction response wasn't a JSON object.")
             chunk_fields.append(_fields_from_parsed(schema, parsed))
@@ -557,7 +638,10 @@ async def extract_fields(
         pages_used = sorted(pages_seen)
         raw_model_response = chunk_payloads
     else:
-        parsed = await _generate_json(connector, prompt, EXTRACT_SYSTEM, max_tokens)
+        parsed = await _generate_json(
+            db, connector, conn, organization_id=organization_id, user_id=acting_user_id,
+            feature="FIELD_EXTRACTION", prompt=prompt, system=EXTRACT_SYSTEM, max_tokens=max_tokens,
+        )
         if not isinstance(parsed, dict):
             raise ExtractionError("The AI model's extraction response wasn't a JSON object.")
         fields_out = _fields_from_parsed(schema, parsed)
@@ -628,7 +712,7 @@ GAP_FILL_SYSTEM = (
 
 async def find_gap_fields(
     db: AsyncSession, doc: Document, connection_id: int, organization_id: int | None,
-    covered_field_names: list[str],
+    covered_field_names: list[str], acting_user_id: int | None = None,
 ) -> list[dict]:
     """Second-pass "did we miss anything" check — see detect_schema()'s
     document_type path: extraction there starts from a comprehensive but
@@ -640,11 +724,14 @@ async def find_gap_fields(
     list rather than being capped by it. Returns a schema-shaped field
     list (possibly empty) suitable for a follow-up extract_fields() call."""
     text, pages_used, total_pages = _page_aware_ocr_context(doc)
-    connector = await _get_connector(db, connection_id, organization_id)
+    connector, conn = await _get_connector(db, connection_id, organization_id, acting_user_id)
     covered = ", ".join(sorted(covered_field_names))
     prompt = f"ALREADY COVERED FIELDS:\n{covered}\n\nPages included: {len(pages_used)} of {total_pages}\n\nOCR TEXT BY PAGE:\n{text}"
     try:
-        parsed = await _generate_json(connector, prompt, GAP_FILL_SYSTEM, 1200)
+        parsed = await _generate_json(
+            db, connector, conn, organization_id=organization_id, user_id=acting_user_id,
+            feature="GAP_FILL", prompt=prompt, system=GAP_FILL_SYSTEM, max_tokens=1200,
+        )
     except ExtractionError:
         # Gap-fill is optional best-effort enrichment on top of an already-
         # extracted baseline — even after the corrective retry inside

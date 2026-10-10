@@ -36,6 +36,15 @@ class CustomerModuleItem(BaseModel):
     dependencies: list[str]
     dependencies_met: bool
     pending_invoice_id: int | None = None
+    # AI Connection Subscription (AIC-P4) — the Seller-controlled entitlement
+    # limits for the AI_CONNECTION module specifically; meaningless/None for
+    # every other module, same additive convention as every other column on
+    # this row (see models/customer_module.py's docstring).
+    max_tokens: int | None = None
+    token_period: str | None = None
+    ai_provider_bundle: list[str] | None = None
+    ai_rate_limit: int | None = None
+    ai_concurrency_limit: int | None = None
 
 
 class CustomerModulesOut(BaseModel):
@@ -50,6 +59,11 @@ class SetModuleRequest(BaseModel):
     monthly_credits: int | None = None
     max_documents: int | None = None
     expiry_date: datetime | None = None
+    max_tokens: int | None = None
+    token_period: str | None = None
+    ai_provider_bundle: list[str] | None = None
+    ai_rate_limit: int | None = None
+    ai_concurrency_limit: int | None = None
 
 
 class SetModuleOut(BaseModel):
@@ -63,6 +77,11 @@ class SetModuleOut(BaseModel):
     start_date: datetime | None
     expiry_date: datetime | None
     pending_invoice_id: int | None = None
+    max_tokens: int | None = None
+    token_period: str | None = None
+    ai_provider_bundle: list[str] | None = None
+    ai_rate_limit: int | None = None
+    ai_concurrency_limit: int | None = None
 
 
 class ModulePriceItem(BaseModel):

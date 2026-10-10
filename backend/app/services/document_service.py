@@ -47,7 +47,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import UploadFile
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -65,6 +65,8 @@ from app.ocr.language_errors import LanguageErrorCode, LanguageProcessingError
 from app.ocr.multilingual_ocr_service import detect_language_only, evaluate_ocr_quality, run_multilingual_ocr
 from app.services import extraction_service
 from app.services import document_taxonomies
+from app.services.ai_connection_access_service import ai_connection_access_service
+from app.services import ai_connection_resolver_service
 from app.services import document_storage_service
 from app.services import document_webhook_service
 from app.services import evidence_service
@@ -744,7 +746,9 @@ _AI_PROVIDER_SETTING_TO_CONNECTION_TYPE = {
 }
 
 
-async def _pick_ai_connections(db: AsyncSession, organization_id: int | None) -> list[Connection]:
+async def _pick_ai_connections(
+    db: AsyncSession, organization_id: int | None, acting_user: User | None = None,
+) -> list[Connection]:
     """Every ACTIVE AI_PROVIDER connection for this org, preferring the
     org's own Settings > AI > "AI Provider" choice first, then falling
     back to id order for the rest (same connections configured on the
@@ -776,8 +780,17 @@ async def _pick_ai_connections(db: AsyncSession, organization_id: int | None) ->
         Connection.status == ConnectionStatus.ACTIVE,
         Connection.is_active.is_(True),
     )
-    stmt = stmt.where(Connection.organization_id == organization_id) if organization_id is not None \
-        else stmt.where(Connection.organization_id.is_(None))
+    # Real bug found live (AIC-P7): this used to be an either/or — org's
+    # own connections XOR seller-managed (NULL-org) ones — so a real org
+    # could NEVER see a seller-managed connection it was actually entitled
+    # to use (see ai_connection_access_service.py's entitlement path and
+    # AIC-P4's per-org AI subscription limits), because the candidate list
+    # itself silently excluded every NULL-org row the moment organization_id
+    # was non-None. filter_accessible() below is what does the REAL
+    # authorization narrowing (entitlement/is_public/grant) — this query
+    # only needs to surface both scopes as candidates for it to filter.
+    stmt = stmt.where(or_(Connection.organization_id == organization_id, Connection.organization_id.is_(None))) \
+        if organization_id is not None else stmt.where(Connection.organization_id.is_(None))
     stmt = stmt.order_by(Connection.id.asc())
     result = await db.execute(stmt)
     connections = list(result.scalars().all())
@@ -787,7 +800,23 @@ async def _pick_ai_connections(db: AsyncSession, organization_id: int | None) ->
         preferred_type = _AI_PROVIDER_SETTING_TO_CONNECTION_TYPE.get(ai_settings.get("ai_provider"))
         if preferred_type is not None:
             connections.sort(key=lambda c: c.connection_type != preferred_type)
-    return connections
+    accessible = await ai_connection_access_service.filter_accessible(
+        db, connections=connections, organization_id=organization_id, acting_user=acting_user, required="use",
+    )
+    # "Default AI connection selection" (AIC-P6) — a real, explicitly
+    # configured default (per-user, then org-wide — see
+    # ai_connection_resolver_service.py) takes priority over the coarser
+    # Settings > AI type-preference sort above: move it to the front of
+    # the list if it's actually in the accessible set, otherwise leave
+    # the existing order untouched (a stale/inaccessible default is
+    # silently skipped here exactly as resolve_default() itself does).
+    if organization_id is not None and len(accessible) > 1:
+        default_conn = await ai_connection_resolver_service.resolve_default(
+            db, organization_id=organization_id, acting_user=acting_user,
+        )
+        if default_conn is not None:
+            accessible.sort(key=lambda c: c.id != default_conn.id)
+    return accessible
 
 
 def _conn_label(conn: Connection) -> str:
@@ -1142,7 +1171,14 @@ async def _run_ai_extraction(
         return [], None, "No OCR text available for AI Extraction.", None, None, {}
 
     with db.no_autoflush:
-        candidates = await _pick_ai_connections(db, doc.organization_id)
+        # No real interactive "current request user" in this automatic
+        # pipeline (see ai_connection_access_service.py's module docstring
+        # on acting_user being Optional) — the document's own uploader is
+        # the closest real "responsible person" available, same fallback
+        # already used elsewhere for attribution (e.g. Document.uploaded_by_id).
+        acting_user = await db.get(User, doc.uploaded_by_id) if doc.uploaded_by_id is not None else None
+        acting_user_id = doc.uploaded_by_id
+        candidates = await _pick_ai_connections(db, doc.organization_id, acting_user)
         if not candidates:
             fields, conf, skip_reason, extraction_meta = await _run_custom_engine_extraction(db, doc, document_type=document_type)
             return fields, conf, skip_reason, None, "CUSTOM_ENGINE", extraction_meta
@@ -1153,9 +1189,9 @@ async def _run_ai_extraction(
             result: dict | None = None
             try:
                 schema = await extraction_service.detect_schema(
-                    db, doc, conn.id, doc.organization_id, document_type=document_type,
+                    db, doc, conn.id, doc.organization_id, document_type=document_type, acting_user_id=acting_user_id,
                 )
-                result = await extraction_service.extract_fields(db, doc, schema, conn.id, doc.organization_id)
+                result = await extraction_service.extract_fields(db, doc, schema, conn.id, doc.organization_id, acting_user_id)
             except extraction_service.ExtractionError as exc:
                 ad_hoc_error = str(exc)
 
@@ -1168,7 +1204,7 @@ async def _run_ai_extraction(
                 try:
                     extra_names = await discover_known_field_names(db, doc.organization_id, document_type="GENERIC")
                     fallback_schema = document_taxonomies.build_seed_schema("GENERIC", extra_names)
-                    fallback_result = await extraction_service.extract_fields(db, doc, fallback_schema, conn.id, doc.organization_id)
+                    fallback_result = await extraction_service.extract_fields(db, doc, fallback_schema, conn.id, doc.organization_id, acting_user_id)
                     # Gap-fill (find_gap_fields) is deliberately NOT run here —
                     # a real, observed failure live: asked to propose a
                     # plausible-sounding field beyond the (already
@@ -1264,6 +1300,7 @@ async def discover_known_field_names(
 
 async def run_manual_ai_extraction(
     db: AsyncSession, doc: Document, *, document_type: str | None = None, connection_id: int | None = None,
+    acting_user_id: int | None = None,
 ) -> Document:
     """Backs the explicit "Run AI Extraction" action on Document Details /
     Review Queue — see api/documents.py's /run-extraction route. Unlike
@@ -1293,10 +1330,17 @@ async def run_manual_ai_extraction(
     the Custom Extraction Engine, explicitly requested. "Auto" with no
     AI Provider connection configured now falls back to the same engine
     too, instead of raising — matching the automatic pipeline's
-    behavior (_run_ai_extraction above)."""
+    behavior (_run_ai_extraction above).
+
+    acting_user_id is the real interactive caller (the route's current
+    user — see api/documents.py's /run-extraction), threaded through to
+    ai_connection_access_service.check_access() so this manual action is
+    gated by the same AI Connection permission model as every other AI
+    call site — an explicit connection_id pick doesn't bypass it."""
     if not doc.ocr_result or not (doc.ocr_result.get("full_text") or "").strip():
         raise ManualExtractionError("This document has no OCR text yet — run OCR first (Process/Reprocess).")
 
+    acting_user = await db.get(User, acting_user_id) if acting_user_id is not None else None
     use_custom_engine = connection_id == extraction_service.CUSTOM_ENGINE_CONNECTION_ID
     candidates: list[Connection] = []
     if not use_custom_engine:
@@ -1308,7 +1352,7 @@ async def run_manual_ai_extraction(
                 raise ManualExtractionError(f"'{_conn_label(conn)}' is not an AI Provider connection.")
             candidates = [conn]
         else:
-            candidates = await _pick_ai_connections(db, doc.organization_id)
+            candidates = await _pick_ai_connections(db, doc.organization_id, acting_user)
             if not candidates:
                 # No AI Provider connection configured for "Auto" -> fall
                 # back to the Custom Extraction Engine instead of failing
@@ -1325,10 +1369,10 @@ async def run_manual_ai_extraction(
         try:
             schema = await extraction_service.detect_schema(
                 db, doc, extraction_service.CUSTOM_ENGINE_CONNECTION_ID, doc.organization_id,
-                document_type=document_type, extra_field_names=extra_names,
+                document_type=document_type, extra_field_names=extra_names, acting_user_id=acting_user_id,
             )
             result = await extraction_service.extract_fields(
-                db, doc, schema, extraction_service.CUSTOM_ENGINE_CONNECTION_ID, doc.organization_id,
+                db, doc, schema, extraction_service.CUSTOM_ENGINE_CONNECTION_ID, doc.organization_id, acting_user_id,
             )
         except extraction_service.ExtractionError as exc:
             errors.append(f"Custom Extraction Engine: {exc}")
@@ -1340,8 +1384,9 @@ async def run_manual_ai_extraction(
                     extra_names = await discover_known_field_names(db, doc.organization_id, document_type=document_type)
                 schema = await extraction_service.detect_schema(
                     db, doc, conn.id, doc.organization_id, document_type=document_type, extra_field_names=extra_names,
+                    acting_user_id=acting_user_id,
                 )
-                result = await extraction_service.extract_fields(db, doc, schema, conn.id, doc.organization_id)
+                result = await extraction_service.extract_fields(db, doc, schema, conn.id, doc.organization_id, acting_user_id)
                 # Gap-fill (find_gap_fields) is deliberately NOT run for a known
                 # canonical document_type — see the matching comment in
                 # _run_ai_extraction() above for the real, observed fabrication

@@ -25,11 +25,14 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors.base import ConnectorError, ConnectorUnsupportedError
-from app.services import connection_service, sql_validator
+from app.models.user import User
+from app.services import ai_quota_service, connection_service, sql_validator
+from app.services.ai_connection_access_service import ai_connection_access_service
 
 MAX_TABLES_IN_CONTEXT = 25       # bounds prompt size when a schema is very wide
 MAX_COLUMNS_PER_TABLE = 40
@@ -61,31 +64,79 @@ def _parse_json(text: str):
     raise SqlAiError(f"The AI model's response wasn't valid JSON: {text[:400]!r}")
 
 
-async def _get_ai_connector(db: AsyncSession, ai_connection_id: int, organization_id: int | None):
-    conn = await connection_service.get_connection(db, ai_connection_id, organization_id)
+async def _get_ai_connector(db: AsyncSession, ai_connection_id: int, organization_id: int | None, acting_user: User | None = None):
+    conn = await connection_service.get_ai_connection(db, ai_connection_id, organization_id)
     if conn is None:
         raise SqlAiError("AI connection not found (it may have been deleted, or belongs to a different organization).")
     if conn.category.value != "AI_PROVIDER":
         raise SqlAiError(f"Connection '{conn.name}' is a {conn.category.value} connection, not an AI Provider — pick one from the AI Agent category.")
+    # Same mandatory authorization gate as every other AI call site — see
+    # ai_connection_access_service.py's module docstring. The SQL Workspace
+    # AI Assistant always has a real interactive user (unlike the document
+    # pipeline's automated contexts), so acting_user is expected non-None here.
+    access = await ai_connection_access_service.check_access(
+        db, organization_id=organization_id, acting_user=acting_user, connection_id=ai_connection_id, required="use",
+    )
+    if not access.granted:
+        raise SqlAiError(access.denial_message)
     try:
-        return connection_service.build_connector(conn)
+        connector = connection_service.build_connector(conn)
     except ConnectorError as exc:
         raise SqlAiError(str(exc)) from exc
+    return connector, conn
 
 
-async def _generate_json(connector, prompt: str, system: str, max_tokens: int) -> dict:
+async def _generate_json(
+    db: AsyncSession, connector, conn, *, organization_id: int | None, user_id: int | None,
+    prompt: str, system: str, max_tokens: int,
+) -> dict:
     """Same one-retry recovery as extraction_service._generate_json —
     hands the model its own bad response and asks it to correct itself
     before failing outright. See module docstring for why this isn't a
-    shared import across the two services."""
+    shared import across the two services. Also mirrors that module's
+    quota enforcement (AIC-P7): one reservation/one request_id spans
+    both real calls of this single logical attempt."""
+    try:
+        reservation = await ai_quota_service.check_and_reserve(
+            db, organization_id=organization_id, connection=conn, user_id=user_id, prompt=prompt, max_tokens=max_tokens,
+        )
+    except ai_quota_service.AiQuotaExceededError as exc:
+        raise SqlAiError(str(exc)) from exc
+
+    request_id = str(uuid.uuid4())
+    usage_sum = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    usage_seen = False
+
+    def _accumulate() -> None:
+        nonlocal usage_seen
+        u = connector.last_usage
+        if u:
+            usage_seen = True
+            usage_sum["input_tokens"] += u.get("input_tokens") or 0
+            usage_sum["output_tokens"] += u.get("output_tokens") or 0
+            usage_sum["total_tokens"] += u.get("total_tokens") or 0
+
+    async def _commit(status: str, error_message: str | None):
+        await ai_quota_service.commit_usage(
+            db, reservation=reservation, organization_id=organization_id, connection_id=conn.id, user_id=user_id,
+            feature="SQL_WORKSPACE_NL_TO_SQL", request_id=request_id, usage=usage_sum if usage_seen else None,
+            status=status, error_message=error_message,
+        )
+
     try:
         raw = await asyncio.to_thread(connector.generate, prompt, system=system, max_tokens=max_tokens)
     except ConnectorError as exc:
+        await ai_quota_service.release(db, reservation)
         raise SqlAiError(str(exc)) from exc
+    _accumulate()
     try:
-        return _parse_json(raw)
+        result = _parse_json(raw)
     except SqlAiError:
-        pass
+        result = None
+
+    if result is not None:
+        await _commit("SUCCESS", None)
+        return result
 
     repair_prompt = (
         f"{prompt}\n\n---\nYour previous response was NOT valid JSON — it started with:\n"
@@ -95,8 +146,16 @@ async def _generate_json(connector, prompt: str, system: str, max_tokens: int) -
     try:
         raw2 = await asyncio.to_thread(connector.generate, repair_prompt, system=system, max_tokens=max_tokens)
     except ConnectorError as exc:
+        await _commit("FAILED", str(exc))
         raise SqlAiError(str(exc)) from exc
-    return _parse_json(raw2)
+    _accumulate()
+    try:
+        result = _parse_json(raw2)
+    except SqlAiError as exc:
+        await _commit("FAILED", str(exc))
+        raise
+    await _commit("SUCCESS", None)
+    return result
 
 
 # ── Real schema-context building ────────────────────────────────────
@@ -172,7 +231,7 @@ NL_TO_SQL_SYSTEM = (
 
 async def generate_sql(
     db: AsyncSession, *, organization_id: int | None, connection_id: int, ai_connection_id: int,
-    question: str, schema_name: str | None, current_sql: str | None,
+    question: str, schema_name: str | None, current_sql: str | None, acting_user: User | None = None,
 ) -> dict:
     if not (question or "").strip():
         raise SqlAiError("Ask a question first.")
@@ -182,7 +241,7 @@ async def generate_sql(
         raise SqlAiError(f"Connection {connection_id} was not found.")
 
     schema_context = await build_schema_context(conn, schema_name)
-    ai_connector = await _get_ai_connector(db, ai_connection_id, organization_id)
+    ai_connector, ai_conn = await _get_ai_connector(db, ai_connection_id, organization_id, acting_user)
 
     prompt_parts = [
         f"SQL DIALECT: {_dialect_label(conn.connection_type.value)}",
@@ -193,7 +252,11 @@ async def generate_sql(
     prompt_parts.append(f"USER REQUEST: {question.strip()}")
     prompt = "\n\n".join(prompt_parts)
 
-    parsed = await _generate_json(ai_connector, prompt, NL_TO_SQL_SYSTEM, 1200)
+    acting_user_id = acting_user.id if acting_user is not None else None
+    parsed = await _generate_json(
+        db, ai_connector, ai_conn, organization_id=organization_id, user_id=acting_user_id,
+        prompt=prompt, system=NL_TO_SQL_SYSTEM, max_tokens=1200,
+    )
     if not isinstance(parsed, dict) or not parsed.get("sql"):
         raise SqlAiError("The AI model didn't return a usable SQL statement.")
 

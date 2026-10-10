@@ -25,7 +25,7 @@ simulated outcome.
 import asyncio
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.connection import AsyncSessionLocal
@@ -765,6 +765,29 @@ async def get_connection(db: AsyncSession, connection_id: int, organization_id: 
     stmt = select(Connection).where(Connection.id == connection_id, Connection.is_active.is_(True))
     if organization_id is not None:
         stmt = stmt.where(Connection.organization_id == organization_id)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def get_ai_connection(db: AsyncSession, connection_id: int, organization_id: int | None) -> Connection | None:
+    """Like get_connection(), but also returns a seller-managed connection
+    (Connection.organization_id IS NULL) when the caller has an org context.
+    get_connection()'s plain `organization_id == organization_id` filter
+    was written for org-owned database/file connections, where a NULL-org
+    row should never match a specific org's lookup — but AI Provider
+    connections are the one category where a NULL-org row is a deliberate,
+    intended object (a Seller-managed connection a customer org can be
+    entitled to use — see ai_connection_access_service.py). Without this,
+    extraction_service._get_connector()/sql_ai_service._get_ai_connector()
+    would 404 on exactly the connection ids ai_connection_permission_service
+    just granted a customer access to, since the standard lookup silently
+    excludes every NULL-org row the moment an organization_id is given.
+    The real authorization (entitlement/is_public/grant) still happens
+    afterward via check_access() — this only widens what gets FETCHED,
+    never what's allowed to be USED."""
+    stmt = select(Connection).where(Connection.id == connection_id, Connection.is_active.is_(True))
+    if organization_id is not None:
+        stmt = stmt.where(or_(Connection.organization_id == organization_id, Connection.organization_id.is_(None)))
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
 

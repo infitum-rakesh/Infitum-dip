@@ -134,6 +134,8 @@ SELLER_CATEGORIES = [
     "Licenses", "SellerUsers", "Audit", "Settings",
     # Multi-Subscription Billing & Payments Platform (2026)
     "Billing", "PaymentGateways",
+    # AI Connection Subscription & Organisation-Level Access Management
+    "AiConnections",
 ]
 
 _SELLER_FULL = {"VIEW", "CREATE", "EDIT", "DELETE", "EXECUTE", "ADMIN"}
@@ -154,6 +156,7 @@ SELLER_ROLE_ACTIONS: dict[str, dict[str, set[str]]] = {
     "SELLER_LICENSE_MANAGER": {
         "Dashboard": _SELLER_VIEW, "Subscriptions": _SELLER_RW, "Modules": _SELLER_RW,
         "Licenses": _SELLER_RW, "Audit": _SELLER_VIEW, "Billing": _SELLER_RW,
+        "AiConnections": _SELLER_RW,
     },
     "SELLER_SUPPORT": {
         "Dashboard": _SELLER_VIEW, "Customers": _SELLER_VIEW, "Usage": _SELLER_VIEW, "Audit": _SELLER_VIEW,

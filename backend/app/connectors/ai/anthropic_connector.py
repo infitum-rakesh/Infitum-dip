@@ -62,10 +62,23 @@ class AnthropicConnector(BaseConnector):
             if resp.status_code >= 400:
                 raise ConnectorError(self._scrub(f"Anthropic generation failed: HTTP {resp.status_code} {resp.text[:300]}"))
             data = resp.json()
+            self.last_usage = self._parse_usage(data)
             parts = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
             return "".join(parts)
         except httpx.RequestError as exc:
             raise ConnectorError(self._scrub(f"Could not reach Anthropic: {exc}")) from exc
+
+    @staticmethod
+    def _parse_usage(data: dict) -> dict | None:
+        """The Messages API's own top-level `usage` object — real
+        provider-reported counts (see base.py's last_usage docstring)."""
+        usage = data.get("usage")
+        if not usage:
+            return None
+        input_tokens = usage.get("input_tokens")
+        output_tokens = usage.get("output_tokens")
+        total = (input_tokens or 0) + (output_tokens or 0) if (input_tokens is not None or output_tokens is not None) else None
+        return {"input_tokens": input_tokens, "output_tokens": output_tokens, "total_tokens": total}
 
     def supports_vision(self) -> bool:
         model = self._model().lower()
@@ -87,6 +100,7 @@ class AnthropicConnector(BaseConnector):
             if resp.status_code >= 400:
                 raise ConnectorError(self._scrub(f"Anthropic vision generation failed: HTTP {resp.status_code} {resp.text[:300]}"))
             data = resp.json()
+            self.last_usage = self._parse_usage(data)
             parts = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
             return "".join(parts)
         except httpx.RequestError as exc:

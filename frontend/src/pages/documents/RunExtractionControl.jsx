@@ -37,7 +37,7 @@ export function RunExtractionControl({ documentId, onDone, size = 'sm' }) {
 
   useEffect(() => {
     documentApi.getDocumentTypes().then(setTypes).catch(() => setTypes([]));
-    connectionApi.list({ category: 'AI_PROVIDER', page_size: 50 })
+    connectionApi.listUsableAiConnections()
       .then((r) => {
         const items = r.items ?? [];
         setConnections(items);
@@ -57,7 +57,7 @@ export function RunExtractionControl({ documentId, onDone, size = 'sm' }) {
       await documentApi.runExtraction(documentId, documentType || null, connectionId || null);
       onDone?.();
     } catch (err) {
-      setError(err?.response?.data?.detail || err?.message || 'AI Extraction failed.');
+      setError(err?.message || 'AI Extraction failed.');
     } finally {
       setRunning(false);
     }
@@ -88,7 +88,9 @@ export function RunExtractionControl({ documentId, onDone, size = 'sm' }) {
         <option value="">AI connection: Auto</option>
         {connections.map((c) => (
           <option key={c.id} value={c.id}>
-            {c.name || `Connection #${c.id}`} — {c.connection_type}{c.status !== 'ACTIVE' ? ` (${c.status.toLowerCase()})` : ''}
+            {c.name || `Connection #${c.id}`} — {c.connection_type}
+            {c.is_seller_managed ? ' · Seller-managed' : ''}
+            {c.status !== 'ACTIVE' ? ` (${c.status.toLowerCase()})` : ''}
           </option>
         ))}
         <option value="0">Custom (No AI Required)</option>

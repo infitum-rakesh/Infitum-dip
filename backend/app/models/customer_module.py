@@ -27,6 +27,19 @@ the spec's "CREATE LICENSE" field list (Record Limit, Storage Limit —
 Maximum Documents/Monthly Credits already covered Document Limit/AI
 Credit Limit from Phase 4).
 
+AI Connection Subscription & Organisation-Level Access Management
+additions: `max_tokens`/`token_period`/`ai_provider_bundle`/
+`ai_rate_limit`/`ai_concurrency_limit` — this row IS the spec's "AI
+subscription" entitlement for the new AI_CONNECTION module key, extended
+rather than forked into a separate AIConnectionEntitlement table, for
+the same reason subscription_id was added here instead of a second
+table: it's the identical shape (Enabled/License Type/limits/expiry)
+the spec itself asks for, and every existing enforcement path
+(access_service.has_module_access, license_check, invoicing, audit) then
+works for AI subscriptions with zero new code. `max_users` above already
+covers the spec's "configurable user limit"; these five are additive
+and meaningless (left NULL) for every other module.
+
 Multi-Subscription Billing & Payments Platform (2026): this table IS the
 spec's "subscription_entitlement" concept — extended, not duplicated.
 `subscription_id` ties each row to the specific Subscription that grants
@@ -43,7 +56,7 @@ subscription.
 """
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.connection import PlatformBase
@@ -74,6 +87,14 @@ class CustomerModule(PlatformBase):
     max_documents: Mapped[int | None] = mapped_column(Integer, nullable=True)     # None = unlimited / not applicable — "Document Limit"
     max_records: Mapped[int | None] = mapped_column(Integer, nullable=True)       # None = unlimited / not applicable — "Record Limit"
     storage_limit_gb: Mapped[float | None] = mapped_column(Float, nullable=True)  # None = unlimited / not applicable — "Storage Limit"
+
+    # AI Connection Subscription fields — meaningless/NULL for every module
+    # other than AI_CONNECTION. See module docstring above.
+    max_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)         # None = unlimited — token budget
+    token_period: Mapped[str | None] = mapped_column(String(20), nullable=True)    # DAILY|MONTHLY|BILLING_CYCLE|TOTAL
+    ai_provider_bundle: Mapped[list | None] = mapped_column(JSON, nullable=True)   # e.g. ["OPENAI","ANTHROPIC"] — which ConnectionType(s) this entitlement covers; None = all
+    ai_rate_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)      # None = unlimited — requests per minute
+    ai_concurrency_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)  # None = unlimited — concurrent in-flight requests
 
     start_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expiry_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
