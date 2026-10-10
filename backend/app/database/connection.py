@@ -9,6 +9,21 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
+# Railway (and most managed Postgres providers) hand out a bare
+# postgres://.../postgresql://... DATABASE_URL with no driver suffix,
+# but create_async_engine() needs an async-capable DBAPI in the scheme —
+# asyncpg (already in requirements.txt) rather than the sync psycopg2
+# that bare "postgresql://" would otherwise resolve to. Normalize here
+# so any Postgres DATABASE_URL just works without hand-editing the env
+# var to add "+asyncpg" (and because psycopg2-binary is also installed
+# for Alembic-less tooling, SQLAlchemy would silently pick that sync
+# driver instead of erroring, then fail opaquely on the first await).
+_database_url = settings.database_url
+if _database_url.startswith("postgres://"):
+    _database_url = "postgresql+asyncpg://" + _database_url[len("postgres://"):]
+elif _database_url.startswith("postgresql://"):
+    _database_url = "postgresql+asyncpg://" + _database_url[len("postgresql://"):]
+
 # Multilingual Document Processing — real bug found live during repository
 # analysis (Phase 1/2 of the multilingual build): SQLAlchemy's JSON column
 # type falls back to plain json.dumps() when no json_serializer is given
@@ -47,7 +62,7 @@ _is_sqlite = settings.database_url.startswith("sqlite")
 # never bites there; the only cost is a (cheap, local-file) connection
 # open per session instead of a pooled reuse.
 engine = create_async_engine(
-    settings.database_url,
+    _database_url,
     echo=settings.app_debug,
     future=True,
     json_serializer=json_serializer,
