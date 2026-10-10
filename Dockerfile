@@ -24,4 +24,4 @@ COPY backend ./backend
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
 EXPOSE 8080
-CMD ["sh", "-c", "cd /app/backend && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+CMD ["sh", "-c", "cd /app/backend && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080} --proxy-headers --forwarded-allow-ips='*'"]
