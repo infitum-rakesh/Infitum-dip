@@ -37,7 +37,9 @@ class AdminUserStatsOut(BaseModel):
 
 class InviteResultOut(BaseModel):
     user: AdminUserOut
-    temp_password: str  # shown once — no email service is wired up (see service docstring)
+    temp_password: str  # shown once regardless — kept as the fallback even when email_delivered is True
+    email_delivered: bool | None = None  # None = send_invite=False, never attempted
+    email_detail: str | None = None
 
 
 class PasswordResetResultOut(BaseModel):

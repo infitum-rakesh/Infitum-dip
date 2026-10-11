@@ -37,7 +37,10 @@ from app.email_providers import registry
 from app.email_providers.base import EmailDeliveryResult
 from app.models.seller import Seller
 
-__all__ = ["EmailDeliveryResult", "get_smtp_config", "send_email", "send_test_email", "build_sales_inquiry_email", "build_welcome_email"]
+__all__ = [
+    "EmailDeliveryResult", "get_smtp_config", "send_email", "send_test_email",
+    "build_sales_inquiry_email", "build_welcome_email", "build_invite_email",
+]
 
 
 async def get_smtp_config(db: AsyncSession) -> dict:
@@ -105,6 +108,27 @@ def build_welcome_email(*, org_name: str, full_name: str, email: str, temp_passw
         f"Temporary password: {temp_password}\n\n"
         f"You'll be asked to sign in with this password — we recommend changing it after your first login "
         f"(Administration → Users → your profile).\n\n"
+        f"— DataIntelligence Platform"
+    )
+    return subject, body
+
+
+def build_invite_email(*, full_name: str, email: str, temp_password: str, login_url: str, role_label: str, org_name: str | None = None) -> tuple[str, str]:
+    """Shared by both real invite flows that generate a temp password —
+    services/user_admin_service.invite_user() (an org-scoped user) and
+    services/seller/seller_user_service.invite_user() (a Seller Portal
+    user, org_name=None). Deliberately separate from build_welcome_email()
+    above (the Seller-onboards-a-customer-org flow) since this one has no
+    org to introduce the recipient to when org_name is None."""
+    where = f" at {org_name}" if org_name else ""
+    subject = f"Your DataIntelligence Platform account{where} is ready"
+    body = (
+        f"Hi {full_name},\n\n"
+        f"An account has been created for you{where} on the DataIntelligence Platform with the {role_label} role.\n\n"
+        f"Login: {login_url}\n"
+        f"Email: {email}\n"
+        f"Temporary password: {temp_password}\n\n"
+        f"You'll be asked to sign in with this password — we recommend changing it after your first login.\n\n"
         f"— DataIntelligence Platform"
     )
     return subject, body

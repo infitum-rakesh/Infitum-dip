@@ -1,12 +1,14 @@
 /**
  * InviteSellerUserModal — "+ Invite Seller User" on the Seller Users page.
- * POSTs to /api/seller/users (see sellerUserApi.invite). No email service
- * is wired up anywhere in this app, so the response's one-time
- * temp_password is shown here for the admin to hand off manually — same
- * convention as InviteUserModal.jsx (Administration -> Users).
+ * POSTs to /api/seller/users (see sellerUserApi.invite), which both
+ * returns a one-time temp_password for the admin to hand off manually
+ * AND attempts a real invite email when Seller Settings -> Email is
+ * configured (email_delivered/email_detail reflect the real outcome,
+ * never a hardcoded assumption) — same convention as
+ * CreateCustomerModal.jsx and InviteUserModal.jsx (Administration -> Users).
  */
 import { useState } from 'react';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, CheckCircle2, XCircle, Mail } from 'lucide-react';
 import { Modal, Button } from '@/components/common/index.js';
 import { sellerUserApi } from '@/services/api/seller/sellerUserApi.js';
 import './seller-users.css';
@@ -73,8 +75,14 @@ export function InviteSellerUserModal({ open, onClose, onInvited }) {
               {copied ? 'Copied' : 'Copy'}
             </Button>
           </div>
+          {result.email_delivered != null && (
+            <p className="su-credential-note" style={{ display: 'flex', alignItems: 'center', gap: 6, color: result.email_delivered ? 'var(--success, #10B981)' : 'var(--danger, #DC2626)' }}>
+              {result.email_delivered ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
+              <Mail size={13} /> {result.email_delivered ? `Emailed to ${result.user.email}.` : result.email_detail}
+            </p>
+          )}
           <p className="su-credential-note">
-            No email service is configured yet — share this password with the user yourself.
+            Share this password with the user yourself if the email above didn't arrive.
             It won't be shown again; use "Reset Password" from the row menu if it's lost.
           </p>
         </div>

@@ -93,10 +93,14 @@ async def get_user(user_id: int, user: User = Depends(_admin), db: AsyncSession 
 @router.post("", response_model=InviteResultOut, status_code=status.HTTP_201_CREATED)
 async def invite_user(body: InviteUserRequest, user: User = Depends(_admin), db: AsyncSession = Depends(get_db)):
     try:
-        target, temp_password = await svc.invite_user(db, organization_id=user.organization_id, actor_id=user.id, body=body)
+        target, temp_password, email_result = await svc.invite_user(db, organization_id=user.organization_id, actor_id=user.id, body=body)
     except svc.UserAdminValidationError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
-    return InviteResultOut(user=_out(target), temp_password=temp_password)
+    return InviteResultOut(
+        user=_out(target), temp_password=temp_password,
+        email_delivered=email_result.delivered if email_result else None,
+        email_detail=email_result.detail if email_result else None,
+    )
 
 
 @router.put("/{user_id}", response_model=AdminUserOut)

@@ -4,13 +4,15 @@ staff accounts (User rows with role=SELLER, organization_id=NULL), distinct
 from Phase 2's Customers "Users" tab which manages a *customer's* org
 users. Same underlying User/UserActivityLog models, different scope.
 
-No real email service exists in this codebase (see user_admin_service's
-docstring) — Invite/Reset Password follow the exact same "generate a temp
-password server-side, return it once" pattern rather than pretending an
-email was sent. UserActivityLog is keyed by user_id only (not
-org-scoped), so get_activity()/get_login_history()/actor_name_map()/
-activity_to_out() from user_admin_service are reused directly rather than
-duplicated.
+Invite always generates a temp password server-side and returns it once
+(same as Reset Password) regardless of email outcome — never the sole
+way to get it if delivery fails or no provider is configured. When
+email_service IS configured (Seller Settings → Email), invite_user() also
+attempts a real send and reports delivered/detail back, same pattern
+services/seller/customer_service.create_customer() already established.
+UserActivityLog is keyed by user_id only (not org-scoped), so
+get_activity()/get_login_history()/actor_name_map()/activity_to_out()
+from user_admin_service are reused directly rather than duplicated.
 
 Every mutation also writes a SellerAuditLog row via record_seller_event
 (seller_user_id=actor, customer_id=None — these events aren't about any
@@ -116,7 +118,7 @@ async def _other_admin_count(db: AsyncSession, exclude_user_id: int) -> int:
 
 # ── Invite / create ──────────────────────────────────────────────
 
-async def invite_user(db: AsyncSession, *, actor: User, body, ip_address: str | None = None) -> tuple[User, str]:
+async def invite_user(db: AsyncSession, *, actor: User, body, ip_address: str | None = None):
     exists = await db.execute(select(User).where(User.email == body.email.lower()))
     if exists.scalar_one_or_none():
         raise SellerUserServiceError("A user with this email already exists.")
@@ -151,7 +153,22 @@ async def invite_user(db: AsyncSession, *, actor: User, body, ip_address: str | 
         resource=user.full_name, resource_id=str(user.id), ip_address=ip_address,
         after_value={"email": user.email, "seller_role": user.seller_role},
     )
-    return user, temp_password
+
+    from app.core.config import get_settings
+    from app.services import email_service
+    subject, body_text = email_service.build_invite_email(
+        full_name=user.full_name, email=user.email, temp_password=temp_password,
+        login_url=f"{get_settings().frontend_base_url}/login",
+        role_label=(body.seller_role or "SELLER_ADMIN").replace("_", " ").title(),
+    )
+    email_result = await email_service.send_email(db, to=user.email, subject=subject, body=body_text)
+    await record_seller_event(
+        db, seller_user_id=actor.id, customer_id=None, action="Seller User Invite Email",
+        resource=user.email, resource_id=str(user.id), ip_address=ip_address,
+        details=email_result.detail, after_value={"delivered": email_result.delivered},
+    )
+
+    return user, temp_password, email_result
 
 
 # ── Update / role / status ───────────────────────────────────────

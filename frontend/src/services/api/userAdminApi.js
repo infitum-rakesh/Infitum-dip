@@ -1,9 +1,11 @@
 /**
  * User admin API service — wraps all /api/admin/users/* endpoints.
  * Components must never call apiClient directly; go through this module.
- * No email service is wired up anywhere in this app — Invite and Reset
- * Password return a one-time temp_password instead of silently emailing
- * one out (see backend user_admin_service.py).
+ * Invite and Reset Password always return a one-time temp_password (never
+ * the sole way to get it if email delivery fails); Invite additionally
+ * attempts a real email when Seller Settings -> Email is configured and
+ * reports the real email_delivered/email_detail outcome back (see
+ * backend user_admin_service.py).
  */
 import apiClient from './apiClient.js';
 

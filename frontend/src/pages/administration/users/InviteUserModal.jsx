@@ -1,12 +1,14 @@
 /**
  * InviteUserModal — "+ Invite User" on the Users admin page.
- * POSTs to /api/admin/users (see userAdminApi.invite). No email service is
- * wired up anywhere in this app, so the response's one-time temp_password
- * is shown here for the admin to hand off manually — see
+ * POSTs to /api/admin/users (see userAdminApi.invite), which both returns
+ * a one-time temp_password for the admin to hand off manually AND, when
+ * "Send invitation email" is checked and Seller Settings -> Email is
+ * configured, attempts a real send and reports the real outcome
+ * (email_delivered/email_detail) — see
  * backend/app/services/user_admin_service.py module docstring.
  */
 import { useState } from 'react';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, CheckCircle2, XCircle, Mail } from 'lucide-react';
 import { Modal, Button } from '@/components/common/index.js';
 import { userAdminApi } from '@/services/api/userAdminApi.js';
 import './users.css';
@@ -73,8 +75,14 @@ export function InviteUserModal({ open, onClose, onInvited }) {
               {copied ? 'Copied' : 'Copy'}
             </Button>
           </div>
+          {result.email_delivered != null && (
+            <p className="usr-credential-note" style={{ display: 'flex', alignItems: 'center', gap: 6, color: result.email_delivered ? 'var(--success, #10B981)' : 'var(--danger, #DC2626)' }}>
+              {result.email_delivered ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
+              <Mail size={13} /> {result.email_delivered ? `Emailed to ${result.user.email}.` : result.email_detail}
+            </p>
+          )}
           <p className="usr-credential-note">
-            No email service is configured yet — share this password with the user yourself.
+            Share this password with the user yourself if the email above didn't arrive, or wasn't sent.
             It won't be shown again; use "Reset Password" from their profile if it's lost.
           </p>
         </div>

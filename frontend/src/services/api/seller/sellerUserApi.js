@@ -1,9 +1,11 @@
 /**
  * Seller Portal -> Seller Users API — wraps /api/seller/users/* (Phase 7).
  * Manages the Seller's OWN staff accounts — see
- * backend/app/services/seller/seller_user_service.py. Nothing here is
- * mocked; Invite/Reset Password return a one-time temp_password since no
- * email service exists in this codebase (same convention as userAdminApi.js).
+ * backend/app/services/seller/seller_user_service.py. Invite/Reset
+ * Password always return a one-time temp_password regardless of email
+ * outcome; Invite additionally attempts a real email when Seller Settings
+ * -> Email is configured and reports the real email_delivered/
+ * email_detail outcome back (same convention as userAdminApi.js).
  */
 import apiClient from '../apiClient.js';
 

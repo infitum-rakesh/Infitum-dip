@@ -88,10 +88,13 @@ async def get_user(user_id: int, user: User = Depends(_view), db: AsyncSession =
 @router.post("", response_model=InviteSellerUserResultOut, status_code=status.HTTP_201_CREATED)
 async def invite_user(body: InviteSellerUserRequest, request: Request, user: User = Depends(_create), db: AsyncSession = Depends(get_db)):
     try:
-        target, temp_password = await svc.invite_user(db, actor=user, body=body, ip_address=_client_ip(request))
+        target, temp_password, email_result = await svc.invite_user(db, actor=user, body=body, ip_address=_client_ip(request))
     except svc.SellerUserServiceError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
-    return InviteSellerUserResultOut(user=_out(target), temp_password=temp_password)
+    return InviteSellerUserResultOut(
+        user=_out(target), temp_password=temp_password,
+        email_delivered=email_result.delivered, email_detail=email_result.detail,
+    )
 
 
 @router.put("/{user_id}", response_model=SellerUserOut)

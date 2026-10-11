@@ -2,14 +2,15 @@
 Users admin service — organization admins managing users belonging to
 their own organization.
 
-No real email service exists in this codebase (grepped: nothing sends
-mail anywhere), so "Invite" and "Reset Password" are simulated the same
-way connection_service.test_connection()/schedule_service.execute_schedule()
-simulate their own missing real engines: a secure temp password is
-generated server-side and returned ONCE in the API response for the admin
-to hand off manually, instead of silently doing nothing or pretending an
-email was sent. `InviteUserRequest.send_invite` is kept as a UI-facing
-toggle for when a real mailer is wired up later.
+Invite always generates a secure temp password server-side and returns
+it once in the API response regardless of email outcome — never the
+sole way to get it if delivery fails or `send_invite` is off. When
+`InviteUserRequest.send_invite` is True, invite_user() also attempts a
+real send via services/email_service (Seller Settings → Email must be
+configured) and reports delivered/detail back, same pattern
+services/seller/customer_service.create_customer() already established.
+Reset Password still only returns the temp password — no corresponding
+reset-notification email flow exists yet.
 """
 import secrets
 
@@ -114,7 +115,7 @@ async def get_stats(db: AsyncSession, organization_id: int | None) -> dict:
 
 # ── Invite / create ──────────────────────────────────────────────
 
-async def invite_user(db: AsyncSession, *, organization_id: int | None, actor_id: int | None, body) -> tuple[User, str]:
+async def invite_user(db: AsyncSession, *, organization_id: int | None, actor_id: int | None, body):
     exists = await db.execute(select(User).where(User.email == body.email.lower()))
     if exists.scalar_one_or_none():
         raise UserAdminValidationError("A user with this email already exists.")
@@ -124,6 +125,7 @@ async def invite_user(db: AsyncSession, *, organization_id: int | None, actor_id
     except ValueError:
         raise UserAdminValidationError(f"Invalid role: {body.role}")
 
+    org = None
     if organization_id is not None:
         org_result = await db.execute(select(Organization).where(Organization.id == organization_id))
         org = org_result.scalar_one_or_none()
@@ -154,7 +156,19 @@ async def invite_user(db: AsyncSession, *, organization_id: int | None, actor_id
     ))
     await db.commit()
     await db.refresh(user)
-    return user, temp_password
+
+    email_result = None
+    if body.send_invite:
+        from app.core.config import get_settings
+        from app.services import email_service
+        subject, body_text = email_service.build_invite_email(
+            full_name=user.full_name, email=user.email, temp_password=temp_password,
+            login_url=f"{get_settings().frontend_base_url}/login",
+            role_label=role.value.replace("_", " ").title(), org_name=org.name if org else None,
+        )
+        email_result = await email_service.send_email(db, to=user.email, subject=subject, body=body_text)
+
+    return user, temp_password, email_result
 
 
 # ── Update / role / status ───────────────────────────────────────
