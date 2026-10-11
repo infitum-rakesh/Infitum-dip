@@ -21,6 +21,7 @@ sent something, matching notification_channels.EmailChannel's contract.
 from __future__ import annotations
 
 import smtplib
+import socket
 from email.mime.text import MIMEText
 
 from sqlalchemy import select
@@ -28,6 +29,40 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import crypto
 from app.models.seller import Seller
+
+
+class IPv4SMTP(smtplib.SMTP):
+    """smtplib.SMTP, but the connection is forced over IPv4.
+
+    Found live on Railway: smtp.gmail.com (and most real SMTP hosts)
+    publish both A and AAAA records. Plain smtplib.SMTP() resolves via
+    socket.create_connection(), which tries whatever address family
+    getaddrinfo() returns first — on Railway's network (no outbound IPv6
+    route) an AAAA hit fails immediately with [Errno 101] Network is
+    unreachable, the exact error surfaced in Seller Settings -> Email's
+    "Send Test" even though the same code works fine locally (where IPv6
+    either isn't offered or actually routes). The hostname itself is
+    still passed to the SMTP constructor unchanged, so STARTTLS
+    certificate verification (which checks the connection's hostname,
+    not its IP) is unaffected."""
+
+    def _get_socket(self, host, port, timeout):
+        if timeout is not None and not timeout:
+            raise ValueError("Non-blocking socket (timeout=0) is not supported")
+        last_err: OSError | None = None
+        for family, socktype, proto, _canonname, sockaddr in socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM):
+            sock = socket.socket(family, socktype, proto)
+            try:
+                if timeout is not None:
+                    sock.settimeout(timeout)
+                if self.source_address:
+                    sock.bind(self.source_address)
+                sock.connect(sockaddr)
+                return sock
+            except OSError as exc:
+                sock.close()
+                last_err = exc
+        raise last_err or OSError(f"No IPv4 address found for {host}")
 
 
 class EmailDeliveryResult:
@@ -61,7 +96,7 @@ async def send_email(db: AsyncSession, *, to: str, subject: str, body: str) -> E
         msg["Subject"] = subject
         msg["From"] = cfg.get("from_address") or "no-reply@dip.local"
         msg["To"] = to
-        with smtplib.SMTP(host, int(cfg.get("port", 587)), timeout=10) as server:
+        with IPv4SMTP(host, int(cfg.get("port", 587)), timeout=10) as server:
             if cfg.get("use_tls", True):
                 server.starttls()
             username = cfg.get("username")

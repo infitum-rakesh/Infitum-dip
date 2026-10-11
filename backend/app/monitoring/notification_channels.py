@@ -59,14 +59,14 @@ class EmailChannel(NotificationChannel):
                 "detail": "SMTP is not configured for this organization — Email channel is wired but has no transport to send through yet.",
             }
 
-        import smtplib
         from email.mime.text import MIMEText
+        from app.services.email_service import IPv4SMTP
         try:
             msg = MIMEText(event.get("message", ""))
             msg["Subject"] = f"[{event.get('severity', 'ALERT')}] {event.get('rule_name', 'Alert')}"
             msg["From"] = smtp_cfg.get("from_address") or "dip-monitoring@localhost"
             msg["To"] = to_addr
-            with smtplib.SMTP(host, int(smtp_cfg.get("port", 587)), timeout=10) as server:
+            with IPv4SMTP(host, int(smtp_cfg.get("port", 587)), timeout=10) as server:
                 if smtp_cfg.get("use_tls", True):
                     server.starttls()
                 if smtp_cfg.get("username"):
