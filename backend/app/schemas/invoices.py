@@ -53,6 +53,14 @@ class ApInvoiceListOut(BaseModel):
     page_size: int
 
 
+class ApInvoiceAmountConvertedOut(BaseModel):
+    converted_total: float | None = None
+    display_currency: str
+    included_currencies: list[str] = []
+    excluded_currencies: list[str] = []
+    error: str | None = None  # set instead of converted_total when live rates couldn't be fetched
+
+
 class ApInvoiceStatsOut(BaseModel):
     total: int
     by_status: dict[str, int]
@@ -61,7 +69,15 @@ class ApInvoiceStatsOut(BaseModel):
     straight_through: int
     rejected: int
     duplicate_blocked: int
-    total_amount: float
+    # Real per-currency sums — replaces the old single "total_amount" field,
+    # which summed every invoice's total regardless of currency and
+    # mislabeled the mixed result "$" (found live: USD + INR + AUD invoices
+    # in the same org). "UNKNOWN" buckets invoices with no currency recorded.
+    total_by_currency: dict[str, float]
+    # Present only when the caller passed ?display_currency=... — a real,
+    # live-rate conversion of total_by_currency into one number, never a
+    # guessed/fabricated rate.
+    total_amount_converted: ApInvoiceAmountConvertedOut | None = None
 
 
 # ── Detail ───────────────────────────────────────────────────────

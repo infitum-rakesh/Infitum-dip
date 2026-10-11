@@ -15,7 +15,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Receipt, Upload, FileArchive, Layers, X, FileText } from 'lucide-react';
+import { Receipt, Upload, FileArchive, Layers, X, FileText, Info } from 'lucide-react';
 import {
   Button, StatusBadge, DataTable, SearchBox, EmptyState, Modal, PermissionGate, FileUploader,
 } from '@/components/common/index.js';
@@ -92,6 +92,17 @@ function formatCurrency(n, currency = 'USD') {
   }
 }
 
+// For the "UNKNOWN" currency bucket (invoices with a blank/missing currency
+// on the real row — found live, a separate AI-extraction data-quality gap
+// from the conversion bug this fixes). Never runs these through
+// formatCurrency(), which would silently imply USD.
+function formatPlainNumber(n) {
+  if (n === null || n === undefined) return '—';
+  return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(n);
+}
+
+const COMMON_DISPLAY_CURRENCIES = ['USD', 'INR', 'EUR', 'GBP', 'AUD', 'CAD', 'SGD', 'JPY'];
+
 // STATUS_VARIANT used to be a hand-guessed { NEEDS_REVIEW, COMPLETED,
 // REJECTED, FAILED } — none of which (bar REJECTED) exist on the real
 // ApInvoiceStatus enum, and the Status filter dropdown offered exactly
@@ -111,6 +122,13 @@ export default function InvoiceInbox() {
   const navigate = useNavigate();
 
   const [stats, setStats] = useState(null);
+  // Which currency the "Total Amount" KPI is converted into — real invoices
+  // span multiple currencies (found live: USD/blank + INR + AUD in the same
+  // org), so this drives a live FX conversion via GET /invoices/stats
+  // rather than ever summing raw totals across currencies.
+  const [displayCurrency, setDisplayCurrency] = useState('USD');
+  const [showCurrencyBreakdown, setShowCurrencyBreakdown] = useState(false);
+  const currencyInfoRef = useRef(null);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
@@ -146,11 +164,20 @@ export default function InvoiceInbox() {
   useEffect(() => { persistProcessingDocs(processingDocs); }, [processingDocs]);
 
   useEffect(() => {
+    if (!showCurrencyBreakdown) return undefined;
+    const onOutside = (e) => {
+      if (currencyInfoRef.current && !currencyInfoRef.current.contains(e.target)) setShowCurrencyBreakdown(false);
+    };
+    document.addEventListener('mousedown', onOutside);
+    return () => document.removeEventListener('mousedown', onOutside);
+  }, [showCurrencyBreakdown]);
+
+  useEffect(() => {
     const t = setTimeout(() => { setSearch(searchInput); setPage(1); }, 300);
     return () => clearTimeout(t);
   }, [searchInput]);
 
-  const loadStats = useCallback(() => { invoiceApi.getStats().then(setStats).catch(() => {}); }, []);
+  const loadStats = useCallback(() => { invoiceApi.getStats(displayCurrency).then(setStats).catch(() => {}); }, [displayCurrency]);
   useEffect(() => { loadStats(); }, [loadStats]);
 
   const loadItems = useCallback(() => {
@@ -282,8 +309,26 @@ export default function InvoiceInbox() {
     { label: 'Straight-Through', value: stats ? stats.straight_through : '—', variant: 'success' },
     { label: 'Rejected', value: stats ? stats.rejected : '—', variant: 'danger' },
     { label: 'Duplicate Blocked', value: stats ? stats.duplicate_blocked : '—', variant: 'danger' },
-    { label: 'Total Amount', value: stats ? formatCurrency(stats.total_amount) : '—', variant: 'info' },
   ];
+
+  // Real invoices span multiple currencies (found live: USD/blank + INR +
+  // AUD in the same org) — stats.total_by_currency is the honest per-currency
+  // breakdown, stats.total_amount_converted is a live-FX conversion of it
+  // into displayCurrency (never a naive sum mislabeled as one currency).
+  const currencyChoices = Array.from(new Set([
+    ...(stats ? Object.keys(stats.total_by_currency).filter((c) => c !== 'UNKNOWN') : []),
+    ...COMMON_DISPLAY_CURRENCIES,
+  ]));
+  const conv = stats?.total_amount_converted;
+  const breakdownEntries = stats ? Object.entries(stats.total_by_currency).filter(([, amt]) => amt) : [];
+  const breakdownText = breakdownEntries
+    .map(([cur, amt]) => (cur === 'UNKNOWN' ? `Unknown currency ${formatPlainNumber(amt)}` : `${cur} ${formatPlainNumber(amt)}`))
+    .join(' · ');
+  // Icon color signals data quality, not conversion success: red specifically
+  // when a blank/unrecognized-currency invoice exists (the one case where an
+  // amount is silently excluded from every total regardless of which
+  // currency is selected), green otherwise.
+  const hasUnknownCurrency = breakdownEntries.some(([cur]) => cur === 'UNKNOWN');
 
   const hasActiveFilters = search || Object.entries(filters).some(([k, v]) => v && v !== 'All' && k !== 'vendor') || filters.vendor;
 
@@ -333,6 +378,49 @@ export default function InvoiceInbox() {
               <div className="inv-kpi-label">{k.label}</div>
             </div>
           ))}
+          <div className="inv-kpi-card">
+            <div className="inv-kpi-currency-header">
+              <span className="inv-kpi-label">Total Amount</span>
+              <div className="inv-kpi-currency-controls">
+                <select
+                  className="inv-select inv-select-sm"
+                  value={displayCurrency}
+                  onChange={(e) => setDisplayCurrency(e.target.value)}
+                  title="Convert total to this currency using live exchange rates"
+                >
+                  {currencyChoices.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+                {stats && breakdownText && (
+                  <div className="inv-kpi-info-wrap" ref={currencyInfoRef}>
+                    <button
+                      type="button"
+                      className={`inv-kpi-info-btn ${hasUnknownCurrency ? 'inv-kpi-info-btn-danger' : 'inv-kpi-info-btn-success'}`}
+                      onClick={() => setShowCurrencyBreakdown((v) => !v)}
+                      aria-label="View currency breakdown"
+                      title={hasUnknownCurrency ? 'Currency breakdown — includes an unknown-currency invoice' : 'Currency breakdown'}
+                    >
+                      <Info size={11} />
+                    </button>
+                    {showCurrencyBreakdown && (
+                      <div className="inv-kpi-info-popover">
+                        {breakdownText}
+                        {conv?.excluded_currencies?.length ? (
+                          <div className="inv-kpi-breakdown-warn-line">Excluded from total: {conv.excluded_currencies.join(', ')}</div>
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+            {!stats ? (
+              <div className="inv-kpi-val">—</div>
+            ) : conv?.error ? (
+              <div className="inv-kpi-val inv-kpi-val-danger" title={conv.error}>Rates unavailable</div>
+            ) : (
+              <div className="inv-kpi-val inv-kpi-val-info">{formatCurrency(conv?.converted_total, conv?.display_currency)}</div>
+            )}
+          </div>
         </div>
 
         <div className="inv-toolbar">

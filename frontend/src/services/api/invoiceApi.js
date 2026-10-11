@@ -56,7 +56,10 @@ export const RECONCILIATION_STATUSES = ['NOT_STARTED', 'RECONCILED', 'MISMATCH',
 
 export const invoiceApi = {
   // ── KPIs / list ──────────────────────────────────────────────
-  getStats: () => apiClient.get('/invoices/stats').then((r) => r.data),
+  getStats: (displayCurrency) =>
+    apiClient
+      .get('/invoices/stats', { params: cleanParams({ display_currency: displayCurrency }) })
+      .then((r) => r.data),
 
   /** params: { q, status, decision, vendor, date_from, date_to, page,
    * page_size, sort_by, sort_dir } — see api/invoices.py's list_invoices(). */

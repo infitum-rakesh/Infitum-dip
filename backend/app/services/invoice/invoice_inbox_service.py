@@ -25,6 +25,7 @@ from app.models.invoice_intelligence.core import ApInvoice, ApInvoiceDecision, A
 from app.models.invoice_intelligence.rules import ApInvoiceValidationResult
 from app.models.review_queue import ReviewAuditLog, ReviewQueueItem, ReviewStatus
 from app.models.user import User
+from app.services import currency_service
 
 
 class InvoiceInboxError(Exception):
@@ -100,10 +101,21 @@ async def list_invoices(
     return list(result.scalars().all()), total
 
 
-async def get_stats(db: AsyncSession, organization_id: int | None) -> dict:
+async def get_stats(db: AsyncSession, organization_id: int | None, *, display_currency: str | None = None) -> dict:
     """Inbox KPI cards — real counts/sums, grouped by the same
     status/decision enums the detail view uses, not a separate
-    ad-hoc bucketing."""
+    ad-hoc bucketing.
+
+    Real bug found live: the "Total Amount" card used to SUM every
+    ApInvoice.total regardless of currency and label the mixed result "$"
+    — silently wrong the moment an org had invoices in more than one
+    currency (confirmed live: USD + INR + AUD invoices summed into one
+    dollar figure). `total_by_currency` replaces that with an honest
+    per-currency breakdown; passing `display_currency` additionally
+    converts those sums into one real total via currency_service's live
+    FX rates — never a guessed/fabricated rate, and anything that
+    couldn't be converted (an unrecognized or blank currency code) is
+    reported back separately rather than silently folded in."""
     org_filter = [ApInvoice.organization_id == organization_id] if organization_id is not None else []
 
     total_result = await db.execute(select(func.count()).select_from(ApInvoice).where(*org_filter))
@@ -115,8 +127,22 @@ async def get_stats(db: AsyncSession, organization_id: int | None) -> dict:
     by_decision_result = await db.execute(select(ApInvoice.final_decision, func.count()).where(*org_filter).group_by(ApInvoice.final_decision))
     by_decision = {(row[0].value if row[0] else "PENDING"): row[1] for row in by_decision_result.all()}
 
-    total_amount_result = await db.execute(select(func.coalesce(func.sum(ApInvoice.total), 0.0)).where(*org_filter))
-    total_amount = total_amount_result.scalar_one() or 0.0
+    currency_key = func.coalesce(func.nullif(ApInvoice.currency, ""), "UNKNOWN")
+    by_currency_result = await db.execute(
+        select(currency_key, func.coalesce(func.sum(ApInvoice.total), 0.0)).where(*org_filter).group_by(currency_key)
+    )
+    total_by_currency = {row[0]: round(row[1] or 0.0, 2) for row in by_currency_result.all()}
+
+    total_amount_converted = None
+    if display_currency:
+        convertible = {c: amt for c, amt in total_by_currency.items() if c != "UNKNOWN"}
+        try:
+            total_amount_converted = await currency_service.convert_amounts(convertible, display_currency)
+        except currency_service.CurrencyServiceError as exc:
+            total_amount_converted = {"error": str(exc), "display_currency": display_currency.upper()}
+        if "UNKNOWN" in total_by_currency and "error" not in total_amount_converted:
+            existing = set(total_amount_converted.get("excluded_currencies") or [])
+            total_amount_converted["excluded_currencies"] = sorted(existing | {"UNKNOWN"})
 
     duplicate_result = await db.execute(select(func.count()).select_from(ApInvoice).where(*org_filter, ApInvoice.duplicate_check_result == "BLOCKED"))
     duplicate_count = duplicate_result.scalar_one()
@@ -129,7 +155,8 @@ async def get_stats(db: AsyncSession, organization_id: int | None) -> dict:
         "straight_through": by_decision.get(ApInvoiceDecision.STRAIGHT_THROUGH.value, 0),
         "rejected": by_decision.get(ApInvoiceDecision.REJECT.value, 0),
         "duplicate_blocked": duplicate_count,
-        "total_amount": round(total_amount, 2),
+        "total_by_currency": total_by_currency,
+        "total_amount_converted": total_amount_converted,
     }
 
 

@@ -112,8 +112,11 @@ async def _to_detail_out(db: AsyncSession, invoice: ApInvoice) -> ApInvoiceDetai
 # ── KPIs ─────────────────────────────────────────────────────────
 
 @router.get("/stats", response_model=ApInvoiceStatsOut)
-async def stats(user: User = Depends(require_action("VIEW", module=INVOICE_MODULE)), db: AsyncSession = Depends(get_tenant_db)):
-    return await svc.get_stats(db, _effective_org_id(user))
+async def stats(
+    display_currency: str | None = Query(None, description="ISO currency code (e.g. INR) to convert total_by_currency into, via live FX rates."),
+    user: User = Depends(require_action("VIEW", module=INVOICE_MODULE)), db: AsyncSession = Depends(get_tenant_db),
+):
+    return await svc.get_stats(db, _effective_org_id(user), display_currency=display_currency)
 
 
 # ── Learning / evaluation (INV13) — static-prefix routes registered
