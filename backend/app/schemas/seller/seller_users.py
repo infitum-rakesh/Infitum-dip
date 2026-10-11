@@ -46,7 +46,9 @@ class InviteSellerUserResultOut(BaseModel):
 
 class SellerPasswordResetResultOut(BaseModel):
     user: SellerUserOut
-    temp_password: str
+    temp_password: str  # shown once regardless — kept as the fallback even when email_delivered is True
+    email_delivered: bool | None = None
+    email_detail: str | None = None
 
 
 class SellerUserActivityEventOut(BaseModel):

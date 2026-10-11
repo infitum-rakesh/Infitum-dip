@@ -251,7 +251,7 @@ async def enable_user(db: AsyncSession, user: User, actor: User, ip_address: str
     return user
 
 
-async def reset_password(db: AsyncSession, user: User, actor: User, ip_address: str | None = None) -> tuple[User, str]:
+async def reset_password(db: AsyncSession, user: User, actor: User, ip_address: str | None = None):
     temp_password = _generate_temp_password()
     user.hashed_password = hash_password(temp_password)
     user.must_change_password = True
@@ -262,7 +262,16 @@ async def reset_password(db: AsyncSession, user: User, actor: User, ip_address: 
         db, seller_user_id=actor.id, customer_id=None, action="Seller User Password Reset",
         resource=user.full_name, resource_id=str(user.id), ip_address=ip_address,
     )
-    return user, temp_password
+
+    from app.core.config import get_settings
+    from app.services import email_service
+    subject, body_text = email_service.build_password_reset_email(
+        full_name=user.full_name, email=user.email, temp_password=temp_password,
+        login_url=f"{get_settings().frontend_base_url}/login",
+    )
+    email_result = await email_service.send_email(db, to=user.email, subject=subject, body=body_text)
+
+    return user, temp_password, email_result
 
 
 async def delete_user(db: AsyncSession, user: User, actor: User, ip_address: str | None = None) -> None:

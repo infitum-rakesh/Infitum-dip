@@ -215,14 +215,23 @@ async def enable_user(db: AsyncSession, user: User, actor_id: int | None) -> Use
     return user
 
 
-async def reset_password(db: AsyncSession, user: User, actor_id: int | None) -> tuple[User, str]:
+async def reset_password(db: AsyncSession, user: User, actor_id: int | None):
     temp_password = _generate_temp_password()
     user.hashed_password = hash_password(temp_password)
     user.must_change_password = True
     db.add(UserActivityLog(user_id=user.id, event_type=UserActivityType.PASSWORD_RESET, message="Password reset by administrator", actor_id=actor_id))
     await db.commit()
     await db.refresh(user)
-    return user, temp_password
+
+    from app.core.config import get_settings
+    from app.services import email_service
+    subject, body_text = email_service.build_password_reset_email(
+        full_name=user.full_name, email=user.email, temp_password=temp_password,
+        login_url=f"{get_settings().frontend_base_url}/login",
+    )
+    email_result = await email_service.send_email(db, to=user.email, subject=subject, body=body_text)
+
+    return user, temp_password, email_result
 
 
 async def _other_admin_count(db: AsyncSession, organization_id: int | None, exclude_user_id: int) -> int:

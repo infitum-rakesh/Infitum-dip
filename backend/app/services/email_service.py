@@ -39,7 +39,7 @@ from app.models.seller import Seller
 
 __all__ = [
     "EmailDeliveryResult", "get_smtp_config", "send_email", "send_test_email",
-    "build_sales_inquiry_email", "build_welcome_email", "build_invite_email",
+    "build_sales_inquiry_email", "build_welcome_email", "build_invite_email", "build_password_reset_email",
 ]
 
 
@@ -129,6 +129,27 @@ def build_invite_email(*, full_name: str, email: str, temp_password: str, login_
         f"Email: {email}\n"
         f"Temporary password: {temp_password}\n\n"
         f"You'll be asked to sign in with this password — we recommend changing it after your first login.\n\n"
+        f"— DataIntelligence Platform"
+    )
+    return subject, body
+
+
+def build_password_reset_email(*, full_name: str, email: str, temp_password: str, login_url: str) -> tuple[str, str]:
+    """Shared by both "Reset Password" admin actions — same gap as
+    build_invite_email() above (Administration -> Users and Seller
+    Portal -> Seller Users both only ever returned the one-time
+    temp_password with no attempt to email it, found live right after
+    fixing the Invite flows). No org_name/role — a password reset
+    doesn't need to re-introduce the account, just the new credential."""
+    subject = "Your DataIntelligence Platform password has been reset"
+    body = (
+        f"Hi {full_name},\n\n"
+        f"An administrator has reset your password on the DataIntelligence Platform.\n\n"
+        f"Login: {login_url}\n"
+        f"Email: {email}\n"
+        f"New temporary password: {temp_password}\n\n"
+        f"You'll be asked to sign in with this password — we recommend changing it after you sign in.\n\n"
+        f"If you weren't expecting this, contact your administrator.\n\n"
         f"— DataIntelligence Platform"
     )
     return subject, body

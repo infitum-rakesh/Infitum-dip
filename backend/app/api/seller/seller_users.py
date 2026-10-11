@@ -135,8 +135,11 @@ async def enable_user(user_id: int, request: Request, user: User = Depends(_edit
 @router.post("/{user_id}/reset-password", response_model=SellerPasswordResetResultOut)
 async def reset_password(user_id: int, request: Request, user: User = Depends(_edit), db: AsyncSession = Depends(get_db)):
     target = await _get_or_404(db, user_id)
-    target, temp_password = await svc.reset_password(db, target, user, _client_ip(request))
-    return SellerPasswordResetResultOut(user=_out(target), temp_password=temp_password)
+    target, temp_password, email_result = await svc.reset_password(db, target, user, _client_ip(request))
+    return SellerPasswordResetResultOut(
+        user=_out(target), temp_password=temp_password,
+        email_delivered=email_result.delivered, email_detail=email_result.detail,
+    )
 
 
 @router.post("/{user_id}/role", response_model=SellerUserOut)

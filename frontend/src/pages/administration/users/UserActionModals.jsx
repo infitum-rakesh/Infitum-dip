@@ -4,7 +4,7 @@
  * never duplicate this logic.
  */
 import { useEffect, useState } from 'react';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, CheckCircle2, XCircle, Mail } from 'lucide-react';
 import { Modal, Button } from '@/components/common/index.js';
 import { userAdminApi } from '@/services/api/userAdminApi.js';
 import './users.css';
@@ -51,7 +51,7 @@ export function ChangeRoleModal({ user, onClose, onDone }) {
   );
 }
 
-/** Reset Password — confirm, then reveal a one-time temp password (no email service is wired up). */
+/** Reset Password — confirm, then reveal a one-time temp password; also attempts a real email when configured. */
 export function ResetPasswordModal({ user, onClose }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -81,7 +81,13 @@ export function ResetPasswordModal({ user, onClose }) {
             <span className="usr-credential-value">{result.temp_password}</span>
             <Button variant="ghost" size="sm" icon={copied ? <Check size={13} /> : <Copy size={13} />} onClick={copyPassword}>{copied ? 'Copied' : 'Copy'}</Button>
           </div>
-          <p className="usr-credential-note">Share this with {result.user.full_name} yourself — no email service is configured yet. It won't be shown again.</p>
+          {result.email_delivered != null && (
+            <p className="usr-credential-note" style={{ display: 'flex', alignItems: 'center', gap: 6, color: result.email_delivered ? 'var(--success, #10B981)' : 'var(--danger, #DC2626)' }}>
+              {result.email_delivered ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
+              <Mail size={13} /> {result.email_delivered ? `Emailed to ${result.user.email}.` : result.email_detail}
+            </p>
+          )}
+          <p className="usr-credential-note">Share this with {result.user.full_name} yourself if the email above didn't arrive. It won't be shown again.</p>
         </div>
       </Modal>
     );
