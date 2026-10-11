@@ -60,7 +60,7 @@ class EmailChannel(NotificationChannel):
             }
 
         from email.mime.text import MIMEText
-        from app.services.email_service import IPv4SMTP
+        from app.email_providers.smtp_provider import IPv4SMTP
         try:
             msg = MIMEText(event.get("message", ""))
             msg["Subject"] = f"[{event.get('severity', 'ALERT')}] {event.get('rule_name', 'Alert')}"

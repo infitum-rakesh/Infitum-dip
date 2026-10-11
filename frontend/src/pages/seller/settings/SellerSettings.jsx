@@ -450,8 +450,9 @@ function DefaultsTab({ settings, onSave }) {
 function EmailTab({ settings, onReload }) {
   const smtp = settings.smtp || {};
   const initial = {
+    provider: smtp.provider ?? 'SMTP',
     host: smtp.host ?? '', port: smtp.port ?? 587, username: smtp.username ?? '',
-    password: '', from_address: smtp.from_address ?? '', use_tls: smtp.use_tls ?? true,
+    password: '', api_key: '', from_address: smtp.from_address ?? '', use_tls: smtp.use_tls ?? true,
   };
   const { draft, set, dirty, reset } = useSectionDraft(initial);
   const [saving, setSaving] = useState(false);
@@ -459,17 +460,20 @@ function EmailTab({ settings, onReload }) {
   const [testTo, setTestTo] = useState(smtp.username ?? '');
   const [testResult, setTestResult] = useState(null);
   const [testing, setTesting] = useState(false);
+  const isResend = draft.provider === 'RESEND';
 
   const handleSave = async () => {
     setSaving(true);
     setError('');
     try {
       const body = {
+        provider: draft.provider,
         host: draft.host || null, port: draft.port ? Number(draft.port) : null,
         username: draft.username || null, from_address: draft.from_address || null,
         use_tls: draft.use_tls,
       };
       if (draft.password) body.password = draft.password;
+      if (draft.api_key) body.api_key = draft.api_key;
       const updated = await sellerSettingsApi.updateSmtp(body);
       onReload();
       return updated;
@@ -490,39 +494,60 @@ function EmailTab({ settings, onReload }) {
 
   return (
     <div className="sst-card">
-      <div className="sst-card-title">Email (SMTP)</div>
+      <div className="sst-card-title">Email</div>
       <p className="sst-card-hint">
         Used to email a new customer's Admin their login credentials when you create their organization
         (see the Customers page), and to resend them later. Nothing is sent until this is configured.
+        {' '}SMTP on some hosts (e.g. Railway, on plans below Pro) blocks outbound SMTP ports entirely —
+        if "Send Test" fails with a timeout, switch the provider to Resend below instead.
       </p>
       <div className="sst-grid">
         <div className="sst-field">
-          <label className="sst-field-label">SMTP Host</label>
-          <input className="sst-input" value={draft.host} onChange={(e) => set('host')(e.target.value)} placeholder="smtp.yourprovider.com" />
-        </div>
-        <div className="sst-field">
-          <label className="sst-field-label">Port</label>
-          <input type="number" className="sst-input" value={draft.port} onChange={(e) => set('port')(e.target.value)} placeholder="587" />
-        </div>
-        <div className="sst-field">
-          <label className="sst-field-label">Username</label>
-          <input className="sst-input" value={draft.username} onChange={(e) => set('username')(e.target.value)} placeholder="apikey or account username" />
-        </div>
-        <div className="sst-field">
-          <label className="sst-field-label">Password {smtp.password_set && <span style={{ fontWeight: 400, color: 'var(--text-faint)' }}>(already set — leave blank to keep)</span>}</label>
-          <input type="password" className="sst-input" value={draft.password} onChange={(e) => set('password')(e.target.value)} placeholder={smtp.password_set ? '••••••••' : ''} />
+          <label className="sst-field-label">Provider</label>
+          <select className="sst-input" value={draft.provider} onChange={(e) => set('provider')(e.target.value)}>
+            <option value="SMTP">SMTP</option>
+            <option value="RESEND">Resend (HTTP API)</option>
+          </select>
         </div>
         <div className="sst-field">
           <label className="sst-field-label">From Address</label>
-          <input type="email" className="sst-input" value={draft.from_address} onChange={(e) => set('from_address')(e.target.value)} placeholder="no-reply@yourcompany.com" />
-        </div>
-        <div className="sst-field">
-          <label className="sst-field-label">Use TLS</label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-            <input type="checkbox" checked={draft.use_tls} onChange={(e) => set('use_tls')(e.target.checked)} /> STARTTLS
-          </label>
+          <input type="email" className="sst-input" value={draft.from_address} onChange={(e) => set('from_address')(e.target.value)} placeholder={isResend ? 'onboarding@resend.dev or a verified domain' : 'no-reply@yourcompany.com'} />
         </div>
       </div>
+      {isResend ? (
+        <div className="sst-grid">
+          <div className="sst-field">
+            <label className="sst-field-label">API Key {smtp.api_key_set && <span style={{ fontWeight: 400, color: 'var(--text-faint)' }}>(already set — leave blank to keep)</span>}</label>
+            <input type="password" className="sst-input" value={draft.api_key} onChange={(e) => set('api_key')(e.target.value)} placeholder={smtp.api_key_set ? '••••••••' : 're_...'} />
+            <p className="sst-field-hint" style={{ marginTop: 4 }}>From resend.com → API Keys.</p>
+          </div>
+        </div>
+      ) : (
+        <div className="sst-grid">
+          <div className="sst-field">
+            <label className="sst-field-label">SMTP Host</label>
+            <input className="sst-input" value={draft.host} onChange={(e) => set('host')(e.target.value)} placeholder="smtp.yourprovider.com" />
+          </div>
+          <div className="sst-field">
+            <label className="sst-field-label">Port</label>
+            <input type="number" className="sst-input" value={draft.port} onChange={(e) => set('port')(e.target.value)} placeholder="587" />
+          </div>
+          <div className="sst-field">
+            <label className="sst-field-label">Username</label>
+            <input className="sst-input" value={draft.username} onChange={(e) => set('username')(e.target.value)} placeholder="apikey or account username" />
+          </div>
+          <div className="sst-field">
+            <label className="sst-field-label">Password {smtp.password_set && <span style={{ fontWeight: 400, color: 'var(--text-faint)' }}>(already set — leave blank to keep)</span>}</label>
+            <input type="password" className="sst-input" value={draft.password} onChange={(e) => set('password')(e.target.value)} placeholder={smtp.password_set ? '••••••••' : ''} />
+          </div>
+          <div className="sst-field">
+            <label className="sst-field-label">Use TLS</label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+              <input type="checkbox" checked={draft.use_tls} onChange={(e) => set('use_tls')(e.target.checked)} /> STARTTLS
+            </label>
+          </div>
+        </div>
+      )}
       <SaveBar dirty={dirty} saving={saving} error={error} onSave={handleSave} onReset={reset} />
 
       <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border-color, #E2E8F0)' }}>

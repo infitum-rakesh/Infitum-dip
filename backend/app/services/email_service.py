@@ -1,77 +1,43 @@
 """
-EmailService — the one place this codebase sends real outbound email via
-SMTP. Used by:
+EmailService — the one place this codebase resolves Seller Settings ->
+Email's configured provider and sends through it. Used by:
   - services/seller/customer_service.create_customer() — welcomes a new
     company's auto-created Admin user with their login credentials.
   - (future) any module that wants a real email instead of duplicating
-    the same smtplib boilerplate app/monitoring/notification_channels.py's
-    EmailChannel already has for AlertRule delivery.
+    this.
 
 Configuration lives on the singleton Seller row (models/seller.py's
-smtp_config JSON column) — the SELLER operates the platform and is the
-one actually sending "your company's account is ready" emails, so their
-Settings page (not each customer Organization's Settings) is where SMTP
-credentials belong. The password is Fernet-encrypted at rest via
+smtp_config JSON column — kept under its original name even though it
+now holds any provider's config, to avoid an unnecessary migration;
+`provider` inside that JSON discriminates which one). The SELLER
+operates the platform and is the one actually sending "your company's
+account is ready" emails, so their Settings page (not each customer
+Organization's Settings) is where credentials belong. Secrets (the SMTP
+password, or a provider's API key) are Fernet-encrypted at rest via
 app.core.crypto, same mechanism Connection.encrypted_secrets already uses.
 
-Delivery honesty: if no SMTP host is configured, send() returns
+Provider resolution: email_providers/registry.py maps the stored
+`provider` string ("SMTP" default, or "RESEND") to a real
+email_providers.base.EmailProvider implementation — see that package's
+docstrings for why there's more than one (Railway blocks outbound SMTP
+ports for non-Pro workspaces; an HTTP-API provider is the one guaranteed
+to work regardless of that policy).
+
+Delivery honesty: if no provider is configured, send() returns
 delivered=False with a clear reason — never silently pretends to have
 sent something, matching notification_channels.EmailChannel's contract.
 """
 from __future__ import annotations
 
-import smtplib
-import socket
-from email.mime.text import MIMEText
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import crypto
+from app.email_providers import registry
+from app.email_providers.base import EmailDeliveryResult
 from app.models.seller import Seller
 
-
-class IPv4SMTP(smtplib.SMTP):
-    """smtplib.SMTP, but the connection is forced over IPv4.
-
-    Found live on Railway: smtp.gmail.com (and most real SMTP hosts)
-    publish both A and AAAA records. Plain smtplib.SMTP() resolves via
-    socket.create_connection(), which tries whatever address family
-    getaddrinfo() returns first — on Railway's network (no outbound IPv6
-    route) an AAAA hit fails immediately with [Errno 101] Network is
-    unreachable, the exact error surfaced in Seller Settings -> Email's
-    "Send Test" even though the same code works fine locally (where IPv6
-    either isn't offered or actually routes). The hostname itself is
-    still passed to the SMTP constructor unchanged, so STARTTLS
-    certificate verification (which checks the connection's hostname,
-    not its IP) is unaffected."""
-
-    def _get_socket(self, host, port, timeout):
-        if timeout is not None and not timeout:
-            raise ValueError("Non-blocking socket (timeout=0) is not supported")
-        last_err: OSError | None = None
-        for family, socktype, proto, _canonname, sockaddr in socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM):
-            sock = socket.socket(family, socktype, proto)
-            try:
-                if timeout is not None:
-                    sock.settimeout(timeout)
-                if self.source_address:
-                    sock.bind(self.source_address)
-                sock.connect(sockaddr)
-                return sock
-            except OSError as exc:
-                sock.close()
-                last_err = exc
-        raise last_err or OSError(f"No IPv4 address found for {host}")
-
-
-class EmailDeliveryResult:
-    def __init__(self, delivered: bool, detail: str):
-        self.delivered = delivered
-        self.detail = detail
-
-    def to_dict(self) -> dict:
-        return {"delivered": self.delivered, "detail": self.detail}
+__all__ = ["EmailDeliveryResult", "get_smtp_config", "send_email", "send_test_email", "build_sales_inquiry_email", "build_welcome_email"]
 
 
 async def get_smtp_config(db: AsyncSession) -> dict:
@@ -80,32 +46,28 @@ async def get_smtp_config(db: AsyncSession) -> dict:
     return (seller.smtp_config or {}) if seller else {}
 
 
-def _decrypt_password(smtp_config: dict) -> str:
-    token = smtp_config.get("password_encrypted")
-    return (crypto.decrypt_secret(token) if token else None) or ""
+def _decrypted_provider_config(cfg: dict) -> dict:
+    """Resolves the right secret for whichever provider is configured —
+    password_encrypted for SMTP, api_key_encrypted for Resend — into the
+    plaintext field each EmailProvider implementation actually reads."""
+    provider = (cfg.get("provider") or "SMTP").upper()
+    resolved = dict(cfg)
+    if provider == "RESEND":
+        token = cfg.get("api_key_encrypted")
+        resolved["api_key"] = (crypto.decrypt_secret(token) if token else None) or ""
+    else:
+        token = cfg.get("password_encrypted")
+        resolved["password"] = (crypto.decrypt_secret(token) if token else None) or ""
+    return resolved
 
 
 async def send_email(db: AsyncSession, *, to: str, subject: str, body: str) -> EmailDeliveryResult:
     cfg = await get_smtp_config(db)
-    host = cfg.get("host")
-    if not host:
-        return EmailDeliveryResult(False, "SMTP is not configured — set it up in Seller Settings → Email.")
-
-    try:
-        msg = MIMEText(body)
-        msg["Subject"] = subject
-        msg["From"] = cfg.get("from_address") or "no-reply@dip.local"
-        msg["To"] = to
-        with IPv4SMTP(host, int(cfg.get("port", 587)), timeout=10) as server:
-            if cfg.get("use_tls", True):
-                server.starttls()
-            username = cfg.get("username")
-            if username:
-                server.login(username, _decrypt_password(cfg))
-            server.sendmail(msg["From"], [to], msg.as_string())
-        return EmailDeliveryResult(True, f"Sent to {to}.")
-    except Exception as exc:
-        return EmailDeliveryResult(False, f"SMTP send failed: {exc}"[:300])
+    provider_type = (cfg.get("provider") or "SMTP").upper()
+    provider = registry.get_provider(provider_type, _decrypted_provider_config(cfg))
+    if provider is None:
+        return EmailDeliveryResult(False, f"Unknown email provider '{provider_type}'.")
+    return await provider.send(to=to, subject=subject, body=body)
 
 
 async def send_test_email(db: AsyncSession, *, to: str) -> EmailDeliveryResult:

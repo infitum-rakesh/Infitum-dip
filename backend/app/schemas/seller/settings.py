@@ -11,13 +11,19 @@ class SellerBrandingOut(BaseModel):
 
 
 class SmtpConfigOut(BaseModel):
-    """Never carries the real password — `password_set` just tells the UI
-    whether one is already stored, same convention as Connection's masked
-    secret fields (see connection_service._masked_config)."""
+    """Never carries a real secret — `password_set`/`api_key_set` just
+    tell the UI whether one is already stored, same convention as
+    Connection's masked secret fields (see connection_service._masked_config).
+    `provider` picks which email_providers/ adapter send_email() resolves
+    to; host/port/username/password_set are SMTP-only, api_key_set is
+    Resend-only — the unused half is just left at its default for
+    whichever provider isn't selected."""
+    provider: str = "SMTP"  # "SMTP" | "RESEND"
     host: str | None = None
     port: int | None = None
     username: str | None = None
     password_set: bool = False
+    api_key_set: bool = False
     from_address: str | None = None
     use_tls: bool = True
 
@@ -64,10 +70,12 @@ class UpdateSellerSettingsRequest(BaseModel):
 
 
 class UpdateSmtpConfigRequest(BaseModel):
+    provider: str | None = None  # "SMTP" | "RESEND" — omit to leave the currently-selected provider unchanged
     host: str | None = None
     port: int | None = None
     username: str | None = None
     password: str | None = None  # plaintext in, encrypted before storage; omit/blank = leave unchanged
+    api_key: str | None = None  # Resend — plaintext in, encrypted before storage; omit/blank = leave unchanged
     from_address: str | None = None
     use_tls: bool | None = None
 

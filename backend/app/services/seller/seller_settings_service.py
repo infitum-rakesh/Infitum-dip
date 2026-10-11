@@ -37,8 +37,10 @@ def to_out(seller: Seller) -> dict:
         "digital_signature": seller.digital_signature,
         "default_trial_days": seller.default_trial_days,
         "smtp": {
+            "provider": smtp.get("provider") or "SMTP",
             "host": smtp.get("host"), "port": smtp.get("port"), "username": smtp.get("username"),
             "password_set": bool(smtp.get("password_encrypted")),
+            "api_key_set": bool(smtp.get("api_key_encrypted")),
             "from_address": smtp.get("from_address"), "use_tls": smtp.get("use_tls", True),
         },
         "created_at": seller.created_at, "updated_at": seller.updated_at,
@@ -92,24 +94,28 @@ async def update_settings(db: AsyncSession, seller: Seller, body, actor: User, i
 async def update_smtp_config(db: AsyncSession, seller: Seller, body, actor: User, ip_address: str | None = None) -> Seller:
     provided = body.model_fields_set
     current = dict(seller.smtp_config or {})
-    before_masked = {k: v for k, v in current.items() if k != "password_encrypted"}
+    _SECRET_KEYS = ("password_encrypted", "api_key_encrypted")
+    before_masked = {k: v for k, v in current.items() if k not in _SECRET_KEYS}
 
-    for field in ("host", "port", "username", "from_address", "use_tls"):
+    for field in ("provider", "host", "port", "username", "from_address", "use_tls"):
         if field in provided:
             value = getattr(body, field)
             if value is None:
                 current.pop(field, None)
             else:
-                current[field] = value
+                current[field] = value.upper() if field == "provider" else value
     if "password" in provided and body.password:
         current["password_encrypted"] = crypto.encrypt_secret(body.password)
+    if "api_key" in provided and body.api_key:
+        current["api_key_encrypted"] = crypto.encrypt_secret(body.api_key)
 
     seller.smtp_config = current
     await db.commit()
     await db.refresh(seller)
 
-    after_masked = {k: v for k, v in current.items() if k != "password_encrypted"}
+    after_masked = {k: v for k, v in current.items() if k not in _SECRET_KEYS}
     after_masked["password_set"] = bool(current.get("password_encrypted"))
+    after_masked["api_key_set"] = bool(current.get("api_key_encrypted"))
     await record_seller_event(
         db, seller_user_id=actor.id, customer_id=None, action="Seller Settings Updated",
         resource=seller.name, resource_id=str(seller.id), ip_address=ip_address,
