@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth.js';
 import { usePermission } from '@/hooks/usePermission.js';
+import { useMediaQuery } from '@/hooks/useMediaQuery.js';
 import { useAccessSummary } from '@/context/AccessSummaryContext.jsx';
 import { MODULES, ROLES } from '@/utils/constants.js';
 import { initials, formatDate } from '@/utils/formatters.js';
@@ -161,11 +162,17 @@ const NAV = [
   },
 ];
 
-export function Sidebar({ collapsed, onToggle }) {
+export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }) {
   const { user, organization, logout } = useAuth();
   const { hasRole, hasModule, isTrialing, trialDaysLeft } = usePermission();
   const { summary } = useAccessSummary();
   const location = useLocation();
+  // Below 1024px the sidebar is a full off-canvas drawer, not the desktop
+  // icon-only collapse — there's no persistent screen real-estate to save
+  // on a phone/tablet, so labels always render regardless of the `collapsed`
+  // preference the user may have set on desktop.
+  const isMobile = useMediaQuery('(max-width: 1024px)');
+  const effectiveCollapsed = isMobile ? false : collapsed;
   // SB30 — modules that WERE purchased but have since expired (real
   // subscription rows past end_date, per GET /access/modules-summary),
   // distinct from modules never purchased at all. Nav items for these
@@ -213,11 +220,16 @@ export function Sidebar({ collapsed, onToggle }) {
   }, []);
 
   return (
-    <aside className={`sidebar ${collapsed ? 'sidebar-collapsed' : ''}`}>
+    <>
+      {/* Backdrop — only rendered on mobile/tablet while the drawer is
+          open, so it can never intercept a click on desktop. Tapping it
+          (or pressing the overlay) closes the drawer, same as a nav tap. */}
+      {isMobile && mobileOpen && <div className="sidebar-overlay" onClick={onMobileClose} />}
+      <aside className={`sidebar ${effectiveCollapsed ? 'sidebar-collapsed' : ''} ${isMobile && mobileOpen ? 'sidebar-mobile-open' : ''}`}>
       {/* Logo */}
       <div className="sidebar-logo">
         <div className="sidebar-logo-mark">DI</div>
-        {!collapsed && (
+        {!effectiveCollapsed && (
           <div className="sidebar-logo-text">
             <span className="sidebar-logo-name">DataIntelligence</span>
             <span className="sidebar-logo-tag">Platform</span>
@@ -227,7 +239,7 @@ export function Sidebar({ collapsed, onToggle }) {
 
       {/* Trial banner — real days-remaining from organization.trial_expires_at,
           never hardcoded (see getTrialDaysLeft() in utils/permissions.js). */}
-      {!collapsed && isTrialing && trialDaysLeft != null && (
+      {!effectiveCollapsed && isTrialing && trialDaysLeft != null && (
         <div className="sidebar-trial">
           <span className="trial-label">🕐 Trial — {trialDaysLeft} day{trialDaysLeft === 1 ? '' : 's'} remaining</span>
           {trialPercentElapsed != null && (
@@ -264,7 +276,7 @@ export function Sidebar({ collapsed, onToggle }) {
 
           return (
             <div key={group.section ?? 'main'} className="nav-group">
-              {group.section && !collapsed && (
+              {group.section && !effectiveCollapsed && (
                 <span className="nav-section-label">{group.section}</span>
               )}
               {visibleItems.map((item) => {
@@ -275,7 +287,7 @@ export function Sidebar({ collapsed, onToggle }) {
                 const expiredAt = item.locked ? summary?.expired_modules?.[item.module] : null;
                 const title = item.locked
                   ? `${item.label} — subscription expired${expiredAt ? ` on ${formatDate(expiredAt)}` : ''}. Click to renew.`
-                  : (collapsed ? item.label : undefined);
+                  : (effectiveCollapsed ? item.label : undefined);
                 return (
                   <NavLink
                     key={item.to}
@@ -286,9 +298,9 @@ export function Sidebar({ collapsed, onToggle }) {
                     }
                   >
                     <Icon size={16} className="nav-icon" />
-                    {!collapsed && <span className="nav-label">{item.label}</span>}
-                    {!collapsed && item.locked && <Lock size={12} className="nav-lock-icon" />}
-                    {!collapsed && !item.locked && !!badgeValue && (
+                    {!effectiveCollapsed && <span className="nav-label">{item.label}</span>}
+                    {!effectiveCollapsed && item.locked && <Lock size={12} className="nav-lock-icon" />}
+                    {!effectiveCollapsed && !item.locked && !!badgeValue && (
                       <span className="nav-badge">{badgeValue}</span>
                     )}
                   </NavLink>
@@ -301,7 +313,7 @@ export function Sidebar({ collapsed, onToggle }) {
 
       {/* User footer */}
       <div className="sidebar-footer">
-        {!collapsed && (
+        {!effectiveCollapsed && (
           <div className="sidebar-user">
             <div className="sidebar-avatar">{initials(user?.full_name ?? 'U')}</div>
             <div className="sidebar-user-info">
@@ -315,5 +327,6 @@ export function Sidebar({ collapsed, onToggle }) {
         </button>
       </div>
     </aside>
+    </>
   );
 }

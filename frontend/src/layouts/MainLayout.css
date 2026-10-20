@@ -16,14 +16,29 @@
 .app-content {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: var(--space-6);
   background: var(--bg-body);
 }
 
-/* Breadcrumb (shared) */
-.breadcrumb { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; }
-.bc-item    { display: flex; align-items: center; }
-.bc-sep     { color: var(--text-faint); margin: 0 2px; }
-.bc-link    { font-size: var(--fs-sm); color: var(--text-muted); transition: var(--transition); }
+@media (max-width: 640px) {
+  .app-content { padding: var(--space-4); }
+}
+
+/* Breadcrumb (shared) — nowrap + min-width:0 so it shrinks as a normal
+   flex child instead of wrapping to a second line or forcing the header
+   wider than the viewport; individual crumb labels ellipsis rather than
+   overflow once there's truly no room left. */
+.breadcrumb { display: flex; align-items: center; flex-wrap: nowrap; gap: 2px; min-width: 0; overflow: hidden; }
+.bc-item    { display: flex; align-items: center; min-width: 0; }
+.bc-sep     { color: var(--text-faint); margin: 0 2px; flex-shrink: 0; }
+.bc-link    { font-size: var(--fs-sm); color: var(--text-muted); transition: var(--transition); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bc-link:hover { color: var(--color-primary); }
-.bc-current { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-primary); }
+.bc-current { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Small screens: the full trail (Dashboard > Section > Page) competes for
+   space with the hamburger/search/user icons — show only the current
+   page so the breadcrumb never pushes those off-row. */
+@media (max-width: 640px) {
+  .bc-item:not(:last-child) { display: none; }
+}

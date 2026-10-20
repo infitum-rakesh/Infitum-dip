@@ -4,12 +4,23 @@
   .grid-3 { grid-template-columns: repeat(2, 1fr); }
 }
 
+/* Sidebar's own responsive behavior (off-canvas drawer below 1024px)
+   lives in components/navigation/Sidebar.css, not here — this used to
+   shrink --sidebar-width at this breakpoint, which did nothing useful
+   once the sidebar became position:fixed with an explicit width. */
 @media (max-width: 960px) {
-  :root { --sidebar-width: var(--sidebar-width-collapsed); }
   .hide-mobile { display: none !important; }
 }
 
 @media (max-width: 640px) {
   .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
   .hide-sm { display: none !important; }
+}
+
+/* Generic horizontal-scroll safety net for wide content (tables, code
+   blocks, dashboards with many stat tiles) that individual pages don't
+   already wrap in their own scroll container — the page itself must
+   never scroll sideways, only the offending element should. */
+@media (max-width: 1024px) {
+  table { max-width: 100%; }
 }

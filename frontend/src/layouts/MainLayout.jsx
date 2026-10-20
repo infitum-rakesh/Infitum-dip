@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { Sidebar } from '@/components/navigation/Sidebar.jsx';
 import { Header }  from '@/components/navigation/Header.jsx';
@@ -18,9 +18,17 @@ const ALLOWLIST_PREFIXES = ['/app/billing', '/app/admin/settings'];
 
 export function MainLayout() {
   const [collapsed, setCollapsed] = useState(false);
+  // Separate from `collapsed` (the desktop icon-only toggle) — on
+  // mobile/tablet the sidebar is an off-canvas drawer instead, opened by
+  // Header's hamburger button and this state, not the collapse toggle.
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const { organization } = useAuth();
   const { summary } = useAccessSummary();
   const location = useLocation();
+
+  // A tap on any nav link should both navigate AND dismiss the drawer —
+  // never leave it open covering the page it just navigated to.
+  useEffect(() => { setMobileNavOpen(false); }, [location.pathname]);
 
   const isAllowlisted = ALLOWLIST_PREFIXES.some((p) => location.pathname.startsWith(p));
   // has_tenant_access is always true for Seller/Super Admin (no org — see
@@ -30,10 +38,19 @@ export function MainLayout() {
 
   return (
     <div className="app-shell">
-      <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />
+      <Sidebar
+        collapsed={collapsed}
+        onToggle={() => setCollapsed((c) => !c)}
+        mobileOpen={mobileNavOpen}
+        onMobileClose={() => setMobileNavOpen(false)}
+      />
       <div className="app-main">
         <ImpersonationBanner />
-        <Header collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />
+        <Header
+          collapsed={collapsed}
+          onToggle={() => setCollapsed((c) => !c)}
+          onMobileNavToggle={() => setMobileNavOpen((o) => !o)}
+        />
         <main className="app-content">
           {blocked ? <AllExpiredBlock /> : <Outlet />}
         </main>

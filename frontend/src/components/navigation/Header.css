@@ -4,21 +4,26 @@
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;
   padding: 0 var(--space-5);
   gap: var(--space-4);
   flex-shrink: 0;
   z-index: 50;
 }
 
-.header-toggle-btn {
+.header-toggle-btn, .header-hamburger-btn {
   width: 32px; height: 32px; border-radius: var(--radius-md);
   display: flex; align-items: center; justify-content: center;
   color: var(--text-muted); transition: var(--transition); flex-shrink: 0;
 }
-.header-toggle-btn:hover { background: var(--bg-body); color: var(--text-primary); }
+.header-toggle-btn:hover, .header-hamburger-btn:hover { background: var(--bg-body); color: var(--text-primary); }
+/* Desktop (>1024px): collapse toggle shown, hamburger hidden. Inverted at
+   ≤1024px below — exactly one of the two is ever visible. */
+.header-hamburger-btn { display: none; }
 
 .header-search {
   flex: 1;
+  min-width: 0;
   max-width: 360px;
   position: relative;
   margin: 0 var(--space-4);
@@ -37,18 +42,46 @@
 .header-search-input:focus { border-color: var(--color-primary); background: var(--bg-card); box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
 .header-search-kbd { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 10px; color: var(--text-faint); background: var(--bg-body); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
 
-.header-right { display: flex; align-items: center; gap: var(--space-3); margin-left: auto; }
+/* Never wraps, never shrinks — this is the row of icon buttons the small-
+   screen layout exists to protect. Everything ELSE in the header (search,
+   breadcrumb, user name/role text) is what gives way as space tightens,
+   via the breakpoints below, specifically so this group always stays
+   intact on one line at any viewport width. */
+.header-right { display: flex; align-items: center; gap: var(--space-3); margin-left: auto; flex-shrink: 0; flex-wrap: nowrap; }
 
 .header-icon-btn {
   width: 32px; height: 32px; border-radius: var(--radius-md);
   display: flex; align-items: center; justify-content: center;
   color: var(--text-muted); transition: var(--transition); position: relative;
+  flex-shrink: 0;
 }
 .header-icon-btn:hover { background: var(--bg-body); color: var(--text-primary); }
 .header-notif-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-danger); position: absolute; top: 4px; right: 4px; border: 2px solid var(--bg-card); }
 
-.header-user { display: flex; align-items: center; gap: var(--space-2); padding: 4px 8px; border-radius: var(--radius-md); cursor: pointer; transition: var(--transition); }
+.header-user { display: flex; align-items: center; gap: var(--space-2); padding: 4px 8px; border-radius: var(--radius-md); cursor: pointer; transition: var(--transition); flex-shrink: 0; }
 .header-user:hover { background: var(--bg-body); }
-.header-avatar { width: 28px; height: 28px; border-radius: var(--radius-full); background: linear-gradient(135deg, var(--color-primary), var(--color-info)); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: var(--fw-semibold); color: white; }
-.header-user-name { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-primary); display: block; }
+.header-avatar { width: 28px; height: 28px; border-radius: var(--radius-full); background: linear-gradient(135deg, var(--color-primary), var(--color-info)); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: var(--fw-semibold); color: white; flex-shrink: 0; }
+.header-user-info { min-width: 0; }
+.header-user-name { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-primary); display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
 .header-user-role { font-size: var(--fs-xs); color: var(--text-muted); text-transform: capitalize; }
+
+/* Responsive — breakpoints match Sidebar.css's off-canvas drawer (1024px)
+   plus two narrower steps. Each step hides the single least-essential
+   element first; .header-right's icon row is never touched. */
+@media (max-width: 1024px) {
+  .header-hamburger-btn { display: flex; }
+  .header-toggle-btn { display: none; }
+}
+
+@media (max-width: 768px) {
+  .header-search { display: none; }
+}
+
+@media (max-width: 640px) {
+  .header-user-info { display: none; }
+}
+
+@media (max-width: 480px) {
+  .app-header { padding: 0 var(--space-3); gap: var(--space-2); }
+  .header-right { gap: var(--space-2); }
+}
