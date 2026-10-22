@@ -96,6 +96,20 @@ const tallyApi = {
 
   listReconciliationExceptions: (runId, params = {}) =>
     apiClient.get(`/tally/reconciliation/runs/${runId}/exceptions`, { params }).then((r) => r.data),
+
+  // ── Vendor -> Company routing (Invoice Auto-Sync) — drives which Tally
+  // connection/company a STRAIGHT_THROUGH invoice automatically syncs to.
+  // See tally_invoice_sync_service.py; gated by Settings' "Enable Tally
+  // Auto-Sync" flag AND at least one of these rows existing. ──
+  listVendorMappings: () => apiClient.get('/tally/vendor-mappings').then((r) => r.data),
+
+  setVendorMapping: ({ vendorName, connectionId, companyName }) =>
+    apiClient.put('/tally/vendor-mappings', {
+      vendor_name: vendorName || null, connection_id: connectionId, company_name: companyName,
+    }).then((r) => r.data),
+
+  clearVendorMapping: (mappingId) =>
+    apiClient.delete(`/tally/vendor-mappings/${mappingId}`).then((r) => r.data),
 };
 
 export default tallyApi;

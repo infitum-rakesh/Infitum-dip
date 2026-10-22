@@ -56,6 +56,9 @@ from app.schemas.tally import (
     TallyReconciliationRunOut,
     TallyReconciliationStartRequest,
     TallyRematerializeResultOut,
+    TallyVendorMappingListOut,
+    TallyVendorMappingOut,
+    TallyVendorMappingSetRequest,
     TallyVoucherPreviewListOut,
     TallyVoucherPreviewOut,
     TallyVoucherPreviewRequest,
@@ -72,6 +75,7 @@ from app.services import (
     tally_approval_service as approval_svc,
     tally_canonical_service as canonical_svc,
     tally_extraction_service as extraction_svc,
+    tally_invoice_sync_service as invoice_sync_svc,
     tally_mapping_service,
     tally_reconciliation_service as reconciliation_svc,
     tally_service as svc,
@@ -80,6 +84,7 @@ from app.services import (
 )
 from app.services.tally_approval_service import TallyApprovalError
 from app.services.tally_extraction_service import TallyExtractionValidationError
+from app.services.tally_invoice_sync_service import TallyVendorMappingError
 from app.services.tally_mapping_service import TallyMappingError
 from app.services.tally_reconciliation_service import TallyReconciliationError
 from app.services.tally_voucher_preview_service import TallyVoucherPreviewError
@@ -97,11 +102,14 @@ def _effective_org_id(user: User) -> int | None:
     return user.organization_id
 
 
+_TALLY_CONNECTION_TYPES = (ConnectionType.TALLY_PRIME, ConnectionType.TALLY_PRIME_AGENT)
+
+
 async def _get_connection_or_404(db: AsyncSession, connection_id: int, user: User) -> Connection:
     conn = await connection_service.get_connection(db, connection_id, _effective_org_id(user))
     if conn is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Connection not found")
-    if conn.connection_type != ConnectionType.TALLY_PRIME:
+    if conn.connection_type not in _TALLY_CONNECTION_TYPES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This connection is not a TallyPrime connection.")
     return conn
 
@@ -444,3 +452,39 @@ async def list_reconciliation_exceptions(
         db, run_id, _effective_org_id(user), exception_type=exception_type, page=page, page_size=page_size,
     )
     return TallyReconciliationExceptionListOut(items=[TallyReconciliationExceptionOut.model_validate(e) for e in items], total=total)
+
+
+# ── Vendor -> Tally company mapping (Invoice Auto-Sync) ─────────────
+# Org-scoped, not connection-scoped in the URL — a vendor mapping picks
+# ITS OWN connection per row, so there's no single connection_id to put
+# in the path. See services/tally_invoice_sync_service.py.
+
+@router.get("/vendor-mappings", response_model=TallyVendorMappingListOut)
+async def list_vendor_mappings(user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
+    org_id = _effective_org_id(user)
+    if org_id is None:
+        return TallyVendorMappingListOut(items=[])
+    rows = await invoice_sync_svc.list_vendor_mappings(db, org_id)
+    return TallyVendorMappingListOut(items=[TallyVendorMappingOut.model_validate(r) for r in rows])
+
+
+@router.put("/vendor-mappings", response_model=TallyVendorMappingOut)
+async def set_vendor_mapping(body: TallyVendorMappingSetRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
+    org_id = _effective_org_id(user)
+    if org_id is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "A vendor mapping must be set for a specific organization.")
+    try:
+        row = await invoice_sync_svc.set_vendor_mapping(
+            db, organization_id=org_id, vendor_name=body.vendor_name, connection_id=body.connection_id,
+            company_name=body.company_name, actor_user_id=user.id,
+        )
+    except TallyVendorMappingError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    return TallyVendorMappingOut.model_validate(row)
+
+
+@router.delete("/vendor-mappings/{mapping_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_vendor_mapping(mapping_id: int, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
+    org_id = _effective_org_id(user)
+    if org_id is None or not await invoice_sync_svc.clear_vendor_mapping(db, organization_id=org_id, mapping_id=mapping_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Vendor mapping not found")

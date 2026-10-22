@@ -157,6 +157,49 @@ class TallyVoucherPreview(TenantBase):
         return f"<TallyVoucherPreview invoice={self.invoice_id} conn={self.connection_id} {self.status}>"
 
 
+class TallyVendorMapping(TenantBase):
+    """Invoice-to-Tally-company routing rule — the piece that was missing
+    end-to-end: nothing before this model linked an ApInvoice (or its
+    vendor) to any particular TallyPrime connection/company at all, so
+    tally_voucher_preview_service.build_preview() always needed a human to
+    type/pick (connection, company) by hand every single time (see
+    tally_invoice_sync_service.py, which is the only thing that ever reads
+    this table).
+
+    One row per (organization, vendor_name) — vendor_name is matched
+    case/whitespace-insensitively (see tally_invoice_sync_service.
+    _normalize_vendor()) against ApInvoice.vendor_name. A row with
+    vendor_name=NULL is this org's fallback/default routing, used when no
+    vendor-specific row matches — same "specific row, else one fallback
+    row" precedence shape as DocumentMappingDefault (Scheduled Mapping)
+    and other per-org default tables already in this codebase, not a new
+    pattern.
+
+    company_name is NOT validated here against a live discover-companies
+    call — it's trusted the same way the existing manual "type a company"
+    UI flow already trusts it (api/tally.py's preview route); a wrong
+    company name surfaces as a real, visible Tally-side error the first
+    time a preview/post actually runs against it, exactly like today."""
+    __tablename__ = "tally_vendor_mappings"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "vendor_name", name="uq_tally_vendor_mapping_org_vendor"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    organization_id: Mapped[int] = mapped_column(nullable=False, index=True)
+    vendor_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)  # NULL = org-wide fallback
+    connection_id: Mapped[int] = mapped_column(ForeignKey("connections.id"), nullable=False, index=True)
+    company_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+
+    created_by: Mapped[int | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    def __repr__(self) -> str:
+        return f"<TallyVendorMapping org={self.organization_id} vendor={self.vendor_name or '(default)'} -> conn={self.connection_id}/{self.company_name}>"
+
+
 class TallyVoucherCheckCategory(str, enum.Enum):
     REQUIRED_FIELDS = "REQUIRED_FIELDS"
     BALANCE = "BALANCE"

@@ -362,3 +362,32 @@ class TallyReconciliationExceptionOut(BaseModel):
 class TallyReconciliationExceptionListOut(BaseModel):
     items: list[TallyReconciliationExceptionOut]
     total: int
+
+
+# ── Vendor -> Tally company routing (Invoice Auto-Sync) ─────────────
+# See services/tally_invoice_sync_service.py's module docstring for what
+# this actually drives — an ApInvoice's vendor_name resolves to one of
+# these rows (or the org-wide default, vendor_name=None) to pick the
+# TallyPrime connection + company a STRAIGHT_THROUGH invoice auto-syncs to.
+
+class TallyVendorMappingSetRequest(BaseModel):
+    vendor_name: str | None = None  # None/blank = this org's default/fallback row
+    connection_id: int
+    company_name: str
+
+
+class TallyVendorMappingOut(BaseModel):
+    id: int
+    organization_id: int
+    vendor_name: str | None
+    connection_id: int
+    company_name: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class TallyVendorMappingListOut(BaseModel):
+    items: list[TallyVendorMappingOut]

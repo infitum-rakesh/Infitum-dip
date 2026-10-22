@@ -20,7 +20,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Scale, RefreshCw, ExternalLink, CalendarClock, AlertTriangle } from 'lucide-react';
+import { Scale, RefreshCw, ExternalLink, CalendarClock, AlertTriangle, Workflow, Plus, Trash2 } from 'lucide-react';
 import { Button, DataTable, StatusBadge, EmptyState, LoadingSpinner, Modal } from '@/components/common/index.js';
 import { formatDateTime } from '@/utils/formatters.js';
 import { connectionApi } from '@/services/api/connectionApi.js';
@@ -59,6 +59,15 @@ export default function TallyReconciliation() {
   const [exceptions, setExceptions] = useState([]);
   const [exceptionsLoading, setExceptionsLoading] = useState(false);
 
+  // Vendor -> Company Mapping (Invoice Auto-Sync) — org-wide, not scoped to
+  // the connection picker above (each row carries its own connection_id).
+  const [vendorMappings, setVendorMappings] = useState([]);
+  const [vendorMappingsLoading, setVendorMappingsLoading] = useState(true);
+  const [mappingModalOpen, setMappingModalOpen] = useState(false);
+  const [mappingForm, setMappingForm] = useState({ vendorName: '', connectionId: '', companyName: '' });
+  const [mappingSaving, setMappingSaving] = useState(false);
+  const [mappingError, setMappingError] = useState(null);
+
   useEffect(() => {
     connectionApi.list({ connection_type: 'TALLY_PRIME', page_size: 200 })
       .then((r) => {
@@ -93,7 +102,57 @@ export default function TallyReconciliation() {
 
   useEffect(() => { loadRuns(); loadSchedules(); }, [loadRuns, loadSchedules]);
 
+  const loadVendorMappings = useCallback(() => {
+    setVendorMappingsLoading(true);
+    tallyApi.listVendorMappings()
+      .then((r) => { setVendorMappings(r.items ?? []); setVendorMappingsLoading(false); })
+      .catch(() => setVendorMappingsLoading(false));
+  }, []);
+
+  useEffect(() => { loadVendorMappings(); }, [loadVendorMappings]);
+
   const selectConnection = (id) => setSearchParams({ connection: id }, { replace: true });
+
+  const openAddMapping = () => {
+    setMappingForm({ vendorName: '', connectionId: connection ? String(connection.id) : '', companyName: company || '' });
+    setMappingError(null);
+    setMappingModalOpen(true);
+  };
+
+  const openEditMapping = (row) => {
+    setMappingForm({ vendorName: row.vendor_name || '', connectionId: String(row.connection_id), companyName: row.company_name });
+    setMappingError(null);
+    setMappingModalOpen(true);
+  };
+
+  const handleSaveMapping = async () => {
+    if (!mappingForm.connectionId || !mappingForm.companyName.trim()) return;
+    setMappingSaving(true);
+    setMappingError(null);
+    try {
+      await tallyApi.setVendorMapping({
+        vendorName: mappingForm.vendorName.trim() || null,
+        connectionId: Number(mappingForm.connectionId),
+        companyName: mappingForm.companyName.trim(),
+      });
+      setMappingModalOpen(false);
+      loadVendorMappings();
+    } catch (err) {
+      setMappingError(apiErrorMessage(err, 'Could not save this mapping.'));
+    } finally {
+      setMappingSaving(false);
+    }
+  };
+
+  const handleDeleteMapping = async (row) => {
+    if (!window.confirm(`Remove the routing rule for "${row.vendor_name || 'Default (fallback)'}"?`)) return;
+    try {
+      await tallyApi.clearVendorMapping(row.id);
+      loadVendorMappings();
+    } catch (err) {
+      window.alert(apiErrorMessage(err, 'Could not remove this mapping.'));
+    }
+  };
 
   const handleRun = async () => {
     if (!connection || !company.trim()) return;
@@ -154,6 +213,28 @@ export default function TallyReconciliation() {
     },
   ];
 
+  const vendorMappingColumns = [
+    {
+      key: 'vendor_name', header: 'Vendor',
+      render: (v) => v || <StatusBadge variant="info">Default (fallback)</StatusBadge>,
+    },
+    {
+      key: 'connection_id', header: 'Tally Connection',
+      render: (v) => connections.find((c) => c.id === v)?.name || `#${v}`,
+    },
+    { key: 'company_name', header: 'Tally Company' },
+    { key: 'updated_at', header: 'Updated', render: (v) => formatDateTime(v) },
+    {
+      key: 'actions', header: '',
+      render: (_v, row) => (
+        <div style={{ display: 'flex', gap: 6 }}>
+          <Button size="sm" variant="secondary" onClick={() => openEditMapping(row)}>Edit</Button>
+          <Button size="sm" variant="secondary" icon={<Trash2 size={12} />} onClick={() => handleDeleteMapping(row)} />
+        </div>
+      ),
+    },
+  ];
+
   const exceptionColumns = [
     { key: 'exception_type', header: 'Type', render: (v) => <StatusBadge variant={v === 'MATCHED' ? 'success' : 'warning'}>{EXCEPTION_LABEL[v] || v}</StatusBadge> },
     { key: 'party_name', header: 'Party', render: (v) => v || '—' },
@@ -163,7 +244,7 @@ export default function TallyReconciliation() {
     { key: 'message', header: 'Message' },
     {
       key: 'review_item_id', header: 'Review Queue',
-      render: (v) => v ? <Button size="sm" variant="secondary" onClick={() => navigate(`/app/review-queue/${v}`)}>View #{v}</Button> : <span className="tly-text-muted">—</span>,
+      render: (v) => v ? <Button size="sm" variant="secondary" onClick={() => navigate(`/app/doc-intel/review/${v}`)}>View #{v}</Button> : <span className="tly-text-muted">—</span>,
     },
   ];
 
@@ -194,7 +275,39 @@ export default function TallyReconciliation() {
           description="Create a TallyPrime connection from Connections first."
           action={{ label: 'Go to Connections', onClick: () => navigate('/app/connections') }}
         />
-      ) : connection && (
+      ) : (
+        <>
+          <div className="tly-section-title" style={{ marginTop: 4 }}>
+            <Workflow size={14} style={{ verticalAlign: -2, marginRight: 4 }} />
+            Vendor → Company Mapping (Invoice Auto-Sync)
+          </div>
+          <p className="tly-text-muted" style={{ marginTop: 4, marginBottom: 8 }}>
+            Routes a STRAIGHT_THROUGH invoice from Invoice Intelligence to the correct Tally connection/company by
+            vendor name, then automatically builds the voucher, runs it through Approval, and writes it back to
+            Tally — see Settings → Document Intelligence → "Enable Tally Auto-Sync". A row with no vendor name is
+            this org's fallback, used when no vendor-specific row matches.
+          </p>
+          <div className="tly-list-table-panel" style={{ marginBottom: 18 }}>
+            <DataTable
+              columns={vendorMappingColumns}
+              data={vendorMappings}
+              loading={vendorMappingsLoading}
+              emptyState={
+                <EmptyState
+                  icon={<Workflow size={28} />}
+                  title="No routing rules yet"
+                  description="Add a vendor-specific rule, or a default fallback rule, to enable automatic invoice sync."
+                />
+              }
+            />
+            <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border-color, #e5e7eb)' }}>
+              <Button size="sm" icon={<Plus size={14} />} onClick={openAddMapping}>Add Mapping</Button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {connectionsLoading ? null : connection && (
         <>
           <div className="tly-build-panel">
             {runError && <div className="tly-banner-error">{runError}</div>}
@@ -270,6 +383,58 @@ export default function TallyReconciliation() {
         ) : (
           <DataTable columns={exceptionColumns} data={exceptions} loading={false} />
         )}
+      </Modal>
+
+      <Modal
+        open={mappingModalOpen}
+        onClose={() => setMappingModalOpen(false)}
+        title="Vendor → Company Mapping"
+        size="md"
+      >
+        <div className="tly-build-field" style={{ marginBottom: 12 }}>
+          <label>Vendor Name</label>
+          <input
+            className="tly-inline-input"
+            value={mappingForm.vendorName}
+            onChange={(e) => setMappingForm((f) => ({ ...f, vendorName: e.target.value }))}
+            placeholder="Exact vendor name as it appears on the invoice — leave blank for the org default"
+          />
+          <p className="tly-text-muted" style={{ marginTop: 4, fontSize: 12 }}>
+            Matched case/whitespace-insensitively against the invoice's vendor name. Leave blank to set/replace this
+            org's default fallback row, used when no vendor-specific row matches.
+          </p>
+        </div>
+        <div className="tly-build-field" style={{ marginBottom: 12 }}>
+          <label>Tally Connection</label>
+          <select
+            className="tly-inline-input"
+            value={mappingForm.connectionId}
+            onChange={(e) => setMappingForm((f) => ({ ...f, connectionId: e.target.value }))}
+          >
+            <option value="">Select a connection…</option>
+            {connections.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+        <div className="tly-build-field" style={{ marginBottom: 12 }}>
+          <label>Tally Company</label>
+          <input
+            className="tly-inline-input"
+            value={mappingForm.companyName}
+            onChange={(e) => setMappingForm((f) => ({ ...f, companyName: e.target.value }))}
+            placeholder="Exact company name in Tally"
+          />
+        </div>
+        {mappingError && <div className="tly-banner-error">{mappingError}</div>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+          <Button variant="secondary" onClick={() => setMappingModalOpen(false)}>Cancel</Button>
+          <Button
+            loading={mappingSaving}
+            disabled={!mappingForm.connectionId || !mappingForm.companyName.trim()}
+            onClick={handleSaveMapping}
+          >
+            Save
+          </Button>
+        </div>
       </Modal>
     </div>
   );
