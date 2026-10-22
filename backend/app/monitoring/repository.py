@@ -503,6 +503,94 @@ async def tally_overview(db: AsyncSession, organization_id: int | None, since: d
     }
 
 
+# ── India Verification (Phase Group 5, IV26) ──
+# Same "read straight off the real tables, no new persistence" convention
+# as tally_overview() above — VerificationUsage is the append-only raw
+# log this all derives from (see its own docstring: "Observability/
+# Reports aggregate from, derive at read time").
+
+async def india_verification_overview(db: AsyncSession, organization_id: int | None, since: datetime) -> dict:
+    from app.models.connection import Connection
+    from app.models.india_verification import VerificationCheckType, VerificationResult, VerificationUsage
+    from app.models.india_verification_jobs import VerificationJobItem, VerificationJobItemStatus
+    from app.models.india_verification_rules import VerificationRule, VerificationRuleStatus
+
+    usage_stmt = select(VerificationUsage).where(VerificationUsage.created_at >= since)
+    if organization_id is not None:
+        usage_stmt = usage_stmt.where(VerificationUsage.organization_id == organization_id)
+    usage_rows = (await db.execute(usage_stmt)).scalars().all()
+
+    requests_total = len(usage_rows)
+    requests_by_check_type: dict[str, int] = {}
+    outcome_counts: dict[str, int] = {}
+    requests_by_provider_id: dict[int | None, int] = {}
+    for u in usage_rows:
+        ct = u.check_type.value if hasattr(u.check_type, "value") else u.check_type
+        requests_by_check_type[ct] = requests_by_check_type.get(ct, 0) + 1
+        outcome_counts[u.outcome] = outcome_counts.get(u.outcome, 0) + 1
+        requests_by_provider_id[u.provider_connection_id] = requests_by_provider_id.get(u.provider_connection_id, 0) + 1
+
+    def _rate(statuses: set[str]) -> float | None:
+        if requests_total == 0:
+            return None
+        matched = sum(v for k, v in outcome_counts.items() if k in statuses)
+        return round(matched / requests_total * 100, 1)
+
+    success_rate_pct = _rate({"VERIFIED", "VERIFIED_WITH_WARNINGS"})
+    mismatch_rate_pct = _rate({"MISMATCH"})
+    unavailable_rate_pct = _rate({"UNAVAILABLE"})
+
+    provider_ids = [pid for pid in requests_by_provider_id if pid is not None]
+    provider_names: dict[int, str] = {}
+    if provider_ids:
+        rows = (await db.execute(select(Connection.id, Connection.name).where(Connection.id.in_(provider_ids)))).all()
+        provider_names = {cid: name for cid, name in rows}
+    requests_by_provider = {
+        (provider_names.get(pid, f"Connection #{pid}") if pid is not None else "Not configured"): count
+        for pid, count in requests_by_provider_id.items()
+    }
+
+    retry_stmt = select(func.coalesce(func.sum(VerificationResult.retry_count), 0)).where(VerificationResult.updated_at >= since)
+    if organization_id is not None:
+        retry_stmt = retry_stmt.where(VerificationResult.organization_id == organization_id)
+    retry_count_total = (await db.execute(retry_stmt)).scalar_one()
+
+    stale_stmt = select(func.count()).select_from(VerificationResult).where(
+        VerificationResult.expires_at.is_not(None), VerificationResult.expires_at < datetime.now(timezone.utc),
+    )
+    if organization_id is not None:
+        stale_stmt = stale_stmt.where(VerificationResult.organization_id == organization_id)
+    stale_results_count = (await db.execute(stale_stmt)).scalar_one()
+
+    needs_attention_stmt = select(func.count()).select_from(VerificationJobItem).where(VerificationJobItem.status == VerificationJobItemStatus.NEEDS_ATTENTION)
+    if organization_id is not None:
+        needs_attention_stmt = needs_attention_stmt.where(VerificationJobItem.organization_id == organization_id)
+    needs_attention_count = (await db.execute(needs_attention_stmt)).scalar_one()
+
+    active_rules_stmt = select(func.count()).select_from(VerificationRule).where(
+        VerificationRule.is_current.is_(True), VerificationRule.status == VerificationRuleStatus.ACTIVE,
+    )
+    if organization_id is not None:
+        active_rules_stmt = active_rules_stmt.where((VerificationRule.organization_id == organization_id) | (VerificationRule.organization_id.is_(None)))
+    else:
+        active_rules_stmt = active_rules_stmt.where(VerificationRule.organization_id.is_(None))
+    active_rules_count = (await db.execute(active_rules_stmt)).scalar_one()
+
+    return {
+        "requests_total": requests_total,
+        "requests_by_check_type": requests_by_check_type,
+        "requests_by_provider": requests_by_provider,
+        "outcome_counts": outcome_counts,
+        "success_rate_pct": success_rate_pct,
+        "mismatch_rate_pct": mismatch_rate_pct,
+        "unavailable_rate_pct": unavailable_rate_pct,
+        "retry_count_total": retry_count_total,
+        "stale_results_count": stale_results_count,
+        "needs_attention_count": needs_attention_count,
+        "active_rules_count": active_rules_count,
+    }
+
+
 # ── Pipelines (for pickers / SLA scoping) ──
 
 async def list_pipelines(db: AsyncSession, organization_id: int | None) -> list[Pipeline]:

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { Button, Modal } from '@/components/common/index.js';
 import { connectionApi } from '@/services/api/connectionApi.js';
+import { mappingApi } from '@/services/api/mappingApi.js';
 import { pipelineApi } from '@/services/api/pipelineApi.js';
 import { scheduleApi } from '@/services/api/scheduleApi.js';
 
@@ -27,6 +28,11 @@ const EMPTY_DOCUMENT_CONFIG = {
   archive_after_success: false, archive_path: '', move_failed_to_review_path: '',
   duplicate_content_behavior: 'SKIP_DUPLICATE', max_file_size_mb: 100,
   document_type: '', invoice_auto_post: false, invoice_erp_connection_id: '',
+  // Scheduled Mapping (Document Intelligence spec, section 7) — the
+  // schedule's own explicit mapping profile. Empty means "fall through
+  // to the organisation's default for this document_type, if any" —
+  // see document_mapping_resolution_service.resolve_scheduled_mapping().
+  mapping_id: '',
 };
 
 const DOCUMENT_TYPES = [
@@ -47,6 +53,15 @@ const DATABASE_DOCUMENT_TYPES = [{ value: 'INVOICE', label: 'Invoice (Invoice In
 // pre-existing "TallyJob" row to point at — mirrors DocumentScheduleConfig's
 // 1:1 side-table shape instead.
 const EMPTY_TALLY_CONFIG = { connection_id: '', company_name: '', tolerance: 0.02, lookback_days: 7 };
+
+// Phase Group 4 (IV21) — a recurring India Verification expired-check
+// advisory sweep. No connection/credential of its own: it just queries
+// this org's own VerificationResult rows for expires_at <= now and
+// records a to-do item per expired check — never a real re-verification
+// (the identifier value is never stored, see verification_job_service.
+// create_refresh_job_for_expired()'s docstring).
+const EMPTY_IV_CONFIG = { business_process: '', check_types: [] };
+const IV_CHECK_TYPES = ['PAN', 'GSTIN', 'TAN', 'UDYAM', 'AADHAAR', 'MCA', 'MOA'];
 
 const API_PAGINATION_STYLES = [
   { value: 'none', label: 'None — single request' },
@@ -100,14 +115,17 @@ function toLocalParts(iso, timeZone) {
 export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [pipelines, setPipelines] = useState([]);
-  const [sourceType, setSourceType] = useState('PIPELINE'); // 'PIPELINE' | 'DOCUMENT_SOURCE' | 'INVOICE_SOURCE' | 'TALLY_RECONCILIATION'
+  const [sourceType, setSourceType] = useState('PIPELINE'); // 'PIPELINE' | 'DOCUMENT_SOURCE' | 'INVOICE_SOURCE' | 'TALLY_RECONCILIATION' | 'INDIA_VERIFICATION'
   const [docConfig, setDocConfig] = useState(EMPTY_DOCUMENT_CONFIG);
   const [tallyConfig, setTallyConfig] = useState(EMPTY_TALLY_CONFIG);
+  const [ivConfig, setIvConfig] = useState(EMPTY_IV_CONFIG);
   const [storageConnections, setStorageConnections] = useState([]);
   const [dbConnections, setDbConnections] = useState([]);
   const [apiConnections, setApiConnections] = useState([]);
   const [erpConnections, setErpConnections] = useState([]);
   const [tallyConnections, setTallyConnections] = useState([]);
+  const [mappingProfiles, setMappingProfiles] = useState([]);
+  const [mappingDefaults, setMappingDefaults] = useState([]);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -134,6 +152,14 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
       .catch(() => {});
     // TALLY_PRIME connections (TALLY-J3) — same generic Connections reuse rule.
     connectionApi.list({ connection_type: 'TALLY_PRIME', page_size: 200 }).then((r) => setTallyConnections(r.items ?? [])).catch(() => {});
+    // Scheduled Mapping (section 7) — document-sourced PUBLISHED mapping
+    // profiles for the "Mapping Profile" picker below, and the org's
+    // configured defaults so the picker can show "will use the default"
+    // when the schedule has no explicit choice of its own.
+    mappingApi.list({ status: 'PUBLISHED' })
+      .then((r) => setMappingProfiles((r.items ?? []).filter((m) => m.source_document_type)))
+      .catch(() => {});
+    mappingApi.getMappingDefaults().then((r) => setMappingDefaults(r.items ?? [])).catch(() => {});
   }, [open]);
 
   useEffect(() => {
@@ -171,16 +197,24 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
         setSourceType('TALLY_RECONCILIATION');
         setTallyConfig({ ...EMPTY_TALLY_CONFIG, ...schedule.tally_config });
         setDocConfig(EMPTY_DOCUMENT_CONFIG);
+        setIvConfig(EMPTY_IV_CONFIG);
+      } else if (schedule.india_verification_config) {
+        setSourceType('INDIA_VERIFICATION');
+        setIvConfig({ ...EMPTY_IV_CONFIG, ...schedule.india_verification_config, check_types: schedule.india_verification_config.check_types || [] });
+        setDocConfig(EMPTY_DOCUMENT_CONFIG);
+        setTallyConfig(EMPTY_TALLY_CONFIG);
       } else {
         setSourceType('PIPELINE');
         setDocConfig(EMPTY_DOCUMENT_CONFIG);
         setTallyConfig(EMPTY_TALLY_CONFIG);
+        setIvConfig(EMPTY_IV_CONFIG);
       }
     } else {
       setForm({ ...EMPTY_FORM, start_date: todayISO() });
       setSourceType('PIPELINE');
       setDocConfig(EMPTY_DOCUMENT_CONFIG);
       setTallyConfig(EMPTY_TALLY_CONFIG);
+      setIvConfig(EMPTY_IV_CONFIG);
     }
     setError(null);
     setAdvancedOpen(false);
@@ -200,6 +234,14 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
     const val = e?.target ? e.target.value : e;
     setTallyConfig((c) => ({ ...c, [key]: val }));
   };
+
+  const setIv = (key) => (e) => {
+    const val = e?.target ? e.target.value : e;
+    setIvConfig((c) => ({ ...c, [key]: val }));
+  };
+  const toggleIvCheckType = (t) => setIvConfig((c) => ({
+    ...c, check_types: c.check_types.includes(t) ? c.check_types.filter((x) => x !== t) : [...c.check_types, t],
+  }));
 
   const setPipeline = (id) => {
     const p = pipelines.find((x) => x.id === id);
@@ -267,6 +309,10 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
           invoice_auto_post: (isNonFile || sourceType === 'INVOICE_SOURCE' || docConfig.document_type === 'INVOICE') ? docConfig.invoice_auto_post : false,
           invoice_erp_connection_id: ((isNonFile || sourceType === 'INVOICE_SOURCE' || docConfig.document_type === 'INVOICE') && docConfig.invoice_auto_post && docConfig.invoice_erp_connection_id)
             ? Number(docConfig.invoice_erp_connection_id) : null,
+          // Scheduled Mapping (section 7) — explicit profile for this
+          // schedule, or null to fall through to the org default at
+          // resolution time (see resolve_scheduled_mapping()).
+          mapping_id: docConfig.mapping_id ? Number(docConfig.mapping_id) : null,
         };
       }
       if (isTallySource) {
@@ -275,6 +321,12 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
           company_name: tallyConfig.company_name,
           tolerance: Number(tallyConfig.tolerance),
           lookback_days: Number(tallyConfig.lookback_days),
+        };
+      }
+      if (sourceType === 'INDIA_VERIFICATION') {
+        body.india_verification_config = {
+          business_process: ivConfig.business_process.trim(),
+          check_types: ivConfig.check_types.length ? ivConfig.check_types : null,
         };
       }
       if (schedule) await scheduleApi.update(schedule.id, body);
@@ -287,6 +339,19 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
       setSaving(false);
     }
   };
+
+  // Scheduled Mapping (section 7) — the document_type a mapping_id pick
+  // will actually be validated against, mirroring handleSave's own
+  // document_type-forcing logic for DATABASE/API/ERP kinds and the
+  // Invoice Source top-level choice.
+  const isNonFileKind = docConfig.source_kind === 'DATABASE' || docConfig.source_kind === 'API' || docConfig.source_kind === 'ERP';
+  const effectiveMappingDocType = (isNonFileKind || sourceType === 'INVOICE_SOURCE') ? 'INVOICE' : (docConfig.document_type || null);
+  const eligibleMappingProfiles = mappingProfiles.filter(
+    (m) => m.source_document_type === 'GENERIC' || m.source_document_type === effectiveMappingDocType
+  );
+  const orgDefaultForType = effectiveMappingDocType
+    ? mappingDefaults.find((d) => d.document_type === effectiveMappingDocType)
+    : null;
 
   const isDocSourceType = sourceType === 'DOCUMENT_SOURCE' || sourceType === 'INVOICE_SOURCE';
   const docSourceValid = !isDocSourceType || (
@@ -305,10 +370,11 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
     tallyConfig.connection_id && tallyConfig.company_name.trim()
     && Number(tallyConfig.tolerance) >= 0 && Number(tallyConfig.lookback_days) > 0
   );
+  const ivConfigValid = sourceType !== 'INDIA_VERIFICATION' || !!ivConfig.business_process.trim();
   const valid = form.name && form.start_date && form.start_time
     && (form.frequency !== 'CUSTOM_CRON' || form.cron_expression)
     && (sourceType === 'PIPELINE' ? form.pipeline_id : true)
-    && docSourceValid && tallyConfigValid;
+    && docSourceValid && tallyConfigValid && ivConfigValid;
 
   return (
     <Modal
@@ -332,6 +398,7 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
             <option value="DOCUMENT_SOURCE">Document Source (Scheduled Document Intelligence)</option>
             <option value="INVOICE_SOURCE">Invoice Source (Scheduled Invoice Intelligence)</option>
             <option value="TALLY_RECONCILIATION">Tally Reconciliation (Scheduled)</option>
+            <option value="INDIA_VERIFICATION">India Verification (Expired-Check Advisory)</option>
           </select>
           {sourceType === 'INVOICE_SOURCE' && (
             <div className="sched-field-hint">
@@ -342,6 +409,13 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
           {sourceType === 'TALLY_RECONCILIATION' && (
             <div className="sched-field-hint">
               Refreshes vouchers/parties from Tally (incremental), runs the two-sided reconciliation engine, and escalates any exceptions to Review Queue — same engine as the manual "Run Reconciliation" action on the Tally Reconciliation page.
+            </div>
+          )}
+          {sourceType === 'INDIA_VERIFICATION' && (
+            <div className="sched-field-hint">
+              Sweeps for verification results past their freshness horizon and flags them as needing attention — never
+              re-verifies automatically, since the identifier value is never stored. See the Verification Batches page
+              for the resulting advisory items.
             </div>
           )}
         </div>
@@ -653,6 +727,26 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
             </div>
           </div>
 
+          <div className="sched-section-title">Mapping</div>
+          <div className="sched-field-grid">
+            <div className="sched-field">
+              <label className="sched-field-label">Mapping Profile</label>
+              <select className="sched-input" value={docConfig.mapping_id || ''} onChange={setDoc('mapping_id')}>
+                <option value="">
+                  {orgDefaultForType ? `Use organisation default (${orgDefaultForType.mapping_name})` : 'None — preserve original extracted JSON'}
+                </option>
+                {eligibleMappingProfiles.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </select>
+              <div className="sched-field-hint">
+                {effectiveMappingDocType === null
+                  ? 'Auto-detect is on, so only a GENERIC-built mapping profile can be picked here — a specific one is resolved per-document at run time instead.'
+                  : orgDefaultForType
+                  ? `Optional — leave unset to use the organisation's default mapping for ${effectiveMappingDocType} ("${orgDefaultForType.mapping_name}"), set here to override it just for this schedule.`
+                  : `Optional — no organisation default is set for ${effectiveMappingDocType} yet, so leaving this unset preserves the original extracted JSON after each run.`}
+              </div>
+            </div>
+          </div>
+
           {docConfig.source_kind === 'FILE' && (
           <>
           <div className="sched-section-title">Post-Processing</div>
@@ -728,6 +822,30 @@ export function ScheduleFormModal({ open, onClose, schedule, onSaved }) {
               <label className="sched-field-label">Lookback Window (days)</label>
               <input type="number" min="1" className="sched-input" value={tallyConfig.lookback_days} onChange={setTally('lookback_days')} />
               <div className="sched-field-hint">How far back the incremental voucher/party refresh looks before reconciling.</div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {sourceType === 'INDIA_VERIFICATION' && (
+        <>
+          <div className="sched-form-divider" />
+          <div className="sched-section-title">India Verification</div>
+          <div className="sched-field-grid">
+            <div className="sched-field">
+              <label className="sched-field-label">Business Process<span className="sched-required">*</span></label>
+              <input className="sched-input" value={ivConfig.business_process} onChange={setIv('business_process')} placeholder="e.g. VENDOR_ONBOARDING" />
+              <div className="sched-field-hint">Matches VerificationCase.business_process — same value used on Verification Rules.</div>
+            </div>
+            <div className="sched-field" style={{ gridColumn: '1 / -1' }}>
+              <label className="sched-field-label">Check Types (optional — blank sweeps every expired check)</label>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                {IV_CHECK_TYPES.map((t) => (
+                  <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
+                    <input type="checkbox" checked={ivConfig.check_types.includes(t)} onChange={() => toggleIvCheckType(t)} />{t}
+                  </label>
+                ))}
+              </div>
             </div>
           </div>
         </>

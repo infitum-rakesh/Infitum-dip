@@ -37,6 +37,17 @@ const APPROVAL_STAT_TILES = [
   { key: 'approver_not_found', label: 'Approver Not Found', tone: 'danger' },
 ];
 
+// Scheduled Mapping (Document Intelligence spec, section 7) — these keys
+// only appear in document_stats once the schedule's mapping has actually
+// been attempted at least once (see schedule_service.py's call site) —
+// a schedule that never has a mapping configured simply never populates
+// them, so the whole section below is hidden rather than showing
+// permanent zeros, same principle as the approval tiles above.
+const MAPPING_STAT_TILES = [
+  { key: 'mapping_applied', label: 'Mapping Applied', tone: 'success' },
+  { key: 'mapping_failed', label: 'Mapping Failed', tone: 'danger' },
+];
+
 /** DocumentRunProgress — the Scheduled Document Intelligence Workflow's
  * run-detail progress view (spec section 15/16): a progress bar, per-
  * outcome stat tiles, current file/stage while RUNNING, Cancel, and a
@@ -47,6 +58,26 @@ const APPROVAL_STAT_TILES = [
 export function DocumentRunProgress({ scheduleId, run, onCancel, cancelling, isInvoiceSchedule }) {
   const [rows, setRows] = useState([]);
   const [loadingRows, setLoadingRows] = useState(true);
+  const [retrying, setRetrying] = useState(false);
+  const [retryResult, setRetryResult] = useState(null);
+  const [retryError, setRetryError] = useState('');
+
+  // Section 7.5 — "allow retry after config correction": re-attempts
+  // mapping for every document this schedule has successfully
+  // extracted, not just this one run — see schedule_service.
+  // retry_scheduled_mapping()'s own docstring for why that's still safe
+  // and idempotent.
+  const retryMapping = async () => {
+    setRetrying(true); setRetryError(''); setRetryResult(null);
+    try {
+      const result = await scheduleApi.retryScheduledMapping(scheduleId);
+      setRetryResult(result);
+    } catch (err) {
+      setRetryError(err?.response?.data?.detail ?? err?.message ?? 'Retry failed.');
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -121,6 +152,36 @@ export function DocumentRunProgress({ scheduleId, run, onCancel, cancelling, isI
               </div>
             ))}
           </div>
+        </>
+      )}
+
+      {((stats.mapping_applied ?? 0) + (stats.mapping_failed ?? 0) > 0) && (
+        <>
+          <div className="card-title" style={{ marginTop: 16, marginBottom: 8 }}>Mapping Outcomes</div>
+          <div className="sched-doc-stat-tiles">
+            {MAPPING_STAT_TILES.map((t) => (
+              <div key={t.key} className={`sched-doc-stat-tile${t.tone ? ` sched-doc-stat-tile--${t.tone}` : ''}`}>
+                <div className="sched-doc-stat-value">{stats[t.key] ?? 0}</div>
+                <div className="sched-doc-stat-label">{t.label}</div>
+              </div>
+            ))}
+          </div>
+          {stats.last_mapping_error && (
+            <div className="text-danger text-sm" style={{ marginTop: 6 }} title={stats.last_mapping_error}>
+              Last mapping error: {stats.last_mapping_error.length > 160 ? `${stats.last_mapping_error.slice(0, 160)}…` : stats.last_mapping_error}
+            </div>
+          )}
+          {stats.mapping_failed > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <Button size="sm" variant="secondary" loading={retrying} onClick={retryMapping}>Retry Mapping</Button>
+              {retryError && <span className="text-danger text-sm" style={{ marginLeft: 8 }}>{retryError}</span>}
+              {retryResult && (
+                <span className="text-muted text-sm" style={{ marginLeft: 8 }}>
+                  Retried: {retryResult.applied_success} applied, {retryResult.config_error} still failing, {retryResult.already_applied} already applied.
+                </span>
+              )}
+            </div>
+          )}
         </>
       )}
 

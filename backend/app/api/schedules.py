@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import require_action
 from app.database.tenant_routing import get_tenant_db
 from app.models.user import User, UserRole
+from app.schemas.document_mapping import RetryScheduledMappingResponse
 from app.schemas.schedules import (
     DocumentRegistryListOut,
     DocumentRegistryRowOut,
@@ -21,8 +22,10 @@ from app.schemas.schedules import (
     ScheduleStatsOut,
     ScheduleUpdateRequest,
 )
+from app.services import document_mapping_service as doc_mapping_svc
 from app.services import document_schedule_service as doc_sched_svc
 from app.services import schedule_service as svc
+from app.services.document_mapping_service import DocumentMappingError
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
 
@@ -55,13 +58,14 @@ async def _get_or_404(db: AsyncSession, schedule_id: int, user: User):
 
 async def _to_out(db: AsyncSession, schedule, owner_name: str | None) -> dict:
     """svc.to_out() needs the schedule's DocumentScheduleConfig/
-    TallyReconciliationScheduleConfig row (if any) to include
-    `document_config`/`tally_config` in the response — fetched once here
-    so every route below stays a one-liner instead of repeating the
-    lookup."""
+    TallyReconciliationScheduleConfig/IndiaVerificationScheduleConfig row
+    (if any) to include `document_config`/`tally_config`/
+    `india_verification_config` in the response — fetched once here so
+    every route below stays a one-liner instead of repeating the lookup."""
     document_config = await svc.get_document_config(db, schedule.id)
     tally_config = await svc.get_tally_config(db, schedule.id)
-    return svc.to_out(schedule, owner_name, document_config, tally_config)
+    india_verification_config = await svc.get_india_verification_config(db, schedule.id)
+    return svc.to_out(schedule, owner_name, document_config, tally_config, india_verification_config)
 
 
 # ── KPIs ──────────────────────────────────────────────────────────
@@ -162,6 +166,25 @@ async def resume_schedule(schedule_id: int, user: User = Depends(_edit), db: Asy
     schedule = await svc.resume_schedule(db, schedule)
     name_map = await svc.owner_name_map(db, {schedule.owner_id} if schedule.owner_id else set())
     return await _to_out(db, schedule, name_map.get(schedule.owner_id))
+
+
+@router.post("/{schedule_id}/retry-mapping", response_model=RetryScheduledMappingResponse)
+async def retry_scheduled_mapping(schedule_id: int, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
+    """Section 7.5 — "allow retry after config correction": call this
+    after fixing whatever made this Document Source schedule's mapping
+    unresolvable (corrected its mapping profile, published a pending
+    version, or fixed the organisation's default) to re-attempt mapping
+    for every document this schedule has successfully extracted.
+    See document_mapping_service.retry_scheduled_mapping()'s own
+    docstring for why this reprocesses every eligible document rather
+    than only the ones that previously failed, and why that's still
+    idempotent."""
+    await _get_or_404(db, schedule_id, user)
+    try:
+        counts = await doc_mapping_svc.retry_scheduled_mapping(db, schedule_id=schedule_id, organization_id=_effective_org_id(user))
+    except DocumentMappingError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    return RetryScheduledMappingResponse(**counts)
 
 
 @router.post("/{schedule_id}/clone", response_model=ScheduleOut, status_code=status.HTTP_201_CREATED)

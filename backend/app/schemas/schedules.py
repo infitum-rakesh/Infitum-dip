@@ -66,6 +66,17 @@ class DocumentScheduleConfigIn(BaseModel):
     invoice_auto_post: bool = False
     invoice_erp_connection_id: int | None = None
 
+    # Scheduled Mapping (Document Intelligence: Dynamic JSON Extraction
+    # spec, section 7.1/7.2) — the EXPLICIT mapping profile this schedule
+    # applies after extraction succeeds. None means "fall through to the
+    # organisation's document-type default, if any" at resolution time
+    # (document_mapping_resolution_service.resolve_scheduled_mapping()) —
+    # never resolved here, only existence/compatibility-checked (see
+    # _validate_and_apply_document_config in schedule_service.py), since a
+    # mapping published later or re-published after this schedule is saved
+    # must still work without re-saving the schedule.
+    mapping_id: int | None = None
+
     @field_validator("source_kind")
     @classmethod
     def _source_kind_valid(cls, v: str) -> str:
@@ -222,6 +233,28 @@ class TallyReconciliationScheduleConfigOut(TallyReconciliationScheduleConfigIn):
     model_config = {"from_attributes": True}
 
 
+# Presence of `india_verification_config` on a Schedule (in/out) is what
+# makes it a scheduled India Verification expired-check advisory sweep —
+# see schedule_service.execute_schedule()'s dispatch branch and
+# verification_job_service.create_refresh_job_for_expired()'s docstring
+# for why this is an advisory sweep, not a blind auto-reverify.
+
+class IndiaVerificationScheduleConfigIn(BaseModel):
+    business_process: str
+    check_types: list[str] | None = None
+
+    @field_validator("business_process")
+    @classmethod
+    def _business_process_required(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("business_process is required.")
+        return v.strip()
+
+
+class IndiaVerificationScheduleConfigOut(IndiaVerificationScheduleConfigIn):
+    model_config = {"from_attributes": True}
+
+
 # ── Responses ────────────────────────────────────────────────────
 
 class ScheduleOut(BaseModel):
@@ -232,6 +265,7 @@ class ScheduleOut(BaseModel):
     anomaly_job_id: int | None = None
     document_config: DocumentScheduleConfigOut | None = None
     tally_config: TallyReconciliationScheduleConfigOut | None = None
+    india_verification_config: IndiaVerificationScheduleConfigOut | None = None
     environment: str
     timezone: str
     frequency: str
@@ -364,6 +398,7 @@ class ScheduleCreateRequest(BaseModel):
     anomaly_job_id: int | None = None  # AD12 — when set, pipeline_id/pipeline_name are overridden server-side (see schedule_service.create_schedule)
     document_config: DocumentScheduleConfigIn | None = None  # when set, pipeline_id/pipeline_name are overridden server-side the same way anomaly_job_id already is
     tally_config: TallyReconciliationScheduleConfigIn | None = None  # TALLY-J — same server-side override, mutually exclusive with the two above
+    india_verification_config: IndiaVerificationScheduleConfigIn | None = None  # Phase Group 4 (IV21) — same server-side override, mutually exclusive with the three above
     environment: str = "DEVELOPMENT"
     timezone: str = "UTC"
     frequency: str
@@ -385,6 +420,7 @@ class ScheduleUpdateRequest(BaseModel):
     pipeline_name: str | None = None
     document_config: DocumentScheduleConfigIn | None = None
     tally_config: TallyReconciliationScheduleConfigIn | None = None
+    india_verification_config: IndiaVerificationScheduleConfigIn | None = None
     environment: str | None = None
     timezone: str | None = None
     frequency: str | None = None

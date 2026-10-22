@@ -20,6 +20,7 @@ from app.schemas.monitoring import (
     AlertRuleUpdateRequest,
     AvailableChannelsOut,
     DataQualityOut,
+    IndiaVerificationOverviewOut,
     InvoiceProcessingOut,
     JobDetailOut,
     OverviewOut,
@@ -69,6 +70,15 @@ async def tally_overview(days: int = Query(7, ge=1, le=90), user: User = Depends
     module — see monitoring/repository.py's tally_overview() for the exact
     real-data queries behind each field."""
     return await svc.get_tally_overview(db, _org_id(user), days=days)
+
+
+@router.get("/india-verification", response_model=IndiaVerificationOverviewOut)
+async def india_verification_overview(days: int = Query(7, ge=1, le=90), user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
+    """Phase Group 5 (IV26) — real rollup off VerificationUsage/Result/
+    JobItem/Rule, the same append-only-log-derived convention as the
+    Tally overview above — see monitoring/repository.py's india_
+    verification_overview() for the exact real-data queries."""
+    return await svc.get_india_verification_overview(db, _org_id(user), days=days)
 
 
 @router.get("/pipeline-runs", response_model=PipelineRunsOut)

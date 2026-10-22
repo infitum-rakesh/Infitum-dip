@@ -18,6 +18,12 @@ export const monitoringApi = {
   // review queue depth (see monitoring/repository.py's tally_overview()).
   getTallyOverview: (days = 7) => apiClient.get('/monitoring/tally', { params: { days } }).then((r) => r.data),
 
+  // Phase Group 5 (IV26) — requests-by-check-type/provider, success/
+  // mismatch/unavailable rates, retry/stale/needs-attention counts, all
+  // derived from VerificationUsage (see monitoring/repository.py's
+  // india_verification_overview()).
+  getIndiaVerificationOverview: (days = 7) => apiClient.get('/monitoring/india-verification', { params: { days } }).then((r) => r.data),
+
   listPipelineRuns: (params = {}) => apiClient.get('/monitoring/pipeline-runs', { params }).then((r) => r.data),
 
   listScheduleRuns: (params = {}) => apiClient.get('/monitoring/schedule-runs', { params }).then((r) => r.data),

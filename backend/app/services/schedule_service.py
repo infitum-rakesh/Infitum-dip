@@ -60,11 +60,15 @@ from app.models.document import Document, DocumentStatus
 from app.models.document_schedule import DocumentScheduleConfig, DocumentSourceRegistry, DocumentSourceStatus
 from app.models.schedule import RunStatus, Schedule, ScheduleFrequency, ScheduleRun, ScheduleStatus
 from app.models.tally_schedule import TallyReconciliationScheduleConfig
+from app.models.india_verification_schedule import IndiaVerificationScheduleConfig
 from app.models.user import User
+from app.services import document_mapping_resolution_service
+from app.services import document_mapping_service as doc_mapping_svc
 from app.services import document_schedule_service as doc_sched_svc
 from app.services import document_service
 from app.services import review_queue_service as review_svc
 from app.services.connection_service import build_connector
+from app.services.document_mapping_resolution_service import ScheduledMappingConfigError
 
 # AD12 sentinel (originally ANOMALY_SCHEDULE_PIPELINE_ID, generalized here
 # for the Scheduled Document Intelligence Workflow's identical need) —
@@ -107,6 +111,13 @@ async def get_document_config(db: AsyncSession, schedule_id: int) -> DocumentSch
 async def get_tally_config(db: AsyncSession, schedule_id: int) -> TallyReconciliationScheduleConfig | None:
     result = await db.execute(
         select(TallyReconciliationScheduleConfig).where(TallyReconciliationScheduleConfig.schedule_id == schedule_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_india_verification_config(db: AsyncSession, schedule_id: int) -> "IndiaVerificationScheduleConfig | None":
+    result = await db.execute(
+        select(IndiaVerificationScheduleConfig).where(IndiaVerificationScheduleConfig.schedule_id == schedule_id)
     )
     return result.scalar_one_or_none()
 
@@ -237,6 +248,23 @@ async def _validate_and_apply_document_config(db: AsyncSession, schedule: Schedu
     if config_in.archive_after_success and not config_in.archive_path:
         raise ScheduleValidationError("Archive path is required when 'Archive after success' is enabled.")
 
+    # Scheduled Mapping (spec section 7.1/7.2) — same cross-cutting
+    # DB-lookup validation convention as the connection checks above: the
+    # pydantic-level check only proved an id was present, not that it
+    # resolves to a real, org-owned, document-sourced, PUBLISHED mapping
+    # compatible with this schedule's document_type. Reuses the exact
+    # same check resolve_scheduled_mapping() applies at execution time, so
+    # a schedule can never be saved with an explicit mapping that would
+    # immediately fail on its first real run.
+    if config_in.mapping_id is not None:
+        try:
+            await document_mapping_resolution_service.validate_schedule_mapping_id(
+                db, mapping_id=config_in.mapping_id, organization_id=schedule.organization_id,
+                document_type=config_in.document_type,
+            )
+        except ScheduledMappingConfigError as exc:
+            raise ScheduleValidationError(str(exc)) from exc
+
     # INV11 — same cross-cutting DB-lookup validation pattern as
     # source_connection_id above: the pydantic-level check only proved an
     # id was present, not that it's real, owned by this org, and actually
@@ -279,13 +307,28 @@ async def _validate_and_apply_tally_config(db: AsyncSession, schedule: Schedule,
         setattr(existing, field, value)
 
 
+async def _validate_and_apply_india_verification_config(db: AsyncSession, schedule: Schedule, config_in) -> None:
+    """Phase Group 4 (IV21) — no cross-table FK to validate here (unlike
+    the document/Tally configs above): business_process is free text,
+    same as VerificationCase.business_process itself, and check_types
+    (if given) is just a filter — an unrecognized value simply matches
+    nothing rather than needing a hard validation error."""
+    existing = await get_india_verification_config(db, schedule.id)
+    if existing is None:
+        existing = IndiaVerificationScheduleConfig(schedule_id=schedule.id)
+        db.add(existing)
+    for field, value in config_in.model_dump().items():
+        setattr(existing, field, value)
+
+
 async def create_schedule(db: AsyncSession, *, organization_id: int | None, owner_id: int, body) -> Schedule:
     pipeline_id, pipeline_name = body.pipeline_id, body.pipeline_name
     anomaly_job_id = getattr(body, "anomaly_job_id", None)
     document_config = getattr(body, "document_config", None)
     tally_config = getattr(body, "tally_config", None)
-    if sum(x is not None for x in (anomaly_job_id, document_config, tally_config)) > 1:
-        raise ScheduleValidationError("A schedule can't be linked to more than one of: an Anomaly Job, a document source, or a Tally reconciliation connection — pick one.")
+    india_verification_config = getattr(body, "india_verification_config", None)
+    if sum(x is not None for x in (anomaly_job_id, document_config, tally_config, india_verification_config)) > 1:
+        raise ScheduleValidationError("A schedule can't be linked to more than one of: an Anomaly Job, a document source, a Tally reconciliation connection, or an India Verification sweep — pick one.")
 
     if anomaly_job_id is not None:
         from app.models.anomaly import AnomalyJob  # local import: avoid a module-level anomaly<->schedule import cycle
@@ -300,8 +343,10 @@ async def create_schedule(db: AsyncSession, *, organization_id: int | None, owne
         pipeline_id, pipeline_name = NON_PIPELINE_SCHEDULE_ID, f"Document Source: {document_config.source_path}"
     elif tally_config is not None:
         pipeline_id, pipeline_name = NON_PIPELINE_SCHEDULE_ID, f"Tally Reconciliation: {tally_config.company_name}"
+    elif india_verification_config is not None:
+        pipeline_id, pipeline_name = NON_PIPELINE_SCHEDULE_ID, f"India Verification: {india_verification_config.business_process}"
     elif not pipeline_id:
-        raise ScheduleValidationError("pipeline_id is required for a Pipeline Builder schedule (or link an Anomaly Job / document source / Tally reconciliation connection instead).")
+        raise ScheduleValidationError("pipeline_id is required for a Pipeline Builder schedule (or link an Anomaly Job / document source / Tally reconciliation connection / India Verification sweep instead).")
 
     schedule = Schedule(
         organization_id=organization_id, owner_id=owner_id, name=body.name,
@@ -322,6 +367,8 @@ async def create_schedule(db: AsyncSession, *, organization_id: int | None, owne
         await _validate_and_apply_document_config(db, schedule, document_config)
     if tally_config is not None:
         await _validate_and_apply_tally_config(db, schedule, tally_config)
+    if india_verification_config is not None:
+        await _validate_and_apply_india_verification_config(db, schedule, india_verification_config)
 
     await db.commit()
     await db.refresh(schedule)
@@ -348,6 +395,10 @@ async def update_schedule(db: AsyncSession, schedule: Schedule, body) -> Schedul
     if tally_config is not None:
         await _validate_and_apply_tally_config(db, schedule, tally_config)
 
+    india_verification_config = getattr(body, "india_verification_config", None)
+    if india_verification_config is not None:
+        await _validate_and_apply_india_verification_config(db, schedule, india_verification_config)
+
     if body.frequency is not None or body.start_date is not None or body.start_time is not None or body.timezone is not None:
         _apply_frequency(
             schedule,
@@ -369,6 +420,7 @@ async def delete_schedule(db: AsyncSession, schedule: Schedule) -> None:
     await db.execute(DocumentSourceRegistry.__table__.update().where(DocumentSourceRegistry.schedule_id == schedule.id).values(schedule_id=None))
     await db.execute(DocumentScheduleConfig.__table__.delete().where(DocumentScheduleConfig.schedule_id == schedule.id))
     await db.execute(TallyReconciliationScheduleConfig.__table__.delete().where(TallyReconciliationScheduleConfig.schedule_id == schedule.id))
+    await db.execute(IndiaVerificationScheduleConfig.__table__.delete().where(IndiaVerificationScheduleConfig.schedule_id == schedule.id))
     await db.execute(ScheduleRun.__table__.delete().where(ScheduleRun.schedule_id == schedule.id))
     await db.delete(schedule)
     await db.commit()
@@ -522,12 +574,14 @@ def _as_utc_opt(dt: datetime | None) -> datetime | None:
 def to_out(
     schedule: Schedule, owner_name: str | None, document_config: DocumentScheduleConfig | None = None,
     tally_config: TallyReconciliationScheduleConfig | None = None,
+    india_verification_config: "IndiaVerificationScheduleConfig | None" = None,
 ) -> dict:
     return {
         "id": schedule.id, "name": schedule.name, "pipeline_id": schedule.pipeline_id, "pipeline_name": schedule.pipeline_name,
         "anomaly_job_id": schedule.anomaly_job_id,
         "document_config": _document_config_to_out(document_config) if document_config is not None else None,
         "tally_config": _tally_config_to_out(tally_config) if tally_config is not None else None,
+        "india_verification_config": _india_verification_config_to_out(india_verification_config) if india_verification_config is not None else None,
         "environment": schedule.environment.value, "timezone": schedule.timezone, "frequency": schedule.frequency.value,
         "frequency_display": frequency_display(schedule), "start_at": _as_utc(schedule.start_at), "cron_expression": schedule.cron_expression,
         "status": schedule.status.value, "next_run_at": _as_utc_opt(schedule.next_run_at), "last_run_at": _as_utc_opt(schedule.last_run_at),
@@ -560,6 +614,10 @@ def _tally_config_to_out(config: TallyReconciliationScheduleConfig) -> dict:
         "connection_id": config.connection_id, "company_name": config.company_name,
         "tolerance": config.tolerance, "lookback_days": config.lookback_days,
     }
+
+
+def _india_verification_config_to_out(config: "IndiaVerificationScheduleConfig") -> dict:
+    return {"business_process": config.business_process, "check_types": config.check_types}
 
 
 def run_to_out(run: ScheduleRun) -> dict:
@@ -752,6 +810,56 @@ async def _execute_tally_reconciliation_schedule(db: AsyncSession, schedule: Sch
     run.logs = logs
 
 
+async def _execute_india_verification_schedule(db: AsyncSession, schedule: Schedule, run: ScheduleRun, now: datetime) -> None:
+    """Phase Group 4 (IV21) — real dispatch branch: finds VerificationResult
+    rows past their expires_at horizon for this schedule's business_process
+    and records a NEEDS_ATTENTION advisory item per expired check (see
+    verification_job_service.create_refresh_job_for_expired()'s own
+    docstring for why this is a to-do sweep, not an automatic re-verify —
+    the identifier value is never stored in the clear). Awaited inline
+    like the Tally branch: a DB query over this org's cases is bounded,
+    nothing like a per-file OCR/AI pipeline. Never raises — a failure
+    here is captured into run.status=FAILED, same as every other branch."""
+    from app.services.compliance import verification_job_service
+
+    config = await get_india_verification_config(db, schedule.id)
+    logs: list[dict] = [_log(now, "INFO", f"Sweeping expired verification results for business process '{config.business_process if config else '?'}'…")]
+    try:
+        if config is None:
+            raise ValueError("This schedule's India Verification configuration no longer exists.")
+        if schedule.organization_id is None:
+            raise ValueError("India Verification sweeps must be scoped to a specific organization.")
+
+        job_run = await verification_job_service.create_refresh_job_for_expired(
+            db, schedule.organization_id, business_process=config.business_process, check_types=config.check_types,
+            schedule_id=schedule.id, created_by=schedule.owner_id,
+        )
+        ended_at = datetime.now(timezone.utc)
+        if job_run is None:
+            logs.append(_log(ended_at, "INFO", "Nothing expired — no advisory items created."))
+            run.records_processed = 0
+            run.records_failed = 0
+        else:
+            logs.append(_log(ended_at, "INFO", f"Batch #{job_run.id} — {job_run.needs_attention_items} check(s) need manual re-verification."))
+            run.records_processed = job_run.total_items
+            run.records_failed = 0
+        run.status = RunStatus.SUCCESS
+        run.error_message = None
+        run.ended_at = ended_at
+        run.duration_seconds = round((ended_at - now).total_seconds(), 1)
+    except Exception as exc:
+        ended_at = datetime.now(timezone.utc)
+        run.status = RunStatus.FAILED
+        run.ended_at = ended_at
+        run.duration_seconds = round((ended_at - now).total_seconds(), 1)
+        run.records_processed = 0
+        run.records_failed = 0
+        run.error_message = str(exc)
+        logs.append(_log(ended_at, "ERROR", str(exc)))
+
+    run.logs = logs
+
+
 def _finalize_schedule(schedule: Schedule, run: ScheduleRun) -> None:
     """Shared by all three execute_schedule() dispatch branches (simulated
     pipeline / real anomaly / real document-source) — same
@@ -790,6 +898,15 @@ async def execute_schedule(db: AsyncSession, schedule: Schedule, *, trigger: str
     tally_config = await get_tally_config(db, schedule.id)
     if tally_config is not None:
         await _execute_tally_reconciliation_schedule(db, schedule, run, now)
+        _finalize_schedule(schedule, run)
+        await db.commit()
+        await db.refresh(run)
+        await db.refresh(schedule)
+        return run
+
+    iv_config = await get_india_verification_config(db, schedule.id)
+    if iv_config is not None:
+        await _execute_india_verification_schedule(db, schedule, run, now)
         _finalize_schedule(schedule, run)
         await db.commit()
         await db.refresh(run)
@@ -1118,6 +1235,38 @@ async def _process_one_file(
                     except ConnectorError as exc:
                         registry.last_error = f"Processed successfully, but archive move failed: {exc}"
                         await db.commit()
+
+            # Scheduled Mapping (spec section 7) — extraction succeeded
+            # (PROCESSED or REVIEW_REQUIRED, i.e. outcome != "failed");
+            # attempt the schedule's configured mapping, if any. Its own
+            # try/except already turns every real failure mode into a
+            # {"status": "config_error"|...} dict rather than raising —
+            # this outer try/except is pure defense-in-depth so that even
+            # a genuine bug in this new code path can never flip a
+            # successfully-extracted document to FAILED (section 7.5:
+            # "mapping failure does not destroy successful extraction
+            # results"). Counters land on the SAME document_stats dict
+            # the run detail screen already reads.
+            if outcome != "failed":
+                try:
+                    mapping_result = await doc_mapping_svc.apply_scheduled_mapping_if_configured(
+                        db, document=doc, schedule_id=schedule_id, schedule_run_id=run_id,
+                        schedule_mapping_id=config.mapping_id, document_type=config.document_type,
+                        organization_id=organization_id,
+                    )
+                    async with stats_lock:
+                        if mapping_result["status"] == "config_error":
+                            stats["mapping_failed"] = stats.get("mapping_failed", 0) + 1
+                            stats["last_mapping_error"] = mapping_result["error"]
+                        elif mapping_result["status"] == "applied":
+                            key = "mapping_applied" if mapping_result["mapping_status"] == "SUCCESS" else "mapping_failed"
+                            stats[key] = stats.get(key, 0) + 1
+                        await _persist_stats(db, run_id, stats)
+                except Exception as exc:  # noqa: BLE001 - see comment above; never let a mapping bug fail the document's own extraction
+                    async with stats_lock:
+                        stats["mapping_failed"] = stats.get("mapping_failed", 0) + 1
+                        stats["last_mapping_error"] = str(exc)[:500]
+                        await _persist_stats(db, run_id, stats)
         except Exception as exc:  # noqa: BLE001 - a single file's failure must never sink the whole batch (spec section 28)
             # Re-fetch rather than mutate any `registry` instance already
             # held above — see the comment after process_document() above
@@ -1236,6 +1385,33 @@ async def _process_one_record(
             else:
                 await doc_sched_svc.transition(db, registry, DocumentSourceStatus.PROCESSED)
                 outcome = "success"
+
+            # Scheduled Mapping (spec section 7) — identical to the
+            # file-based branch above (see its comment for the full
+            # rationale): extraction succeeded (outcome != "failed"), so
+            # attempt the schedule's configured mapping, if any, with the
+            # same defense-in-depth isolation so a bug here can never flip
+            # a successfully-extracted record to FAILED.
+            if outcome != "failed":
+                try:
+                    mapping_result = await doc_mapping_svc.apply_scheduled_mapping_if_configured(
+                        db, document=doc, schedule_id=schedule_id, schedule_run_id=run_id,
+                        schedule_mapping_id=config.mapping_id, document_type=config.document_type,
+                        organization_id=organization_id,
+                    )
+                    async with stats_lock:
+                        if mapping_result["status"] == "config_error":
+                            stats["mapping_failed"] = stats.get("mapping_failed", 0) + 1
+                            stats["last_mapping_error"] = mapping_result["error"]
+                        elif mapping_result["status"] == "applied":
+                            key = "mapping_applied" if mapping_result["mapping_status"] == "SUCCESS" else "mapping_failed"
+                            stats[key] = stats.get(key, 0) + 1
+                        await _persist_stats(db, run_id, stats)
+                except Exception as exc:  # noqa: BLE001 - see comment above; never let a mapping bug fail the document's own extraction
+                    async with stats_lock:
+                        stats["mapping_failed"] = stats.get("mapping_failed", 0) + 1
+                        stats["last_mapping_error"] = str(exc)[:500]
+                        await _persist_stats(db, run_id, stats)
         except Exception as exc:  # noqa: BLE001 - a single record's failure must never sink the whole batch (spec section 28)
             # Re-fetch rather than mutate any `registry` instance already
             # held above — see the comment after process_document() above.

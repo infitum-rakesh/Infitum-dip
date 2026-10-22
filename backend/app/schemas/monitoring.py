@@ -207,6 +207,21 @@ class TallyOverviewOut(BaseModel):
     window_days: int
 
 
+class IndiaVerificationOverviewOut(BaseModel):
+    requests_total: int
+    requests_by_check_type: dict[str, int]
+    requests_by_provider: dict[str, int]
+    outcome_counts: dict[str, int]
+    success_rate_pct: float | None
+    mismatch_rate_pct: float | None
+    unavailable_rate_pct: float | None
+    retry_count_total: int
+    stale_results_count: int
+    needs_attention_count: int
+    active_rules_count: int
+    window_days: int
+
+
 # ── Performance ──
 
 class PerformanceStageOut(BaseModel):

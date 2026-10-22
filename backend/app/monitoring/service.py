@@ -141,6 +141,12 @@ async def get_tally_overview(db: AsyncSession, organization_id: int | None, days
     return {**data, "window_days": days}
 
 
+async def get_india_verification_overview(db: AsyncSession, organization_id: int | None, days: int = 7) -> dict:
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    data = await repository.india_verification_overview(db, organization_id, since)
+    return {**data, "window_days": days}
+
+
 def _job_summary(job: PipelineJob) -> dict:
     duration_s = None
     if job.started_at and job.completed_at:

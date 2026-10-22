@@ -52,4 +52,10 @@ export const scheduleApi = {
 
   getRunDocuments: (id, runId, params = {}) =>
     apiClient.get(`/schedules/${id}/runs/${runId}/documents`, { params: cleanParams(params) }).then((r) => r.data),
+
+  /** Scheduled Mapping (Document Intelligence spec, section 7.5) —
+   * "allow retry after config correction": re-attempts mapping for every
+   * document this Document Source schedule has successfully extracted.
+   * -> { candidates, applied_success, applied_failed, already_applied, config_error, no_mapping_configured, last_error } */
+  retryScheduledMapping: (id) => apiClient.post(`/schedules/${id}/retry-mapping`).then((r) => r.data),
 };

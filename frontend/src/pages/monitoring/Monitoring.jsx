@@ -20,6 +20,7 @@ const TABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'invoice_processing', label: 'Invoice Processing' },
   { id: 'tally', label: 'Tally Integration' },
+  { id: 'india_verification', label: 'India Verification' },
   { id: 'pipeline_runs', label: 'Pipeline Runs' },
   { id: 'job_runs', label: 'Job Runs' },
   { id: 'data_quality', label: 'Data Quality' },
@@ -80,6 +81,7 @@ export default function Monitoring() {
       {activeTab === 'overview' && <OverviewTab onOpenJob={openJob} onGoTab={selectTab} />}
       {activeTab === 'invoice_processing' && <InvoiceProcessingTab />}
       {activeTab === 'tally' && <TallyOverviewTab />}
+      {activeTab === 'india_verification' && <IndiaVerificationOverviewTab />}
       {activeTab === 'pipeline_runs' && <PipelineRunsTab onOpenJob={openJob} onGoLineage={goToLineage} />}
       {activeTab === 'job_runs' && <JobRunsTab />}
       {activeTab === 'data_quality' && <DataQualityTab />}
@@ -315,6 +317,78 @@ function TallyOverviewTab() {
           <div className="mon-kpi-card"><span className="mon-kpi-label">In Flight</span><span className={`mon-kpi-value ${data.writeback_in_flight ? 'warning' : ''}`}>{data.writeback_in_flight}</span></div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── India Verification (Phase Group 5, IV26) — requests-by-check-type/
+// provider, success/mismatch/unavailable rates, retry/stale/needs-
+// attention counts, all derived from VerificationUsage, see monitoring/
+// repository.py's india_verification_overview(). ──
+
+function IndiaVerificationOverviewTab() {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+
+  const load = useCallback(() => {
+    monitoringApi.getIndiaVerificationOverview(7).then(setData).catch((e) => setError(apiErrorMessage(e, 'Could not load India Verification metrics.')));
+  }, []);
+  useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
+
+  if (error) return <div className="mon-error-text">{error}</div>;
+  if (!data) return <div className="mon-muted">Loading…</div>;
+
+  const byCheckType = Object.entries(data.requests_by_check_type || {});
+  const byProvider = Object.entries(data.requests_by_provider || {});
+  const byOutcome = Object.entries(data.outcome_counts || {});
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div className="mon-card">
+        <div className="mon-card-title">Requests &amp; Outcome Rates (7d)</div>
+        <div className="mon-kpi-grid">
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Requests</span><span className="mon-kpi-value">{data.requests_total}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Success Rate</span><span className="mon-kpi-value success">{data.success_rate_pct ?? '—'}%</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Mismatch Rate</span><span className={`mon-kpi-value ${data.mismatch_rate_pct ? 'danger' : ''}`}>{data.mismatch_rate_pct ?? '—'}%</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Unavailable Rate</span><span className={`mon-kpi-value ${data.unavailable_rate_pct ? 'warning' : ''}`}>{data.unavailable_rate_pct ?? '—'}%</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Retries</span><span className="mon-kpi-value">{data.retry_count_total}</span></div>
+        </div>
+      </div>
+
+      <div className="mon-card">
+        <div className="mon-card-title">Freshness &amp; Rules</div>
+        <div className="mon-kpi-grid">
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Stale Results</span><span className={`mon-kpi-value ${data.stale_results_count ? 'warning' : ''}`}>{data.stale_results_count}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Needs Attention</span><span className={`mon-kpi-value ${data.needs_attention_count ? 'warning' : ''}`}>{data.needs_attention_count}</span></div>
+          <div className="mon-kpi-card"><span className="mon-kpi-label">Active Rules</span><span className="mon-kpi-value">{data.active_rules_count}</span></div>
+        </div>
+      </div>
+
+      {(byCheckType.length > 0 || byProvider.length > 0 || byOutcome.length > 0) && (
+        <div className="mon-card">
+          <div className="mon-card-title">Breakdown (7d)</div>
+          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+            {byCheckType.length > 0 && (
+              <table className="data-table" style={{ minWidth: 200 }}>
+                <thead><tr><th>Check Type</th><th>Requests</th></tr></thead>
+                <tbody>{byCheckType.map(([k, v]) => <tr key={k}><td>{k}</td><td>{v}</td></tr>)}</tbody>
+              </table>
+            )}
+            {byProvider.length > 0 && (
+              <table className="data-table" style={{ minWidth: 200 }}>
+                <thead><tr><th>Provider</th><th>Requests</th></tr></thead>
+                <tbody>{byProvider.map(([k, v]) => <tr key={k}><td>{k}</td><td>{v}</td></tr>)}</tbody>
+              </table>
+            )}
+            {byOutcome.length > 0 && (
+              <table className="data-table" style={{ minWidth: 200 }}>
+                <thead><tr><th>Outcome</th><th>Count</th></tr></thead>
+                <tbody>{byOutcome.map(([k, v]) => <tr key={k}><td>{k}</td><td>{v}</td></tr>)}</tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
