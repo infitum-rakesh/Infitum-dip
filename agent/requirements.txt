@@ -1,0 +1,16 @@
+# Tally Agent — Windows Client Agent runtime dependencies.
+#
+# Deliberately minimal — this process runs unattended on a customer's
+# machine, so every dependency here is a real install-time cost on a
+# machine this project doesn't control.
+websockets>=12.0
+httpx>=0.27
+xmltodict>=0.13
+PyYAML>=6.0
+click>=8.1
+
+# Windows-only: DPAPI-backed credential storage (credential_store.py) and
+# the Windows Service wrapper (windows_service.py). Harmless to list
+# unconditionally in requirements.txt (pip's own marker syntax below
+# keeps it from being installed/attempted on macOS/Linux dev machines).
+pywin32>=306; sys_platform == "win32"

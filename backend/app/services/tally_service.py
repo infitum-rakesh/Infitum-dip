@@ -25,8 +25,11 @@ from app.services import connection_service
 DISCOVERY_TIMEOUT_SECONDS = 60
 
 
+_TALLY_CONNECTION_TYPES = (ConnectionType.TALLY_PRIME, ConnectionType.TALLY_PRIME_AGENT)
+
+
 def _require_tally(conn: Connection) -> None:
-    if conn.connection_type != ConnectionType.TALLY_PRIME:
+    if conn.connection_type not in _TALLY_CONNECTION_TYPES:
         raise ConnectorValidationError("This operation is only available for TallyPrime connections.")
 
 
