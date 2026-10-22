@@ -7,12 +7,13 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, Eye, PlayCircle, RefreshCw, Download, Pencil, Trash2, CheckSquare, XCircle,
   ZoomIn, ZoomOut, RotateCw, Maximize2, ChevronLeft, ChevronRight, Info, Clock,
-  FileSearch, Sparkles, Database, ShieldCheck, ScrollText, AlertTriangle, GitBranch, FileOutput,
+  FileSearch, Sparkles, Database, ShieldCheck, ScrollText, AlertTriangle, GitBranch, FileOutput, ArrowRightLeft,
 } from 'lucide-react';
 import { Button, StatusBadge, DataTable, EmptyState, Modal, PermissionGate, FullPageSpinner } from '@/components/common/index.js';
 import { MODULES, ACTIONS, DOCUMENT_PERMISSIONS } from '@/utils/constants.js';
 import { formatFileSize, formatDateTime, formatDuration } from '@/utils/formatters.js';
 import { documentApi } from '@/services/api/documentApi.js';
+import { mappingApi } from '@/services/api/mappingApi.js';
 import { reviewQueueApi } from '@/services/api/reviewQueueApi.js';
 import { pipelineFileApi } from '@/services/api/pipelineFileApi.js';
 import { createNode, createEdge } from '@/components/pipeline/nodeTypes.js';
@@ -93,6 +94,7 @@ const TABS = [
   { key: 'dataset', label: 'Structured Dataset', icon: Database },
   { key: 'validation', label: 'Validation', icon: ShieldCheck },
   { key: 'export', label: 'Export', icon: FileOutput },
+  { key: 'mapping', label: 'Mapping Profile', icon: ArrowRightLeft },
   { key: 'audit', label: 'Audit', icon: ScrollText },
 ];
 
@@ -298,6 +300,7 @@ export default function DocumentDetails() {
           {activeTab === 'dataset'    && <DatasetTab key={`ds-${version}`} documentId={doc.id} navigate={navigate} />}
           {activeTab === 'validation' && <ValidationTab doc={doc} navigate={navigate} />}
           {activeTab === 'export'     && <ExportTab documentId={doc.id} filename={doc.filename} />}
+          {activeTab === 'mapping'    && <MappingProfileTab documentId={doc.id} />}
           {activeTab === 'audit'      && <AuditTab doc={doc} />}
         </div>
       </div>
@@ -575,6 +578,18 @@ function ExtractionTab({ documentId, doc, onManualSaved }) {
     { key: 'confidence', header: 'Confidence', sortable: true, render: (v) => `${v}%` },
     { key: 'source_page', header: 'Source Page', render: (v) => `p${v}` },
     { key: 'validation_status', header: 'Validation Status', render: (v) => <StatusBadge variant={VALIDATION_VARIANT[v] ?? 'gray'} dot>{v}</StatusBadge> },
+    {
+      key: 'is_generic', header: 'Source',
+      render: (v) => v ? <StatusBadge variant="info">Generic Extraction</StatusBadge> : <span className="text-muted">Known Field</span>,
+    },
+    {
+      key: 'evidence', header: 'Evidence',
+      // Generic Extraction fields only — the verbatim OCR snippet that
+      // grounded this value (see extraction_service.find_gap_fields()).
+      // Kept visually separate from the field's own value so a reviewer
+      // can see exactly what text justified it, never collapsed into it.
+      render: (v) => v ? <span className="text-muted" title={v} style={{ fontStyle: 'italic' }}>{v.length > 60 ? `${v.slice(0, 60)}…` : v}</span> : '—',
+    },
   ];
 
   return (
@@ -780,6 +795,126 @@ function ExportTab({ documentId, filename }) {
               {pushResult.status ?? 'UNKNOWN'}
             </StatusBadge>
             {pushResult.error && <p className="docd-timeline-error" style={{ marginTop: 8 }}><AlertTriangle size={13} /> {pushResult.error}</p>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Mapping Profile (MP10) ──────────────────────────────────────────
+// Minimal apply-action + history viewer — profile authoring/versioning
+// itself happens on the existing Column Mapping page (Transformation >
+// Mappings), not here. See services/document_mapping_service.py.
+
+function MappingProfileTab({ documentId }) {
+  const [profiles, setProfiles] = useState([]);
+  const [selectedId, setSelectedId] = useState('');
+  const [history, setHistory] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [applying, setApplying] = useState(false);
+  const [error, setError] = useState('');
+  const [expandedId, setExpandedId] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true); setError('');
+    try {
+      const [mappingList, outputs] = await Promise.all([
+        mappingApi.list({ status: 'PUBLISHED' }),
+        documentApi.getMappedOutputs(documentId),
+      ]);
+      const documentSourced = (mappingList.items || []).filter((m) => !!m.source_document_type);
+      setProfiles(documentSourced);
+      setSelectedId((prev) => prev || (documentSourced[0] ? String(documentSourced[0].id) : ''));
+      setHistory(outputs.items || []);
+    } catch (err) {
+      setError(apiErrorMessage(err, 'Could not load mapping profiles.'));
+    } finally {
+      setLoading(false);
+    }
+  }, [documentId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const apply = async () => {
+    if (!selectedId) return;
+    setApplying(true); setError('');
+    try {
+      await documentApi.applyMapping(documentId, Number(selectedId));
+      const outputs = await documentApi.getMappedOutputs(documentId);
+      setHistory(outputs.items || []);
+    } catch (err) {
+      setError(apiErrorMessage(err, 'Could not apply this mapping profile.'));
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  if (loading) return <div className="docd-tab-loading">Loading mapping profiles…</div>;
+
+  return (
+    <div style={{ padding: 20 }}>
+      <div className="docd-meta-card" style={{ marginBottom: 16 }}>
+        <div className="card-title">Apply a Mapping Profile</div>
+        <p className="text-muted text-sm" style={{ marginTop: 4, marginBottom: 14 }}>
+          Maps this document's already-extracted fields onto a target shape (e.g. the Invoice Schema) using a
+          PUBLISHED, document-sourced Column Mapping profile. Profiles are authored and versioned on the{' '}
+          <a href="/app/column-mapping">Column Mapping</a> page — this only runs one against this document.
+        </p>
+
+        {profiles.length === 0 ? (
+          <EmptyState icon={<ArrowRightLeft size={24} />} title="No published mapping profiles"
+            description="Create and publish a Column Mapping profile with a document_type source (Transformation > Mappings) to apply it here." />
+        ) : (
+          <div className="docd-actions" style={{ alignItems: 'center' }}>
+            <select className="doc-select" style={{ width: 300 }} value={selectedId} onChange={(e) => setSelectedId(e.target.value)}>
+              {profiles.map((p) => (
+                <option key={p.id} value={p.id}>{p.name} (v{p.current_published_version ?? p.latest_version})</option>
+              ))}
+            </select>
+            <Button variant="primary" size="sm" icon={<ArrowRightLeft size={13} />} loading={applying} onClick={apply}>
+              Apply Profile
+            </Button>
+          </div>
+        )}
+
+        {error && <p className="docd-timeline-error" style={{ marginTop: 12 }}><AlertTriangle size={13} /> {error}</p>}
+      </div>
+
+      <div className="docd-meta-card">
+        <div className="card-title">Mapped Output History</div>
+        <p className="text-muted text-sm" style={{ marginTop: 4, marginBottom: 14 }}>
+          Append-only — every run (even re-running the same profile) is kept as its own row, never overwritten.
+        </p>
+        {history.length === 0 ? (
+          <EmptyState icon={<Database size={24} />} title="No mapped output yet" description="Apply a profile above to see its output here." />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {history.map((h) => (
+              <div key={h.id} className="docd-profile-card">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <StatusBadge variant={h.status === 'SUCCESS' ? 'success' : 'danger'} dot>{h.status}</StatusBadge>
+                  <span className="text-sm">v{h.mapping_version} &rarr; {h.target_format}</span>
+                  <span className="text-muted text-sm">{h.row_count} row(s)</span>
+                  <span className="text-muted text-sm" style={{ marginLeft: 'auto' }}>{formatDateTime(h.created_at)}</span>
+                  <Button variant="secondary" size="sm" onClick={() => setExpandedId(expandedId === h.id ? null : h.id)}>
+                    {expandedId === h.id ? 'Hide' : 'View'}
+                  </Button>
+                </div>
+                {h.error_message && <p className="docd-timeline-error" style={{ marginTop: 8 }}><AlertTriangle size={13} /> {h.error_message}</p>}
+                {expandedId === h.id && h.rows?.length > 0 && (
+                  <div style={{ marginTop: 10 }}>
+                    <DataTable
+                      columns={h.columns.map((c) => ({ key: c, header: c }))}
+                      data={h.rows.map((row, i) => ({ ...row, _rowId: i }))}
+                    />
+                  </div>
+                )}
+                {expandedId === h.id && h.rejected_rows?.length > 0 && (
+                  <p className="text-muted text-sm" style={{ marginTop: 8 }}>{h.rejected_rows.length} row(s) rejected during mapping.</p>
+                )}
+              </div>
+            ))}
           </div>
         )}
       </div>

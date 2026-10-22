@@ -7,9 +7,21 @@ from app.schemas.connections import ColumnOut, PreviewOut
 
 
 class ObjectRef(BaseModel):
-    connection_id: int
+    """Document Mapping Profiles (Document Intelligence: Dynamic JSON
+    Extraction spec) add two optional, mutually-exclusive-with-connection
+    discriminators rather than a second ref type: `document_type` names a
+    Document Intelligence document_type (e.g. "INVOICE") as the SOURCE —
+    connection_id/object_name are unused when set, since there's no real
+    connector; `target_format` names what kind of TARGET this is
+    ("DB_TABLE" — the default, unchanged, connection-based behavior — or
+    "INVOICE_SCHEMA" — ApInvoice's own real columns, also no connector).
+    See services/mapping_service.py::fetch_columns(), the one place this
+    branches."""
+    connection_id: int | None = None
     schema_name: str | None = None
-    object_name: str
+    object_name: str | None = None
+    document_type: str | None = None
+    target_format: str | None = None
 
 
 class LookupConfig(BaseModel):
@@ -37,12 +49,14 @@ class MappingRow(BaseModel):
 class ColumnMappingOut(BaseModel):
     id: int
     name: str
-    source_connection_id: int
+    source_connection_id: int | None
     source_schema: str | None
     source_object: str | None
-    target_connection_id: int
+    source_document_type: str | None = None
+    target_connection_id: int | None
     target_schema: str | None
     target_object: str | None
+    target_format: str | None = None
     mappings: list[MappingRow]  # CM2 — resolved via get_effective_mappings(), never the (retired) header column directly
     status: str
     latest_version: int
@@ -63,12 +77,14 @@ class ColumnMappingVersionOut(BaseModel):
     version_number: int
     status: str  # DRAFT | VALIDATED | PUBLISHED | RETIRED
     mappings: list[MappingRow]
-    source_connection_id: int
+    source_connection_id: int | None
     source_schema: str | None
     source_object: str | None
-    target_connection_id: int
+    source_document_type: str | None = None
+    target_connection_id: int | None
     target_schema: str | None
     target_object: str | None
+    target_format: str | None = None
     unmapped_column_policy: str
     batch_size: int | None
     on_conversion_failure: str

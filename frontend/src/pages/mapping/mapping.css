@@ -13,6 +13,10 @@
 .ocm-name-input:focus { border-bottom: 2px solid var(--color-primary); }
 .ocm-subtitle { font-size: var(--fs-sm); color: var(--text-muted); margin-top: 2px; }
 
+/* ── Source/Target kind toggle (Document Mapping Profiles) ───── */
+.ocm-kind-toggle-row { display: flex; gap: 14px; margin-bottom: 8px; }
+.ocm-kind-toggle { display: flex; gap: 6px; flex: 1; }
+
 /* ── Source/Target pickers ─────────────────────────────────── */
 .ocm-pickers-row {
   display: flex; align-items: center; gap: 14px; margin-bottom: 14px;

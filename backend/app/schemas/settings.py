@@ -29,6 +29,9 @@ class DocumentIntelligenceSettings(BaseModel):
     ocr_confidence_threshold: float = 85
     language_mismatch_threshold: float = 80
     translation_enabled: bool = False
+    generic_extraction_enabled: bool = False
+    mapping_profiles_enabled: bool = False
+    tally_auto_sync_enabled: bool = False
 
 
 class AISettings(BaseModel):

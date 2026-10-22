@@ -1039,7 +1039,17 @@ def _reshape_extraction_fields(raw_fields: list[dict], doc: Document | None = No
             # into genuine multi-row dataset output.
             rows = f.get("rows") or []
             missing = len(rows) == 0
-            validation_status = "invalid" if missing else ("valid" if conf >= 90 else ("warning" if conf >= 80 else "invalid"))
+            required = bool(f.get("required", False))
+            # A missing field only becomes "invalid" (a genuine failure)
+            # when the schema actually marks it required. A legitimately
+            # optional field the document simply doesn't carry — e.g.
+            # order_number on an invoice that has none — is reported as
+            # "not_found": honestly absent, but not a validation failure,
+            # so it can never lower accuracy_score or force NEEDS_REVIEW
+            # on its own (see process_document()'s accuracy_score/
+            # extraction_needs_review below — this is the one place that
+            # decision gets made for every caller).
+            validation_status = ("invalid" if required else "not_found") if missing else ("valid" if conf >= 90 else ("warning" if conf >= 80 else "invalid"))
             fields.append({
                 "name": f["name"],
                 "type": "table",
@@ -1057,10 +1067,12 @@ def _reshape_extraction_fields(raw_fields: list[dict], doc: Document | None = No
                 "validation_status": validation_status,
                 "suggested_correction": None,
                 "missing": missing,
+                "required": required,
             })
             continue
         missing = f.get("value") in (None, "")
-        validation_status = "invalid" if missing else ("valid" if conf >= 90 else ("warning" if conf >= 80 else "invalid"))
+        required = bool(f.get("required", False))
+        validation_status = ("invalid" if required else "not_found") if missing else ("valid" if conf >= 90 else ("warning" if conf >= 80 else "invalid"))
         bbox = f.get("bbox")  # real, already-matched bbox — Custom Extraction Engine only
         if bbox is None and not missing and ocr_regions:
             bbox = evidence_service.find_region_bbox(f.get("value"), ocr_regions)
@@ -1074,8 +1086,162 @@ def _reshape_extraction_fields(raw_fields: list[dict], doc: Document | None = No
             "validation_status": validation_status,
             "suggested_correction": None,  # no real "corrected" value to offer — not fabricated
             "missing": missing,
+            "required": required,
         })
     return fields
+
+
+def _reshape_generic_fields(raw_generic_fields: list[dict]) -> list[dict]:
+    """Reshapes extraction_service.find_gap_fields()'s already-grounded,
+    kind-discriminated output (Generic Extraction — Document Intelligence:
+    Dynamic JSON Extraction spec) into the same persisted field shape
+    _reshape_extraction_fields() produces, so every existing consumer
+    (build_dataset(), Review Queue, the Document Details fields table)
+    handles these the same way it handles canonical fields — reusing the
+    SAME two field types (scalar/table) those consumers already
+    understand, rather than teaching every one of them a third/fourth/
+    fifth shape:
+      - "scalar" (includes a flattened nested-group leaf, already named
+        "group.subfield" by find_gap_fields()) -> one scalar field.
+      - "repeated" (the same label seen more than once, preserved as an
+        array, never overwritten) -> ONE generic table with a single
+        column named after the field, one row per occurrence — reusing
+        the existing table-row machinery gives "array of values" for
+        free, with zero new consumer code.
+      - "table" (an ad-hoc table distinct from any canonical one) -> a
+        real multi-column generic table, identical in shape to a
+        canonical table field.
+
+    Every output here carries two extra keys canonical fields don't:
+    `is_generic` (lets a consumer visually distinguish AI-discovered
+    extras from the known schema) and `evidence` (the verbatim OCR
+    snippet(s) that grounded this value — kept separate from `value`/
+    `rows` themselves, never collapsed into them; a table/repeated field
+    additionally carries `row_evidence`, a same-length parallel list, one
+    entry per row).
+
+    validation_status is always "valid" here, never "invalid"/"not_found"
+    — find_gap_fields() already discards anything it couldn't verify as a
+    genuine substring of the document's own OCR text, so by the time a
+    field reaches this function it IS real, found data. required is
+    always False — generic fields were never asked for, so a low-
+    confidence or absent one must never force NEEDS_REVIEW or lower
+    accuracy_score (see process_document()'s scoreable_fields/
+    extraction_needs_review, which excludes is_generic fields for
+    exactly this reason — unchanged by this table/repeated extension
+    since it keys off is_generic, not the field's type).
+
+    Known, pre-existing interaction (not introduced by this function):
+    build_dataset() only cross-product-expands the FIRST table field it
+    finds into real per-row dataset rows; any additional table — whether
+    a second generic "table" kind or a "repeated" one — becomes a header
+    column instead, showing its "N rows"/"N occurrences" summary string
+    repeated on every exported row rather than being expanded itself.
+    Already true for two canonical tables before Generic Extraction
+    existed (see build_dataset()'s own "rare, and documented rather than
+    silently dropped" comment); genuinely multi-table dataset export is
+    out of scope here."""
+    fields = []
+    for f in raw_generic_fields:
+        kind = f.get("kind", "scalar")
+
+        if kind == "repeated":
+            occurrences = f.get("occurrences") or []
+            rows = [{f["name"]: occ["value"]} for occ in occurrences]
+            row_evidence = [occ["evidence"] for occ in occurrences]
+            fields.append({
+                "name": f["name"],
+                "type": "table",
+                "columns": [f["name"]],
+                "rows": rows,
+                "row_evidence": row_evidence,
+                # "occurrences", not "rows" — distinct wording from a
+                # canonical table's "N rows" so a reviewer can tell at a
+                # glance this is a repeated label, not a real line-item
+                # table.
+                "value": f"{len(rows)} occurrence{'s' if len(rows) != 1 else ''}",
+                "confidence": round(float(f.get("confidence") or 0.0), 1),
+                "source_page": 1,
+                "bbox": None,
+                "validation_status": "valid",
+                "suggested_correction": None,
+                "missing": False,
+                "required": False,
+                "is_generic": True,
+                "evidence": row_evidence[0] if row_evidence else None,
+            })
+
+        elif kind == "table":
+            rows = f.get("rows") or []
+            row_evidence = f.get("row_evidence") or []
+            fields.append({
+                "name": f["name"],
+                "type": "table",
+                "columns": f.get("columns") or [],
+                "rows": rows,
+                "row_evidence": row_evidence,
+                "value": f"{len(rows)} row{'s' if len(rows) != 1 else ''}",
+                "confidence": round(float(f.get("confidence") or 0.0), 1),
+                "source_page": 1,
+                "bbox": None,
+                "validation_status": "valid",
+                "suggested_correction": None,
+                "missing": False,
+                "required": False,
+                "is_generic": True,
+                "evidence": row_evidence[0] if row_evidence else None,
+            })
+
+        else:  # "scalar" (also covers flattened nested-group leaves)
+            fields.append({
+                "name": f["name"],
+                "type": "scalar",
+                "value": f.get("value") or "",
+                "confidence": round(float(f.get("confidence") or 0.0), 1),
+                "source_page": 1,
+                "bbox": None,
+                "validation_status": "valid",
+                "suggested_correction": None,
+                "missing": False,
+                "required": False,
+                "is_generic": True,
+                "evidence": f.get("evidence"),
+            })
+    return fields
+
+
+async def _maybe_run_generic_extraction(
+    db: AsyncSession, doc: Document, connection_id: int, acting_user_id: int | None, known_fields: list[dict],
+) -> list[dict]:
+    """Shared gate for Generic Extraction, called from both the automatic
+    pipeline (_run_ai_extraction) and the manual "Run AI Extraction"
+    action (run_manual_ai_extraction) right after their canonical fields
+    are reshaped. Behind the org's generic_extraction_enabled setting
+    (OFF by default — see models/settings.py's DEFAULT_SETTINGS, a
+    deliberate controlled rollout per the spec), and never attempted for
+    the Custom Extraction Engine (connection_id passed here is always a
+    real AI Provider connection — callers never reach this when they used
+    the Custom Extraction Engine, since no model is available to call).
+
+    Best-effort and fully isolated from the main extraction result: any
+    failure here (a flaky connection, a malformed model response that
+    survived find_gap_fields()'s own corrective retry) is swallowed —
+    the canonical fields already returned are never put at risk by this
+    optional enrichment pass."""
+    if doc.organization_id is None:
+        return []
+    org_settings = await settings_service.get_or_create(db, doc.organization_id)
+    di_settings = settings_service.effective_document_intelligence_settings(org_settings)
+    if not di_settings.get("generic_extraction_enabled"):
+        return []
+    try:
+        covered_names = {f["name"] for f in known_fields}
+        generic_raw = await extraction_service.find_gap_fields(
+            db, doc, connection_id, doc.organization_id, covered_names, acting_user_id,
+        )
+        return _reshape_generic_fields(generic_raw)
+    except Exception:  # noqa: BLE001 - optional enrichment must never break canonical extraction
+        return []
 
 
 async def _run_custom_engine_extraction(db: AsyncSession, doc: Document, *, document_type: str | None = None) -> tuple[list[dict], float | None, str | None, dict]:
@@ -1205,17 +1371,21 @@ async def _run_ai_extraction(
                     extra_names = await discover_known_field_names(db, doc.organization_id, document_type="GENERIC")
                     fallback_schema = document_taxonomies.build_seed_schema("GENERIC", extra_names)
                     fallback_result = await extraction_service.extract_fields(db, doc, fallback_schema, conn.id, doc.organization_id, acting_user_id)
-                    # Gap-fill (find_gap_fields) is deliberately NOT run here —
-                    # a real, observed failure live: asked to propose a
-                    # plausible-sounding field beyond the (already
-                    # comprehensive) GENERIC taxonomy, the model proposed one
-                    # (e.g. "supplier_email") that doesn't actually appear in
-                    # the document at all, and the follow-up extract_fields()
-                    # call for it then fabricated a value rather than
-                    # returning null — inventing contact info for a real
-                    # business is exactly the kind of fake data this module
-                    # exists to avoid. The canonical taxonomy's own coverage
-                    # is the ceiling now, not this second, less-grounded pass.
+                    # Generic Extraction (_maybe_run_generic_extraction, called
+                    # at this function's shared return point below) used to be
+                    # unconditionally skipped here — a real, observed failure
+                    # live: the old gap-fill only proposed a field NAME, then
+                    # fed it into a second blind extract_fields() call that
+                    # fabricated a value (e.g. "supplier_email") for a field
+                    # that didn't actually appear in the document — inventing
+                    # contact info for a real business is exactly the kind of
+                    # fake data this module exists to avoid. find_gap_fields()
+                    # was redesigned to require value+verbatim evidence in one
+                    # call and verify that evidence is a genuine substring of
+                    # the real OCR text before keeping anything, which is what
+                    # actually prevents that failure now — so it's safe to
+                    # reach here too, still behind its own feature flag (OFF
+                    # by default) rather than unconditionally re-enabled.
                     result = fallback_result
                 except extraction_service.ExtractionError as exc:
                     if result is None:
@@ -1231,6 +1401,7 @@ async def _run_ai_extraction(
                     # NEEDS_REVIEW upstream since extraction_percent will be low/None.
 
             fields = _reshape_extraction_fields(result["fields"], doc)
+            fields = fields + await _maybe_run_generic_extraction(db, doc, conn.id, acting_user_id, fields)
             extraction_meta = {
                 "pages_considered": result.get("pages_considered") or [],
                 "total_ocr_pages": result.get("total_ocr_pages"),
@@ -1308,10 +1479,15 @@ async def run_manual_ai_extraction(
     "no AI extraction option while reviewing"), can be re-run as many
     times as needed, and accepts an optional document_type (e.g. "INVOICE")
     to steer extraction at a comprehensive canonical schema instead of an
-    ad-hoc LLM guess (see document_taxonomies.py). When document_type is
-    given, a gap-fill pass also asks the model to name anything genuinely
-    present but not in the canonical list, and extracts those too — real
-    per-document adaptability on top of a consistent baseline.
+    ad-hoc LLM guess (see document_taxonomies.py). When the org's Generic
+    Extraction setting is enabled (OFF by default — see
+    _maybe_run_generic_extraction) and a real AI Provider connection was
+    used (never the Custom Extraction Engine), an additional evidence-
+    grounded pass also looks for genuinely present key-value pairs beyond
+    the canonical/ad-hoc schema, independent of whether document_type was
+    given — real per-document adaptability on top of a consistent
+    baseline, without the fabrication risk a schema-only name-guess
+    would carry.
 
     connection_id lets the user explicitly pick which AI Provider
     connection to use (addresses "no option to change AI type in
@@ -1387,13 +1563,6 @@ async def run_manual_ai_extraction(
                     acting_user_id=acting_user_id,
                 )
                 result = await extraction_service.extract_fields(db, doc, schema, conn.id, doc.organization_id, acting_user_id)
-                # Gap-fill (find_gap_fields) is deliberately NOT run for a known
-                # canonical document_type — see the matching comment in
-                # _run_ai_extraction() above for the real, observed fabrication
-                # this caused (a plausible-sounding field name proposed beyond
-                # the taxonomy, then given a made-up value instead of null). The
-                # canonical taxonomy (document_taxonomies.py) is comprehensive
-                # by design; this second, less-grounded pass isn't worth that risk.
                 used_conn = conn
                 break
             except extraction_service.ExtractionError as exc:
@@ -1409,6 +1578,8 @@ async def run_manual_ai_extraction(
     fields = _reshape_extraction_fields(result["fields"], doc)
     if not fields:
         raise ManualExtractionError("The Custom Extraction Engine didn't find any usable fields in this document." if use_custom_engine else "The AI model didn't find any usable fields in this document.")
+    if not use_custom_engine and used_conn is not None:
+        fields = fields + await _maybe_run_generic_extraction(db, doc, used_conn.id, acting_user_id, fields)
 
     doc.extraction_result = {"fields": fields, "business_rule_flag": False, "document_type": document_type}
     doc.ai_raw_response = result.get("raw_model_response")
@@ -1914,7 +2085,31 @@ async def process_document(
         # stage already computed — not a fabricated second score. Stored
         # inside extraction_result (additive dict key) rather than a new
         # Document column, same convention as business_rule_flag above.
-        scoreable_fields = [f for f in fields if f.get("type") != "table"]
+        #
+        # Real bug found live (confidence-gating fix): this used to count
+        # every non-table field, including ones _reshape_extraction_fields
+        # above correctly reported as genuinely absent-and-optional
+        # (validation_status would have been "invalid" for those too,
+        # before that function's own fix) — so accuracy_score measured
+        # taxonomy coverage breadth, not extraction accuracy, and a
+        # perfectly-extracted document missing only legitimately-optional
+        # fields (e.g. order_number on an invoice that has none) scored
+        # low purely for that reason. "not_found" fields are now excluded
+        # here the same way empty tables already were — mandatory-missing
+        # fields still count (and still score "invalid"), so a genuine
+        # required-field miss still lowers this score.
+        #
+        # Generic Extraction fields (is_generic — see
+        # _maybe_run_generic_extraction) are excluded too: they were never
+        # part of the canonical/ad-hoc schema being scored here, so an
+        # extra evidence-grounded find must never inflate this score, the
+        # same way a genuinely low-confidence one (impossible by
+        # construction — find_gap_fields() only keeps grounded matches,
+        # always "valid") could never deflate it either. accuracy_score
+        # stays a measure of the asked-for fields only; bonus finds are a
+        # separate channel, exactly the "record mapping status separately"
+        # principle this whole fix is built around.
+        scoreable_fields = [f for f in fields if f.get("type") != "table" and f.get("validation_status") != "not_found" and not f.get("is_generic")]
         accuracy_score = round(100 * sum(1 for f in scoreable_fields if f.get("validation_status") != "invalid") / len(scoreable_fields), 1) \
             if scoreable_fields else 100.0
         doc.extraction_result = (
@@ -1932,6 +2127,18 @@ async def process_document(
         # org's configured Default Confidence Threshold for every caller
         # except the Scheduled Document Intelligence Workflow
         # (schedule_service.py), which passes its own per-schedule value.
+        # The "invalid" check below now only ever fires for a genuine
+        # failure — a required field that's missing, or a present field
+        # with low enough confidence to fail its own threshold (see
+        # _reshape_extraction_fields above). A field that's merely
+        # "not_found" (missing but legitimately optional for this
+        # document) is a different status and never trips this gate —
+        # that's the confidence-gating fix: low taxonomy coverage must
+        # not be reported as low extraction confidence. A Generic
+        # Extraction field (is_generic) is always "valid" by construction
+        # (_reshape_generic_fields/find_gap_fields only keep grounded
+        # matches) and so can never trip this gate either — a bonus find
+        # must never force review on its own.
         extraction_needs_review = (
             overall_conf < confidence_threshold
             or (fields and accuracy_score < accuracy_threshold)
@@ -2022,6 +2229,38 @@ async def process_document(
                 from app.services.invoice import invoice_erp_service
                 await invoice_erp_service.post_invoice(db, invoice, erp_connection_id=invoice_erp_connection_id)
         except Exception:  # noqa: BLE001 - see comment above; never fail document processing over this
+            pass
+
+        # Tally Invoice Auto-Sync — a completely independent try/except
+        # from the ERP auto-post block above (never nested inside it): a
+        # bug or an unreachable Tally gateway here must never affect ERP
+        # posting, and vice versa. Same STRAIGHT_THROUGH gate as ERP
+        # auto-post (only an invoice the decision engine already trusts),
+        # but its own org-level flag + per-vendor TallyVendorMapping
+        # resolution happen entirely inside sync_invoice_to_tally() — see
+        # that module's own docstring. A no-op (flag off, or no mapping
+        # configured for this vendor) is the default, silent outcome.
+        try:
+            if decision == ApInvoiceDecision.STRAIGHT_THROUGH:
+                from app.services import tally_invoice_sync_service
+                await tally_invoice_sync_service.sync_invoice_to_tally(db, invoice)
+        except Exception:  # noqa: BLE001 - must never fail document processing over this
+            pass
+
+    # MOA Verification (Compliance & Verification module, IV15) — only for
+    # a document this run explicitly pinned to the MOA taxonomy (never
+    # inferred/guessed from content, same discipline as the INVOICE branch
+    # above). Completeness/authenticity checks + an optional cross-check
+    # against a linked VerificationCase's MCA result — see
+    # services/compliance/moa_verification_service.py's own docstring for
+    # why OCR/AI extraction alone can never prove more than that. A bug or
+    # a missing cross-check here must never fail the document's own
+    # Document Intelligence processing result.
+    elif document_type == "MOA" and doc.extraction_result and doc.extraction_result.get("fields"):
+        try:
+            from app.services.compliance import moa_verification_service
+            await moa_verification_service.verify_moa(db, doc)
+        except Exception:  # noqa: BLE001 - must never fail document processing over this
             pass
 
     # Processed Data Storage (Phase 3) — a real, auditable EXTERNAL push of

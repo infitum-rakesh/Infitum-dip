@@ -70,6 +70,39 @@ DEFAULT_SETTINGS = {
         # exists yet as of Phase 3; this is the switch a later phase's
         # real implementation will read.
         "translation_enabled": False,
+        # Generic Extraction (Document Intelligence: Dynamic JSON
+        # Extraction spec) — OFF by default, a deliberate controlled
+        # rollout: this asks the AI model for additional evidence-
+        # supported key-value pairs beyond the known/canonical schema
+        # (see extraction_service.find_gap_fields()). Real, wired
+        # implementation, gated per-org so it can be validated on
+        # representative documents before broader enablement, per the
+        # spec's "introduce generic extraction behind a controlled
+        # rollout or feature flag" requirement.
+        "generic_extraction_enabled": False,
+        # Document Mapping Profiles (Document Intelligence: Dynamic JSON
+        # Extraction spec) — OFF by default, same controlled-rollout
+        # reasoning as generic_extraction_enabled above. Gates the
+        # "Apply Mapping Profile" action (services/document_mapping_
+        # service.py::apply_mapping_profile_to_document()) — the mapping
+        # PROFILES themselves (services/mapping_service.py, reusing the
+        # existing Column Mapping versioning system) can still be
+        # created/versioned/published regardless of this flag; only
+        # running one against a real document is gated, so an org can
+        # author and validate a profile before it's ever actually applied.
+        "mapping_profiles_enabled": False,
+        # Tally Invoice Auto-Sync — OFF by default, same controlled-rollout
+        # reasoning as the two flags above. When on, every invoice that
+        # reaches the decision engine's STRAIGHT_THROUGH outcome (document_
+        # service.py, right after invoice_decision_service.decide(), the
+        # exact same gate INV11's ERP auto-post already uses) attempts a
+        # real Tally voucher preview + submit-for-approval, provided this
+        # org has a TallyVendorMapping configured for that invoice's vendor
+        # (or an org-wide default row) — see tally_invoice_sync_service.py.
+        # No mapping configured = no-op, regardless of this flag, so
+        # turning this on alone changes nothing until an admin also sets
+        # up at least one vendor mapping.
+        "tally_auto_sync_enabled": False,
     },
     "ai": {
         "ai_provider": "openai",

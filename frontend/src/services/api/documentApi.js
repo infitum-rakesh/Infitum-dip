@@ -256,6 +256,18 @@ export const documentApi = {
   exportDatasets: (id, { datasets = null, destination = 'inline' } = {}) =>
     apiClient.post(`/documents/${id}/export`, { datasets, destination }).then((r) => r.data),
 
+  /**
+   * Document Mapping Profiles — applies a PUBLISHED, document-sourced
+   * Column Mapping profile (see /mappings) to this document's already-
+   * extracted fields, producing a new append-only DocumentMappedOutput
+   * row. Gated behind the org's mapping_profiles_enabled setting (the
+   * backend 403s with a clear message if it's off).
+   */
+  applyMapping: (id, mappingId) => apiClient.post(`/documents/${id}/apply-mapping/${mappingId}`).then((r) => r.data),
+
+  /** Full history of mapped outputs for this document, newest first — never overwritten, see the model's own docstring. */
+  getMappedOutputs: (id) => apiClient.get(`/documents/${id}/mapped-outputs`).then((r) => r.data),
+
   /** Open Pipeline bug fix — checks for an existing pipeline already linked
    * to this document before building a new one, so re-clicking "Open
    * Pipeline" reopens it instead of creating a duplicate. */

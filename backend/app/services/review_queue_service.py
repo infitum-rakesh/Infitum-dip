@@ -129,7 +129,12 @@ def _pick_primary_issue(doc: Document) -> dict | None:
                 "validation_status": total_field["validation_status"],
             }
 
-    missing = [f for f in fields if f.get("missing")]
+    # Only a REQUIRED missing field is reported as "Missing Field" — a
+    # legitimately optional field the document simply doesn't carry
+    # (validation_status "not_found", see document_service._reshape_
+    # extraction_fields) must never become the headline review issue.
+    # f.get("missing") alone doesn't distinguish the two; required does.
+    missing = [f for f in fields if f.get("missing") and f.get("required")]
     if missing:
         f = missing[0]
         return {
@@ -142,7 +147,11 @@ def _pick_primary_issue(doc: Document) -> dict | None:
             "validation_status": f["validation_status"],
         }
 
-    flagged = [f for f in fields if f["validation_status"] != "valid"]
+    # "not_found" fields are excluded here too — otherwise an optional,
+    # genuinely-absent field's 0.0 confidence would always win the
+    # min(..., key=confidence) pick below, masking the real low-
+    # confidence-but-present field that should actually be reviewed.
+    flagged = [f for f in fields if f["validation_status"] not in ("valid", "not_found")]
     if flagged:
         worst = min(flagged, key=lambda f: f["confidence"])
         issue = "Low AI Confidence" if worst["validation_status"] == "warning" else "Low AI Confidence — Validation Failed"

@@ -151,6 +151,20 @@ class DocumentScheduleConfig(TenantBase):
     document_type: Mapped[str | None] = mapped_column(String(60), nullable=True)
     recursive_scan: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Scheduled Mapping (Document Intelligence: Dynamic JSON Extraction
+    # spec, section 7) — the EXPLICIT mapping profile this schedule uses,
+    # highest-precedence per section 7.2's recommended order (explicit
+    # schedule mapping -> compatible document-type default -> no mapping,
+    # preserve original JSON). No FK to column_mappings.id, same loose-
+    # coupling convention as source_connection_id/invoice_erp_connection_id
+    # above — a deleted/retired mapping becomes a clear, reportable
+    # per-document mapping-stage failure at execution time (see
+    # services/document_mapping_resolution_service.py), never a migration-
+    # blocking FK or a silently-substituted unrelated profile. Nullable:
+    # a schedule with this unset falls through to the org's document-type
+    # default, if any, per the same precedence.
+    mapping_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # Scheduler integration (INV11) — lets an invoice-typed schedule post a
     # STRAIGHT_THROUGH decision straight to the ERP with zero human
     # involvement, the same way a person clicking "Post to ERP" in the

@@ -367,16 +367,17 @@ def _extract_scalar(field: dict, rows: list[dict], full_text: str, languages: li
     # regex over the whole page's concatenated text with no single
     # originating region to point at — honestly bbox=None rather than
     # guessing one (see its own docstring).
+    required = bool(field.get("required", False))
     found = _find_label_value(field, rows, languages)
     if found is not None:
         value, conf, page, bbox = found
     else:
         fallback = _type_fallback(field, full_text)
         if fallback is None:
-            return {"name": field["name"], "type": "scalar", "value": "", "confidence": 0.0, "page": 1, "bbox": None}
+            return {"name": field["name"], "type": "scalar", "value": "", "confidence": 0.0, "page": 1, "bbox": None, "required": required}
         value, conf, page = fallback
         bbox = None
-    return {"name": field["name"], "type": "scalar", "value": value, "confidence": round(conf, 1), "page": page, "bbox": bbox}
+    return {"name": field["name"], "type": "scalar", "value": value, "confidence": round(conf, 1), "page": page, "bbox": bbox, "required": required}
 
 
 # ── Table extraction ─────────────────────────────────────────────────
@@ -451,11 +452,12 @@ def _split_row(row: dict, columns: list[dict]) -> dict | None:
 def _extract_table(field: dict, rows: list[dict], languages: list[str] | None = None) -> dict:
     columns = field.get("columns") or []
     col_names = [c["name"] for c in columns]
+    required = bool(field.get("required", False))
     header_idx = _find_header_row(columns, rows, languages) if columns else None
     if header_idx is None:
         # No recognizable header row -> honestly report "found nothing"
         # rather than guessing at row boundaries with no anchor at all.
-        return {"name": field["name"], "type": "table", "columns": col_names, "rows": [], "confidence": 0.0}
+        return {"name": field["name"], "type": "table", "columns": col_names, "rows": [], "confidence": 0.0, "required": required}
 
     rows_out = []
     confs = []
@@ -469,7 +471,7 @@ def _extract_table(field: dict, rows: list[dict], languages: list[str] | None = 
         confs.append(_row_confidence(row))
 
     confidence = round(min(sum(confs) / len(confs), 75.0), 1) if confs else 0.0  # capped — heuristic row-splitting, not a verified read
-    return {"name": field["name"], "type": "table", "columns": col_names, "rows": rows_out, "confidence": confidence}
+    return {"name": field["name"], "type": "table", "columns": col_names, "rows": rows_out, "confidence": confidence, "required": required}
 
 
 # ── Entry point ───────────────────────────────────────────────────────
@@ -502,7 +504,18 @@ def extract_fields(doc: Document, schema: list[dict], languages: list[str] | Non
         else:
             fields_out.append(_extract_scalar(f, rows, full_text, languages))
 
-    scored = [f for f in fields_out if f.get("type") != "table" or f.get("rows")]
+    # Mirrors extraction_service.py's identical fix: exclude fields that
+    # are genuinely absent AND legitimately optional (required=False) so
+    # overall confidence reflects what this engine actually found, not
+    # how much of a canonical taxonomy happened to apply to this one
+    # document. A missing field the schema marks required=True still
+    # contributes its 0 confidence — a real mandatory miss must still
+    # drag the score down.
+    scored = [
+        f for f in fields_out
+        if (f.get("type") == "table" and (f.get("rows") or f.get("required")))
+        or (f.get("type") != "table" and (f.get("value") not in (None, "") or f.get("required")))
+    ]
     overall = round(sum(f["confidence"] for f in scored) / len(scored), 1) if scored else 0.0
     return {
         "fields": fields_out,

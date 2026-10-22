@@ -16,8 +16,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_action
 from app.database.tenant_routing import get_tenant_db
+from app.execution import mapping_execution as mapping_execution_module
 from app.models.user import User, UserRole
 from app.schemas.connections import ColumnOut
+from app.schemas.document_mapping import (
+    DocumentMappingDefaultListOut,
+    DocumentMappingDefaultOut,
+    DocumentSourceColumnOut,
+    DocumentSourceColumnsOut,
+    PreviewAgainstDocumentRequest,
+    PreviewAgainstDocumentResponse,
+    RetryScheduledMappingResponse,
+    SampleDocumentListOut,
+    SampleDocumentOut,
+    ScheduleUsingMappingListOut,
+    ScheduleUsingMappingOut,
+    SetDocumentMappingDefaultRequest,
+)
 from app.schemas.mapping import (
     AutoMapRequest,
     AutoMapResponse,
@@ -40,7 +55,12 @@ from app.schemas.mapping import (
     ValidateRequest,
     ValidateResponse,
 )
+from app.services import document_mapping_resolution_service
+from app.services import document_mapping_service as doc_mapping_svc
+from app.services import document_service
+from app.services import document_taxonomies
 from app.services import mapping_service as svc
+from app.services.document_mapping_service import DocumentMappingError
 
 router = APIRouter(prefix="/mappings", tags=["mapping"])
 
@@ -115,6 +135,106 @@ async def preview(body: MappingPreviewRequest, user: User = Depends(_execute), d
     return MappingPreviewResponse(columns=result.columns, rows=result.rows, row_count=result.row_count, truncated=result.truncated)
 
 
+# ── Document Mapping Profiles helpers (must precede /{mapping_id}) ──
+
+@router.get("/document-types", response_model=list[str])
+async def list_document_source_types(user: User = Depends(_view)):
+    """Picker data for building a document-sourced mapping profile's
+    source ObjectRef(document_type=...) — the same taxonomy
+    extraction/review already use, not a separate list."""
+    return document_taxonomies.available_document_types()
+
+
+@router.get("/document-source-columns", response_model=DocumentSourceColumnsOut)
+async def get_document_source_columns(document_type: str, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
+    """Picker data for the source side of a document-sourced mapping
+    profile — same columns fetch_columns() would return for
+    ObjectRef(document_type=...), exposed directly so the UI can build
+    that ObjectRef without first creating a mapping."""
+    try:
+        cols = await svc.fetch_columns(db, ObjectRef(document_type=document_type), _effective_org_id(user))
+    except svc.MappingValidationError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    return DocumentSourceColumnsOut(
+        document_type=document_type,
+        columns=[DocumentSourceColumnOut(name=c.name, data_type=c.data_type) for c in cols],
+    )
+
+
+@router.get("/invoice-schema-columns", response_model=list[ColumnOut])
+async def get_invoice_schema_columns(user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
+    """Picker data for the target side of a mapping profile whose target
+    is the real ApInvoice schema (ObjectRef(target_format="INVOICE_SCHEMA"))."""
+    cols = await svc.fetch_columns(db, ObjectRef(target_format="INVOICE_SCHEMA"), _effective_org_id(user))
+    return [ColumnOut(**vars(c)) for c in cols]
+
+
+@router.get("/sample-documents", response_model=SampleDocumentListOut)
+async def get_sample_documents(document_type: str, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
+    """Mapping editor's "Test Against Sample Document" picker — real,
+    already-processed documents of this type the user can run an
+    in-progress mapping definition against before ever saving it."""
+    docs = await doc_mapping_svc.list_sample_documents(db, organization_id=_effective_org_id(user), document_type=document_type)
+    return SampleDocumentListOut(items=[SampleDocumentOut(**d) for d in docs])
+
+
+@router.post("/preview-document", response_model=PreviewAgainstDocumentResponse)
+async def preview_mapping_against_document(body: PreviewAgainstDocumentRequest, user: User = Depends(_execute), db: AsyncSession = Depends(get_tenant_db)):
+    """Mapping editor's "Test Against Sample Document" run action — a
+    dry-run of the real engine against an in-progress (possibly unsaved)
+    mapping definition. Never persists a DocumentMappedOutput row (see
+    document_mapping_service.preview_mapping_against_document's own
+    docstring) — apply-mapping/{mapping_id} on api/documents.py is the
+    real, persisted, feature-flag-gated action."""
+    document = await document_service.get_document(db, body.document_id, _effective_org_id(user))
+    if document is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
+    try:
+        result = await doc_mapping_svc.preview_mapping_against_document(
+            db, document=document, source_document_type=body.source_document_type, target_format=body.target_format,
+            mappings=body.mappings, organization_id=_effective_org_id(user),
+        )
+    except DocumentMappingError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    except mapping_execution_module.MappingExecutionError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    return PreviewAgainstDocumentResponse(**result)
+
+
+# ── Scheduled Mapping — org defaults + usage (spec section 7.3; must
+# precede /{mapping_id}) ─────────────────────────────────────────────
+
+@router.get("/defaults", response_model=DocumentMappingDefaultListOut)
+async def list_mapping_defaults(user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
+    rows = await document_mapping_resolution_service.list_defaults(db, _effective_org_id(user))
+    names = await svc.mapping_name_map(db, {r.mapping_id for r in rows}) if rows else {}
+    return DocumentMappingDefaultListOut(items=[
+        DocumentMappingDefaultOut(**{c.name: getattr(r, c.name) for c in r.__table__.columns}, mapping_name=names.get(r.mapping_id))
+        for r in rows
+    ])
+
+
+@router.put("/defaults", response_model=DocumentMappingDefaultOut)
+async def set_mapping_default(body: SetDocumentMappingDefaultRequest, user: User = Depends(_edit), db: AsyncSession = Depends(get_tenant_db)):
+    try:
+        row = await document_mapping_resolution_service.set_default(
+            db, organization_id=_effective_org_id(user), document_type=body.document_type,
+            mapping_id=body.mapping_id, actor_id=user.id,
+        )
+    except document_mapping_resolution_service.DefaultMappingError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    mapping = await svc.get_mapping(db, row.mapping_id, _effective_org_id(user))
+    return DocumentMappingDefaultOut(
+        **{c.name: getattr(row, c.name) for c in row.__table__.columns},
+        mapping_name=mapping.name if mapping else None,
+    )
+
+
+@router.delete("/defaults/{document_type}", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_mapping_default(document_type: str, user: User = Depends(_edit), db: AsyncSession = Depends(get_tenant_db)):
+    await document_mapping_resolution_service.clear_default(db, organization_id=_effective_org_id(user), document_type=document_type, actor_id=user.id)
+
+
 # ── CRUD ─────────────────────────────────────────────────────────
 
 @router.get("", response_model=ColumnMappingListOut)
@@ -150,11 +270,17 @@ async def get_mapping(mapping_id: int, user: User = Depends(_view), db: AsyncSes
 
     try:
         source_cols = await svc.fetch_columns(
-            db, ObjectRef(connection_id=row.source_connection_id, schema_name=row.source_schema, object_name=row.source_object),
+            db, ObjectRef(
+                connection_id=row.source_connection_id, schema_name=row.source_schema, object_name=row.source_object,
+                document_type=row.source_document_type,
+            ),
             _effective_org_id(user),
         )
         target_cols = await svc.fetch_columns(
-            db, ObjectRef(connection_id=row.target_connection_id, schema_name=row.target_schema, object_name=row.target_object),
+            db, ObjectRef(
+                connection_id=row.target_connection_id, schema_name=row.target_schema, object_name=row.target_object,
+                target_format=row.target_format,
+            ),
             _effective_org_id(user),
         )
     except svc.MappingValidationError as exc:
@@ -281,6 +407,14 @@ async def get_usage(mapping_id: int, user: User = Depends(_view), db: AsyncSessi
         for r in rows
     ]
     return MappingUsageListOut(items=items, total=len(items))
+
+
+@router.get("/{mapping_id}/schedules", response_model=ScheduleUsingMappingListOut)
+async def get_schedules_using_mapping(mapping_id: int, user: User = Depends(_view), db: AsyncSession = Depends(get_tenant_db)):
+    """Section 7.3 — "view which schedules use each profile"."""
+    await _get_or_404(db, mapping_id, user)
+    usages = await document_mapping_resolution_service.list_schedules_using_mapping(db, mapping_id=mapping_id, organization_id=_effective_org_id(user))
+    return ScheduleUsingMappingListOut(items=[ScheduleUsingMappingOut(**u) for u in usages])
 
 
 @router.get("/{mapping_id}/staleness", response_model=StalenessOut)

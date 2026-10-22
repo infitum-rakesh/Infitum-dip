@@ -25,6 +25,24 @@ Live schema is never cached here — source_columns/target_columns are
 always re-fetched from the real connection via connectors/database/base.py
 at read/validate/auto-map time (see mapping_service.py), so a mapping
 never goes stale relative to what the source/target actually look like.
+
+Document Mapping Profiles (Document Intelligence: Dynamic JSON
+Extraction spec — "do not create a third versioning system") reuse this
+SAME header+version split rather than a bespoke model: source_connection_id
+is nullable and, when NULL, source_document_type names a Document
+Intelligence document_type (e.g. "INVOICE") instead — the live "source
+columns" are then the canonical/ad-hoc taxonomy's field names
+(document_taxonomies.build_seed_schema(), widened by
+document_service.discover_known_field_names()), never a real connector.
+Exactly one of source_connection_id/source_document_type is ever set.
+Similarly target_connection_id is nullable and target_format distinguishes
+what kind of target this is: "DB_TABLE" (NULL also means this, for every
+pre-existing row — the original, unchanged, connection-based behavior) or
+"INVOICE_SCHEMA" (ApInvoice's own real typed columns, introspected
+directly — no Connection row at all, target_connection_id is then NULL
+too). See services/mapping_service.py's fetch_columns() for the one place
+this branches, and services/document_mapping_service.py for applying a
+PUBLISHED document-sourced version to one Document's extraction result.
 """
 from datetime import datetime
 
@@ -42,13 +60,15 @@ class ColumnMapping(TenantBase):
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
 
-    source_connection_id: Mapped[int] = mapped_column(ForeignKey("connections.id"), nullable=False)
+    source_connection_id: Mapped[int | None] = mapped_column(ForeignKey("connections.id"), nullable=True)
     source_schema: Mapped[str | None] = mapped_column(String(200), nullable=True)
     source_object: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    source_document_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
-    target_connection_id: Mapped[int] = mapped_column(ForeignKey("connections.id"), nullable=False)
+    target_connection_id: Mapped[int | None] = mapped_column(ForeignKey("connections.id"), nullable=True)
     target_schema: Mapped[str | None] = mapped_column(String(200), nullable=True)
     target_object: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    target_format: Mapped[str | None] = mapped_column(String(30), nullable=True)  # NULL/"DB_TABLE" | "INVOICE_SCHEMA"
 
     # CM1: real version pointers, mirroring Pipeline.current_version.
     # latest_version always points at the newest version row (any status);

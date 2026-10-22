@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.connection import AsyncSessionLocal
 
-from app.connectors.base import ConnectorError
+from app.connectors.base import ColumnInfo, ConnectorError
 from app.mapping import auto_mapper, mapper
 from app.models.audit_log import AuditStatus, record_event
 from app.models.column_mapping import ColumnMapping
@@ -36,8 +36,36 @@ from app.models.column_mapping_version import ColumnMappingVersion
 from app.models.connection import Connection
 from app.models.pipeline import Pipeline
 from app.models.user import User
-from app.services import connection_service
+from app.services import connection_service, document_service, document_taxonomies
 from app.schemas.mapping import ObjectRef
+
+# Document Mapping Profiles — the uppercase family strings
+# mapping/datatype_mapper.py's classify() pattern-matches on (confirmed:
+# "STRING"/"NUMERIC"/"DATE"/"BOOLEAN" each match that module's own regex
+# families directly), so auto_map()/validate_mapping() treat a document's
+# extracted field exactly like a real reflected DB column type with zero
+# changes to either pure engine.
+_DOCUMENT_FIELD_TYPE_MAP = {"string": "STRING", "number": "NUMERIC", "date": "DATE", "boolean": "BOOLEAN"}
+
+# Invoice Schema target — a curated allowlist of ApInvoice's genuine
+# business/data columns, NOT a blanket introspection of every column on
+# the model. ApInvoice also carries internal workflow/decision-engine
+# bookkeeping (status, final_decision, extractor_confidence,
+# erp_transaction_id, rule_version, ...) that must never be offered as a
+# mapping TARGET — those are written by invoice_decision_service.py/
+# invoice_processing_service.py's own logic, not by a user-defined
+# mapping. Keeping this list hand-maintained (rather than "every column
+# except a blocklist") means a future internal column added to the model
+# is safe-by-default — it simply doesn't appear here until someone
+# deliberately decides it belongs in this list.
+_INVOICE_SCHEMA_TARGET_COLUMNS = [
+    "invoice_number", "invoice_date", "due_date", "vendor_name", "purchase_order",
+    "currency", "payment_terms", "payment_reference",
+    "vendor_gstin", "vendor_pan", "buyer_gstin", "place_of_supply",
+    "tds_section", "tds_rate", "tds_amount",
+    "subtotal", "tax", "cgst_amount", "sgst_amount", "igst_amount", "cess_amount",
+    "discount", "freight", "total",
+]
 
 
 class MappingValidationError(Exception):
@@ -58,7 +86,54 @@ async def _resolve_connection(db: AsyncSession, connection_id: int, organization
     return conn
 
 
+async def _fetch_document_source_columns(db: AsyncSession, organization_id: int | None, document_type: str) -> list[ColumnInfo]:
+    """Document Mapping Profiles' SOURCE schema — never a real connector.
+    Reuses exactly the two functions document_taxonomies.py's own module
+    docstring says are designed to compose: build_seed_schema() for the
+    canonical/ad-hoc taxonomy's own field names, widened by
+    discover_known_field_names()'s real, data-driven extra names mined
+    from this org's own past documents of the type (the same widening
+    extraction's own detect_schema() already does). Table-shaped fields
+    (e.g. line_items) are excluded — a mapping row maps one scalar value
+    to one target column; a table needs its own row-expansion handling,
+    the same disclosed, not-yet-built limitation build_dataset() already
+    has for a SECOND table field (see document_service.py's
+    _reshape_generic_fields() docstring)."""
+    extra_names = await document_service.discover_known_field_names(db, organization_id, document_type=document_type)
+    schema = document_taxonomies.build_seed_schema(document_type, extra_names)
+    return [
+        ColumnInfo(name=f["name"], data_type=_DOCUMENT_FIELD_TYPE_MAP.get(f["type"], "STRING"), nullable=True)
+        for f in schema if f["type"] != "table"
+    ]
+
+
+def _fetch_invoice_schema_target_columns() -> list[ColumnInfo]:
+    """Document Mapping Profiles' "INVOICE_SCHEMA" TARGET — ApInvoice's
+    own real typed columns, introspected directly via SQLAlchemy (never a
+    hand-duplicated list that could drift from the actual model), but
+    filtered to the curated _INVOICE_SCHEMA_TARGET_COLUMNS allowlist —
+    see that constant's own comment for why internal workflow/decision
+    columns are deliberately excluded rather than blanket-exposed."""
+    from app.models.invoice_intelligence.core import ApInvoice
+    by_name = {c.name: c for c in ApInvoice.__table__.columns}
+    return [
+        ColumnInfo(name=name, data_type=str(by_name[name].type), nullable=by_name[name].nullable)
+        for name in _INVOICE_SCHEMA_TARGET_COLUMNS if name in by_name
+    ]
+
+
 async def fetch_columns(db: AsyncSession, ref: ObjectRef, organization_id: int | None) -> list:
+    # Document Mapping Profiles — see schemas/mapping.py's ObjectRef
+    # docstring. These two branches never touch a Connection row at all;
+    # every other caller (run_validate_version, check_staleness,
+    # run_auto_map, run_validate, execution/mapping_execution.py's own
+    # live revalidation) goes through this ONE function, so branching
+    # here is what makes every one of them document-aware "for free",
+    # with zero changes to any of their own bodies.
+    if ref.document_type is not None:
+        return await _fetch_document_source_columns(db, organization_id, ref.document_type)
+    if ref.target_format == "INVOICE_SCHEMA":
+        return _fetch_invoice_schema_target_columns()
     conn = await _resolve_connection(db, ref.connection_id, organization_id)
     try:
         columns, _ = await connection_service.get_columns(conn, ref.object_name, ref.schema_name, False)
@@ -92,22 +167,44 @@ async def _snapshot_column_counts(
 
 # ── CRUD (header) ────────────────────────────────────────────────
 
+def _validate_ref_discriminators(source: ObjectRef, target: ObjectRef) -> None:
+    """Document Mapping Profiles — exactly one of connection_id/
+    document_type on the source side, and target_format must agree with
+    whether target_connection_id is set. Checked once, here, rather than
+    relying on every caller to get this right."""
+    if source.document_type is not None and source.connection_id is not None:
+        raise MappingValidationError("A mapping's source must be either a connection or a Document Intelligence document_type, not both.")
+    if source.document_type is None and source.connection_id is None:
+        raise MappingValidationError("A mapping's source needs either a connection_id or a document_type.")
+    if target.target_format == "INVOICE_SCHEMA" and target.connection_id is not None:
+        raise MappingValidationError("An INVOICE_SCHEMA target has no connection — leave target.connection_id unset.")
+    if (target.target_format or "DB_TABLE") == "DB_TABLE" and target.connection_id is None:
+        raise MappingValidationError("A DB_TABLE target needs a connection_id.")
+
+
 async def create_mapping(
     db: AsyncSession, *, organization_id: int | None, name: str, source: ObjectRef, target: ObjectRef,
     mappings: list[dict], created_by: int | None,
 ) -> ColumnMapping:
-    # Both connections must genuinely belong to this org (or organization_id
-    # is None — a true platform-wide/super-admin context) — never trust a
-    # connection_id from the request body as-is. Without this, any
-    # authenticated user could save a mapping pointing at another
-    # tenant's connection and later run Preview/Validate/Load against it.
+    _validate_ref_discriminators(source, target)
+    # A real connection must genuinely belong to this org (or
+    # organization_id is None — a true platform-wide/super-admin
+    # context) — never trust a connection_id from the request body as-is.
+    # Without this, any authenticated user could save a mapping pointing
+    # at another tenant's connection and later run Preview/Validate/Load
+    # against it. Skipped for a document_type source or an INVOICE_SCHEMA
+    # target — neither has a connection_id to even check.
     if organization_id is not None:
-        await _resolve_connection(db, source.connection_id, organization_id)
-        await _resolve_connection(db, target.connection_id, organization_id)
+        if source.connection_id is not None:
+            await _resolve_connection(db, source.connection_id, organization_id)
+        if target.connection_id is not None:
+            await _resolve_connection(db, target.connection_id, organization_id)
     row = ColumnMapping(
         organization_id=organization_id, name=name,
         source_connection_id=source.connection_id, source_schema=source.schema_name, source_object=source.object_name,
+        source_document_type=source.document_type,
         target_connection_id=target.connection_id, target_schema=target.schema_name, target_object=target.object_name,
+        target_format=target.target_format or "DB_TABLE",
         mappings=mappings, status="DRAFT",  # legacy columns, kept only for pre-CM1 read compat — see models/column_mapping.py docstring
         latest_version=1, current_published_version=None,
         created_by=created_by, updated_by=created_by,
@@ -118,15 +215,19 @@ async def create_mapping(
     version = ColumnMappingVersion(
         mapping_id=row.id, version_number=1, status="DRAFT", mappings=mappings,
         source_connection_id=source.connection_id, source_schema=source.schema_name, source_object=source.object_name,
+        source_document_type=source.document_type,
         target_connection_id=target.connection_id, target_schema=target.schema_name, target_object=target.object_name,
+        target_format=target.target_format or "DB_TABLE",
         source_column_count=source_count, target_column_count=target_count,
         change_description="Initial version.", created_by=created_by,
     )
     db.add(version)
+    source_label = source.object_name or f"document_type={source.document_type}"
+    target_label = target.object_name or target.target_format or "DB_TABLE"
     await record_event(
         db, organization_id=organization_id, actor_id=created_by, action="Column Mapping Created", module="Column Mapping",
         resource=name, resource_id=str(row.id), status=AuditStatus.SUCCESS,
-        details=f"{source.object_name} -> {target.object_name}, {len(mappings)} row(s), v1 DRAFT", commit=False,
+        details=f"{source_label} -> {target_label}, {len(mappings)} row(s), v1 DRAFT", commit=False,
     )
     await db.commit()
     await db.refresh(row)
@@ -238,13 +339,21 @@ async def create_new_version(
     created today describes today's source/target; earlier versions keep
     whatever they were snapshotted against, even if that differs)."""
     new_version_number = mapping.latest_version + 1
-    source_ref = ObjectRef(connection_id=mapping.source_connection_id, schema_name=mapping.source_schema, object_name=mapping.source_object)
-    target_ref = ObjectRef(connection_id=mapping.target_connection_id, schema_name=mapping.target_schema, object_name=mapping.target_object)
+    source_ref = ObjectRef(
+        connection_id=mapping.source_connection_id, schema_name=mapping.source_schema, object_name=mapping.source_object,
+        document_type=mapping.source_document_type,
+    )
+    target_ref = ObjectRef(
+        connection_id=mapping.target_connection_id, schema_name=mapping.target_schema, object_name=mapping.target_object,
+        target_format=mapping.target_format,
+    )
     source_count, target_count = await _snapshot_column_counts(db, mapping.organization_id, source_ref, target_ref)
     version = ColumnMappingVersion(
         mapping_id=mapping.id, version_number=new_version_number, status="DRAFT", mappings=mappings,
         source_connection_id=mapping.source_connection_id, source_schema=mapping.source_schema, source_object=mapping.source_object,
+        source_document_type=mapping.source_document_type,
         target_connection_id=mapping.target_connection_id, target_schema=mapping.target_schema, target_object=mapping.target_object,
+        target_format=mapping.target_format,
         source_column_count=source_count, target_column_count=target_count,
         unmapped_column_policy=unmapped_column_policy, batch_size=batch_size, on_conversion_failure=on_conversion_failure,
         change_description=change_description, created_by=created_by,
@@ -270,11 +379,17 @@ async def run_validate_version(db: AsyncSession, *, organization_id: int | None,
     publishable), matching how the standalone editor's own Validate
     button has always treated WARNING as non-blocking."""
     source_cols = columns_to_dicts(await fetch_columns(
-        db, ObjectRef(connection_id=version.source_connection_id, schema_name=version.source_schema, object_name=version.source_object),
+        db, ObjectRef(
+            connection_id=version.source_connection_id, schema_name=version.source_schema, object_name=version.source_object,
+            document_type=version.source_document_type,
+        ),
         organization_id,
     ))
     target_cols = columns_to_dicts(await fetch_columns(
-        db, ObjectRef(connection_id=version.target_connection_id, schema_name=version.target_schema, object_name=version.target_object),
+        db, ObjectRef(
+            connection_id=version.target_connection_id, schema_name=version.target_schema, object_name=version.target_object,
+            target_format=version.target_format,
+        ),
         organization_id,
     ))
     result = mapper.validate_mapping(version.mappings, source_cols, target_cols)
@@ -359,8 +474,14 @@ async def check_staleness(db: AsyncSession, *, organization_id: int | None, vers
     works regardless of whether counts were ever snapshotted. Never
     mutates the version — purely a read/diff, matching "do not silently
     change production mappings"."""
-    source_ref = ObjectRef(connection_id=version.source_connection_id, schema_name=version.source_schema, object_name=version.source_object)
-    target_ref = ObjectRef(connection_id=version.target_connection_id, schema_name=version.target_schema, object_name=version.target_object)
+    source_ref = ObjectRef(
+        connection_id=version.source_connection_id, schema_name=version.source_schema, object_name=version.source_object,
+        document_type=version.source_document_type,
+    )
+    target_ref = ObjectRef(
+        connection_id=version.target_connection_id, schema_name=version.target_schema, object_name=version.target_object,
+        target_format=version.target_format,
+    )
     source_cols = columns_to_dicts(await fetch_columns(db, source_ref, organization_id))
     target_cols = columns_to_dicts(await fetch_columns(db, target_ref, organization_id))
     now_source_count, now_target_count = len(source_cols), len(target_cols)
@@ -433,6 +554,13 @@ async def pipeline_name_map(db: AsyncSession, ids: set[int]) -> dict[int, str]:
     return {row.id: row.name for row in result.all()}
 
 
+async def mapping_name_map(db: AsyncSession, ids: set[int]) -> dict[int, str]:
+    if not ids:
+        return {}
+    result = await db.execute(select(ColumnMapping.id, ColumnMapping.name).where(ColumnMapping.id.in_(ids)))
+    return {row.id: row.name for row in result.all()}
+
+
 # ── Engine operations ────────────────────────────────────────────
 
 async def run_auto_map(db: AsyncSession, *, organization_id: int | None, source: ObjectRef, target: ObjectRef, existing: list[dict]) -> list[dict]:
@@ -448,6 +576,11 @@ async def run_validate(db: AsyncSession, *, organization_id: int | None, source:
 
 
 async def run_preview(db: AsyncSession, *, organization_id: int | None, source: ObjectRef, mappings: list[dict], limit: int):
+    if source.document_type is not None:
+        raise MappingValidationError(
+            "SQL preview isn't available for a Document Intelligence mapping profile — its source is a document, "
+            "not a queryable table. Use POST /documents/{document_id}/apply-mapping/{mapping_id} to run it against a real document instead."
+        )
     conn = await _resolve_connection(db, source.connection_id, organization_id)
     connector = connection_service.build_connector(conn)
 

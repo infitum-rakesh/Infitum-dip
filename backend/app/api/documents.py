@@ -35,6 +35,7 @@ from app.schemas.document_batch import (
     InitZipUploadRequest,
     RetrySelectedRequest,
 )
+from app.schemas.document_mapping import DocumentMappedOutputListOut, DocumentMappedOutputOut
 from app.schemas.documents import (
     BulkActionRequest,
     DocumentDetailOut,
@@ -50,12 +51,14 @@ from app.schemas.documents import (
 from app.schemas.review_queue import ReviewItemLookupOut
 from app.services import batch_upload_service as upload_svc
 from app.services import document_batch_service as batch_svc
+from app.services import document_mapping_service as doc_mapping_svc
 from app.services import document_service as svc
 from app.services import document_taxonomies
 from app.services import review_queue_service as review_svc
 from app.services import settings_service as settings_svc
 from app.services.batch_upload_service import BatchUploadError
 from app.services.document_batch_service import DocumentBatchError
+from app.services.document_mapping_service import DocumentMappingError
 from app.services.document_service import DocumentLanguageConfigError, DocumentValidationError, ManualExtractionError
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -730,6 +733,48 @@ async def manual_extraction(
     out = DocumentDetailOut.model_validate(doc)
     out.uploaded_by_name = name_map.get(doc.uploaded_by_id) if doc.uploaded_by_id else None
     return out
+
+
+# ── Document Mapping Profiles (MP8) ──────────────────────────────
+# Applying a PUBLISHED, document-sourced mapping profile to one real
+# document — definition/versioning itself lives entirely under
+# /mappings (see api/mapping.py + models/column_mapping.py's module
+# docstring for why no second system exists here).
+
+@router.post("/{document_id}/apply-mapping/{mapping_id}", response_model=DocumentMappedOutputOut, status_code=status.HTTP_201_CREATED)
+async def apply_mapping(
+    document_id: int,
+    mapping_id: int,
+    user: User = Depends(require_action("EXECUTE")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    doc = await _get_or_404(db, document_id, user)
+    org_settings = await settings_svc.get_or_create(db, user.organization_id) if user.organization_id else None
+    di_settings = settings_svc.effective_document_intelligence_settings(org_settings)
+    if not di_settings.get("mapping_profiles_enabled"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Mapping Profiles are not enabled for this organization — turn on "
+            "\"Mapping profiles\" under Administration > Settings > Document Intelligence first.",
+        )
+    try:
+        output = await doc_mapping_svc.apply_mapping_profile_to_document(
+            db, document=doc, mapping_id=mapping_id, organization_id=_effective_org_id(user), created_by=user.id,
+        )
+    except DocumentMappingError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    return output
+
+
+@router.get("/{document_id}/mapped-outputs", response_model=DocumentMappedOutputListOut)
+async def list_mapped_outputs(
+    document_id: int,
+    user: User = Depends(require_action("VIEW")),
+    db: AsyncSession = Depends(get_tenant_db),
+):
+    await _get_or_404(db, document_id, user)
+    items = await doc_mapping_svc.list_mapped_outputs(db, document_id, _effective_org_id(user))
+    return DocumentMappedOutputListOut(items=items, total=len(items))
 
 
 # ── File access ───────────────────────────────────────────────────

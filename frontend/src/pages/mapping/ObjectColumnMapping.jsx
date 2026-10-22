@@ -13,7 +13,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   Wand2, ShieldCheck, Save, Play, Columns3, RotateCcw, Search, Plus,
-  Pencil, X, Check, Loader2, AlertTriangle, ArrowLeftRight, UploadCloud,
+  Pencil, X, Check, Loader2, AlertTriangle, ArrowLeftRight, UploadCloud, FileText,
 } from 'lucide-react';
 import { Button, PermissionGate, FullPageSpinner, EmptyState, StatusBadge } from '@/components/common/index.js';
 import { MAPPING_PERMISSIONS } from '@/utils/constants.js';
@@ -22,9 +22,10 @@ import { mappingApi } from '@/services/api/mappingApi.js';
 import { MappingRowEditor } from './MappingRowEditor.jsx';
 import { MappingVisual } from './MappingVisual.jsx';
 import { RunLoadPanel } from './RunLoadPanel.jsx';
+import { SampleDocumentTestPanel } from './SampleDocumentTestPanel.jsx';
 import './mapping.css';
 
-function emptyRef() { return { connection_id: null, schema_name: '', object_name: '' }; }
+function emptyRef() { return { connection_id: null, schema_name: '', object_name: '', document_type: null, target_format: null }; }
 
 function apiErrorMessage(err, fallback) { return err?.message || fallback; }
 
@@ -89,6 +90,30 @@ function ObjectPicker({ label, value, onChange, disabled }) {
   );
 }
 
+// ── Document Intelligence source picker (Document Mapping Profiles) ──
+// Alternative to ObjectPicker above when the source is a Document
+// Intelligence document_type rather than a connection — see
+// models/column_mapping.py's module docstring. No connection/schema/
+// object browsing needed; just a flat list of document types.
+
+function DocumentSourcePicker({ value, onChange, disabled }) {
+  const [types, setTypes] = useState([]);
+
+  useEffect(() => { mappingApi.getDocumentTypes().then(setTypes).catch(() => setTypes([])); }, []);
+
+  return (
+    <div className="ocm-picker">
+      <div className="ocm-picker-label">SOURCE — Document Type</div>
+      <div className="ocm-picker-row">
+        <select className="ocm-select" disabled={disabled} value={value.document_type ?? ''} onChange={(e) => onChange(e.target.value || null)}>
+          <option value="">Document type…</option>
+          {types.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+      </div>
+    </div>
+  );
+}
+
 export default function ObjectColumnMapping() {
   const { mappingId } = useParams();
   const navigate = useNavigate();
@@ -119,6 +144,8 @@ export default function ObjectColumnMapping() {
       ? { connection_id: Number(connection_id), schema_name: searchParams.get('targetSchema') || '', object_name: searchParams.get('targetObject') || '' }
       : emptyRef();
   });
+  const [sourceKind, setSourceKindState] = useState('connection'); // 'connection' | 'document' — Document Mapping Profiles
+  const [targetKind, setTargetKindState] = useState('table'); // 'table' | 'invoice_schema'
   const [sourceColumns, setSourceColumns] = useState([]);
   const [targetColumns, setTargetColumns] = useState([]);
   const [mappings, setMappings] = useState([]);
@@ -155,8 +182,10 @@ export default function ObjectColumnMapping() {
     mappingApi.get(mappingId).then((d) => {
       setId(d.id);
       setName(d.name);
-      setSource({ connection_id: d.source_connection_id, schema_name: d.source_schema || '', object_name: d.source_object || '' });
-      setTarget({ connection_id: d.target_connection_id, schema_name: d.target_schema || '', object_name: d.target_object || '' });
+      setSource({ connection_id: d.source_connection_id, schema_name: d.source_schema || '', object_name: d.source_object || '', document_type: d.source_document_type ?? null });
+      setTarget({ connection_id: d.target_connection_id, schema_name: d.target_schema || '', object_name: d.target_object || '', target_format: d.target_format ?? null });
+      setSourceKindState(d.source_document_type ? 'document' : 'connection');
+      setTargetKindState(d.target_format === 'INVOICE_SCHEMA' ? 'invoice_schema' : 'table');
       setMappings(d.mappings);
       setSourceColumns(d.source_columns);
       setTargetColumns(d.target_columns);
@@ -175,23 +204,44 @@ export default function ObjectColumnMapping() {
     mappingApi.getUsage(mappingId).then(setUsage).catch(() => setUsage(null));
   }, [mappingId]);
 
-  const sourceReady = !!(source.connection_id && source.object_name);
-  const targetReady = !!(target.connection_id && target.object_name);
+  const setSourceKind = (kind) => {
+    if (kind === sourceKind || locked) return;
+    setSourceKindState(kind);
+    setSource(emptyRef());
+    setSourceColumns([]); setMappings([]); setValidation(null);
+  };
+  const setTargetKind = (kind) => {
+    if (kind === targetKind || locked) return;
+    setTargetKindState(kind);
+    setTarget(kind === 'invoice_schema' ? { ...emptyRef(), target_format: 'INVOICE_SCHEMA' } : emptyRef());
+    setTargetColumns([]); setMappings([]); setValidation(null);
+  };
+
+  const sourceReady = sourceKind === 'document' ? !!source.document_type : !!(source.connection_id && source.object_name);
+  const targetReady = targetKind === 'invoice_schema' ? true : !!(target.connection_id && target.object_name);
 
   // ── Live column fetch for a brand-new (unsaved) mapping ───────
   useEffect(() => {
     if (mappingId || !sourceReady) return;
+    if (sourceKind === 'document') {
+      mappingApi.getDocumentSourceColumns(source.document_type).then((r) => setSourceColumns(r.columns)).catch(() => setSourceColumns([]));
+      return;
+    }
     connectionApi.getColumns(source.connection_id, source.object_name, { schema: source.schema_name || undefined })
       .then((r) => setSourceColumns(r.columns)).catch(() => setSourceColumns([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source.connection_id, source.schema_name, source.object_name, mappingId]);
+  }, [source.connection_id, source.schema_name, source.object_name, source.document_type, sourceKind, mappingId]);
 
   useEffect(() => {
     if (mappingId || !targetReady) return;
+    if (targetKind === 'invoice_schema') {
+      mappingApi.getInvoiceSchemaColumns().then(setTargetColumns).catch(() => setTargetColumns([]));
+      return;
+    }
     connectionApi.getColumns(target.connection_id, target.object_name, { schema: target.schema_name || undefined })
       .then((r) => setTargetColumns(r.columns)).catch(() => setTargetColumns([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target.connection_id, target.schema_name, target.object_name, mappingId]);
+  }, [target.connection_id, target.schema_name, target.object_name, target.target_format, targetKind, mappingId]);
 
   const bothReady = sourceReady && targetReady;
   const dirty = savedSnapshot !== null
@@ -348,11 +398,37 @@ export default function ObjectColumnMapping() {
         </div>
 
         {/* Source / Target pickers */}
-        <div className="ocm-pickers-row">
-          <ObjectPicker label="SOURCE" value={source} onChange={setSource} disabled={locked} />
-          <ArrowLeftRight size={18} className="ocm-picker-arrow" />
-          <ObjectPicker label="TARGET" value={target} onChange={setTarget} disabled={locked} />
+        <div className="ocm-kind-toggle-row">
+          <div className="ocm-kind-toggle">
+            <button type="button" className={`ocm-view-toggle ${sourceKind === 'connection' ? 'active' : ''}`} disabled={locked} onClick={() => setSourceKind('connection')}>Connection</button>
+            <button type="button" className={`ocm-view-toggle ${sourceKind === 'document' ? 'active' : ''}`} disabled={locked} onClick={() => setSourceKind('document')}>Document Intelligence</button>
+          </div>
+          <div className="ocm-kind-toggle">
+            <button type="button" className={`ocm-view-toggle ${targetKind === 'table' ? 'active' : ''}`} disabled={locked} onClick={() => setTargetKind('table')}>Database Table</button>
+            <button type="button" className={`ocm-view-toggle ${targetKind === 'invoice_schema' ? 'active' : ''}`} disabled={locked} onClick={() => setTargetKind('invoice_schema')}>Invoice Schema</button>
+          </div>
         </div>
+        <div className="ocm-pickers-row">
+          {sourceKind === 'document'
+            ? <DocumentSourcePicker value={source} onChange={(document_type) => setSource({ ...emptyRef(), document_type })} disabled={locked} />
+            : <ObjectPicker label="SOURCE" value={source} onChange={setSource} disabled={locked} />}
+          <ArrowLeftRight size={18} className="ocm-picker-arrow" />
+          {targetKind === 'invoice_schema'
+            ? (
+              <div className="ocm-picker">
+                <div className="ocm-picker-label">TARGET — Invoice Schema</div>
+                <div className="ocm-picker-row"><span className="ocm-muted"><FileText size={13} style={{ verticalAlign: 'text-bottom', marginRight: 4 }} />ApInvoice's real, curated business columns — no picker needed.</span></div>
+              </div>
+            )
+            : <ObjectPicker label="TARGET" value={target} onChange={setTarget} disabled={locked} />}
+        </div>
+        {sourceKind === 'document' && (
+          <div className="ocm-banner info">
+            Source is a Document Intelligence document_type — mappings apply to a real Document's already-extracted
+            fields (see the Mapping Profile tab on Document Details), not a connector table. SQL Preview isn't
+            available for this source; use "Test Against Sample Document" below instead.
+          </div>
+        )}
 
         {/* Action bar */}
         <div className="ocm-action-bar">
@@ -363,9 +439,11 @@ export default function ObjectColumnMapping() {
             <Button variant="secondary" size="sm" icon={validating ? <Loader2 size={13} className="sdc-spin" /> : <ShieldCheck size={13} />} disabled={!bothReady || mappings.length === 0 || validating} onClick={runValidate}>
               Validate Mapping
             </Button>
-            <Button variant="secondary" size="sm" icon={previewing ? <Loader2 size={13} className="sdc-spin" /> : <Play size={13} />} disabled={!sourceReady || mappings.length === 0 || previewing} onClick={runPreview}>
-              Preview
-            </Button>
+            {sourceKind !== 'document' && (
+              <Button variant="secondary" size="sm" icon={previewing ? <Loader2 size={13} className="sdc-spin" /> : <Play size={13} />} disabled={!sourceReady || mappings.length === 0 || previewing} onClick={runPreview}>
+                Preview
+              </Button>
+            )}
           </PermissionGate>
           <button type="button" className={`ocm-view-toggle ${viewMode === 'grid' ? 'active' : ''}`} onClick={() => setViewMode('grid')}>Grid</button>
           <button type="button" className={`ocm-view-toggle ${viewMode === 'visual' ? 'active' : ''}`} onClick={() => setViewMode('visual')}>Visual</button>
@@ -565,11 +643,21 @@ export default function ObjectColumnMapping() {
           </div>
         )}
 
-        {/* Run Load — real backend bulk load, separate from Preview (which
-            only ever samples via a bounded SELECT, never writes anywhere) */}
-        <PermissionGate {...MAPPING_PERMISSIONS.MAPPING_RUN} fallback={null}>
-          <RunLoadPanel mappingId={id} mappingDirty={dirty} targetColumns={targetColumns} mappedTargetNames={mappedTargetNames} />
-        </PermissionGate>
+        {/* Run Load — real backend bulk load FROM a source connection;
+            doesn't apply to a document-sourced profile (no connection to
+            stream from in bulk) — the document-specific action is
+            "Apply Mapping Profile" on the Document Details page instead. */}
+        {sourceKind !== 'document' && (
+          <PermissionGate {...MAPPING_PERMISSIONS.MAPPING_RUN} fallback={null}>
+            <RunLoadPanel mappingId={id} mappingDirty={dirty} targetColumns={targetColumns} mappedTargetNames={mappedTargetNames} />
+          </PermissionGate>
+        )}
+
+        {sourceKind === 'document' && (
+          <PermissionGate {...MAPPING_PERMISSIONS.MAPPING_RUN} fallback={null}>
+            <SampleDocumentTestPanel sourceDocumentType={source.document_type} targetFormat={target.target_format} mappings={mappings} />
+          </PermissionGate>
+        )}
 
         {(previewing || previewData || previewError) && (
           <div className="ocm-preview-panel">

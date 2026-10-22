@@ -190,12 +190,26 @@ async def apply_mapping_to_dataframe(
     # stale assumptions about columns that may no longer exist — this is
     # also where an unmapped NOT-NULL target column blocks pre-run (see
     # mapper.validate_mapping's own unmapped_required check).
+    # document_type/target_format: Document Mapping Profiles — see
+    # schemas/mapping.py's ObjectRef docstring and mapping_service.py's
+    # fetch_columns(), the one place a document-sourced or INVOICE_SCHEMA-
+    # targeted version (no Connection row at all) gets real column lists
+    # instead of attempting a connector fetch. A "lookup"-type mapping row
+    # is rejected upstream (services/document_mapping_service.py) before
+    # this function is ever called for such a version, since
+    # _apply_lookup() below genuinely needs a real source connection.
     source_cols = mapping_service.columns_to_dicts(await mapping_service.fetch_columns(
-        db, ObjectRef(connection_id=version.source_connection_id, schema_name=version.source_schema, object_name=version.source_object),
+        db, ObjectRef(
+            connection_id=version.source_connection_id, schema_name=version.source_schema, object_name=version.source_object,
+            document_type=version.source_document_type,
+        ),
         organization_id,
     ))
     target_cols = mapping_service.columns_to_dicts(await mapping_service.fetch_columns(
-        db, ObjectRef(connection_id=version.target_connection_id, schema_name=version.target_schema, object_name=version.target_object),
+        db, ObjectRef(
+            connection_id=version.target_connection_id, schema_name=version.target_schema, object_name=version.target_object,
+            target_format=version.target_format,
+        ),
         organization_id,
     ))
     revalidation = mapper.validate_mapping(mappings, source_cols, target_cols)

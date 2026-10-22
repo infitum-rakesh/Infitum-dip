@@ -263,7 +263,10 @@ def _fields_from_parsed(schema: list[dict], parsed: dict) -> list[dict]:
                 confidence = float(conf_raw) if conf_raw is not None else (75.0 if rows else 0.0)
             except (TypeError, ValueError):
                 confidence = 75.0 if rows else 0.0
-            fields_out.append({"name": name, "type": "table", "columns": columns, "rows": rows, "confidence": round(confidence, 1)})
+            fields_out.append({
+                "name": name, "type": "table", "columns": columns, "rows": rows, "confidence": round(confidence, 1),
+                "required": bool(f.get("required", False)),
+            })
             continue
 
         if not isinstance(entry, dict):
@@ -283,7 +286,10 @@ def _fields_from_parsed(schema: list[dict], parsed: dict) -> list[dict]:
             page = int(entry.get("page") or 1)
         except (TypeError, ValueError):
             page = 1
-        fields_out.append({"name": name, "type": "scalar", "value": value if value is not None else "", "confidence": round(confidence, 1), "page": page})
+        fields_out.append({
+            "name": name, "type": "scalar", "value": value if value is not None else "", "confidence": round(confidence, 1), "page": page,
+            "required": bool(f.get("required", False)),
+        })
     return fields_out
 
 
@@ -311,13 +317,16 @@ def _merge_extraction_fields(schema: list[dict], chunks: list[list[dict]]) -> li
                     seen.add(row_key)
                     rows.append(row)
             confidence = round(sum(confidences) / len(confidences), 1) if confidences else 0.0
-            merged.append({"name": name, "type": "table", "columns": columns, "rows": rows, "confidence": confidence})
+            merged.append({
+                "name": name, "type": "table", "columns": columns, "rows": rows, "confidence": confidence,
+                "required": bool(spec.get("required", False)),
+            })
             continue
 
         candidates = [f for f in fields if f.get("value") not in (None, "")]
         chosen = max(candidates, key=lambda f: float(f.get("confidence") or 0.0), default=(fields[0] if fields else None))
         if chosen is None:
-            merged.append({"name": name, "type": "scalar", "value": "", "confidence": 0.0, "page": 1})
+            merged.append({"name": name, "type": "scalar", "value": "", "confidence": 0.0, "page": 1, "required": bool(spec.get("required", False))})
         else:
             merged.append(chosen)
     return merged
@@ -667,7 +676,17 @@ async def extract_fields(
     # non-missing fields: `overall` now reflects confidence in what was
     # actually extracted, not extraction breadth against a canonical
     # schema built to be a superset of any one invoice's real fields.
-    scored = [f for f in fields_out if (f.get("type") == "table" and f.get("rows")) or (f.get("type") != "table" and f.get("value") not in (None, ""))]
+    #
+    # A field the schema itself marks required=True is kept in `scored`
+    # even when missing (confidence 0) — a genuinely mandatory field that
+    # wasn't found is a real extraction failure and must still pull
+    # `overall` down, not be silently excluded alongside legitimately
+    # optional absent fields.
+    scored = [
+        f for f in fields_out
+        if (f.get("type") == "table" and (f.get("rows") or f.get("required")))
+        or (f.get("type") != "table" and (f.get("value") not in (None, "") or f.get("required")))
+    ]
     overall = round(sum(f["confidence"] for f in scored) / len(scored), 1) if scored else 0.0
     model_name = connector.config.get("model") or connector.connection_type
     return {
@@ -699,30 +718,105 @@ async def extract_fields(
     }
 
 
-GAP_FILL_SYSTEM = (
+GENERIC_FIELD_SYSTEM = (
     "You are a document data extraction assistant. A fixed set of fields has already been "
-    "extracted from this document's OCR text. Your job is ONLY to spot genuinely distinct pieces "
-    "of information actually present in the text that are NOT already covered by the list below — "
-    "never repeat, rename, or split an already-covered field. Respond with ONLY a JSON array, no "
-    'prose, no markdown fences. Each element: {"name": "snake_case_field_name", "type": '
-    '"string|number|date|boolean", "instruction": "short description of what this field means"}. '
-    "If nothing meaningful is missing, respond with an empty array []."
+    "extracted from this document's OCR text. Your job is to find OTHER genuinely distinct "
+    "pieces of information that are ACTUALLY PRESENT in the text and are NOT already covered by "
+    "the list below — never repeat, rename, or split an already-covered field, and never invent "
+    "something that is not literally present. Every value you report MUST be paired with the "
+    "EXACT verbatim snippet of OCR text (word-for-word, same punctuation, copied character-for-"
+    "character) that contains it, as \"evidence\" — never paraphrase or summarize. If you cannot "
+    "quote a literal snippet for something, do not include it at all.\n\n"
+    "Report each finding as one of FOUR kinds, based on its real shape in the document:\n"
+    "1. A single value: "
+    '{"kind": "scalar", "name": "snake_case_name", "type": "string|number|date|boolean", '
+    '"value": "...", "evidence": "..."}\n'
+    "2. The SAME label appearing more than once with different values (e.g. two separate "
+    '"Reference No" lines) — NEVER overwrite one occurrence with another, report every one: '
+    '{"kind": "repeated", "name": "snake_case_name", "type": "string", "occurrences": '
+    '[{"value": "...", "evidence": "..."}, {"value": "...", "evidence": "..."}]}\n'
+    "3. A group of related sub-fields under one heading (e.g. an address block): "
+    '{"kind": "nested", "name": "snake_case_group_name", "fields": [{"name": "street", '
+    '"value": "...", "evidence": "..."}, {"name": "city", "value": "...", "evidence": "..."}]}\n'
+    "4. A table or repeating set of rows distinct from any table already covered: "
+    '{"kind": "table", "name": "snake_case_name", "columns": ["col_a", "col_b"], "rows": '
+    '[{"col_a": "...", "col_b": "...", "evidence": "..."}]} — each row MUST carry its own '
+    '"evidence" (the literal line/row text it came from) alongside its column values.\n\n'
+    "Respond with ONLY a JSON array mixing whichever kinds genuinely apply, no prose, no markdown "
+    "fences. If nothing meaningful is missing, respond with an empty array []."
 )
+
+# Runaway guards — real documents never genuinely have more than this many
+# repeated occurrences of one label, sub-fields in one nested group, or
+# rows in one ad-hoc table. Mirrors custom_engine.py's MAX_TABLE_ROWS.
+MAX_GENERIC_OCCURRENCES = 30
+MAX_GENERIC_NESTED_FIELDS = 20
+MAX_GENERIC_TABLE_ROWS = 60
+
+
+def _normalize_for_grounding(text: str) -> str:
+    """Case/whitespace-insensitive comparison key — real OCR text commonly
+    has inconsistent line breaks and spacing versus how a model quotes it
+    back, so an exact byte-for-byte match would reject genuinely-grounded
+    evidence over formatting noise alone."""
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _is_grounded(evidence: str, full_text_norm: str) -> bool:
+    return bool(evidence) and _normalize_for_grounding(evidence) in full_text_norm
 
 
 async def find_gap_fields(
     db: AsyncSession, doc: Document, connection_id: int, organization_id: int | None,
     covered_field_names: list[str], acting_user_id: int | None = None,
 ) -> list[dict]:
-    """Second-pass "did we miss anything" check — see detect_schema()'s
-    document_type path: extraction there starts from a comprehensive but
-    FIXED canonical taxonomy, which by construction can't know about
-    something unique to one specific document (e.g. a vendor-specific
-    surcharge line, a custom reference code). This asks the model, given
-    the document's real text and what's already covered, to name anything
-    else genuinely present — directly extending recall beyond the fixed
-    list rather than being capped by it. Returns a schema-shaped field
-    list (possibly empty) suitable for a follow-up extract_fields() call."""
+    """Generic Extraction (Document Intelligence: Dynamic JSON Extraction
+    spec) — finds additional evidence-supported key-value pairs beyond
+    the known/canonical schema. See detect_schema()'s document_type path:
+    extraction there starts from a comprehensive but FIXED canonical
+    taxonomy, which by construction can't know about something unique to
+    one specific document (e.g. a vendor-specific surcharge line, a
+    custom reference code). This asks the model, given the document's
+    real text and what's already covered, to name anything else genuinely
+    present — directly extending recall beyond the fixed list.
+
+    Real, observed failure this redesign fixes (see document_service.py's
+    now-removed "deliberately NOT run" comments): the previous version
+    only asked the model to PROPOSE a field NAME, then fed that name into
+    a second, independent extract_fields() call to get its value — a
+    second blind LLM call with its own separate chance to hallucinate,
+    and in practice it did (a plausible-sounding field name that didn't
+    actually appear in the document, given a made-up value instead of
+    null). This version requires the model to return the value AND a
+    verbatim quoted snippet of supporting OCR text in the SAME response,
+    and then — the actual fix, not just a prompt instruction — verifies
+    in code that the quoted evidence is a genuine (whitespace/case-
+    normalized) substring of this document's real OCR text before
+    keeping it. A field whose "evidence" doesn't actually appear in the
+    text is dropped outright, never persisted. No follow-up extract_fields()
+    call is made for these fields at all, since value+evidence already
+    came from one grounded pass.
+
+    Returns a list of discriminated generic field dicts (possibly empty),
+    each tagged "kind" — NOT the schema shape detect_schema()/
+    extract_fields() use, since these are already fully resolved values,
+    not a schema to extract against:
+      - "scalar": {"kind", "name", "type", "value", "evidence", "confidence"}
+      - "repeated" (the same label seen more than once — preserved as an
+        array, never overwritten): {"kind", "name", "type", "occurrences":
+        [{"value", "evidence"}, ...], "confidence"}
+      - "table" (an ad-hoc table distinct from any canonical one): {"kind",
+        "name", "columns", "rows", "row_evidence", "confidence"} — rows
+        hold only real column values (never evidence text mixed in), with
+        row_evidence a same-length parallel list, the same "evidence kept
+        separate from value" principle scalar fields already follow.
+    A model-proposed "nested" group (related sub-fields under one
+    heading, e.g. an address block) is flattened here into multiple
+    "scalar" kind entries named "group.subfield" — each sub-field is
+    independently grounded and kept/dropped on its own, so a partially-
+    groundable group still contributes whatever genuinely checks out.
+    Dotted names carry the grouping; document_service's reshape never
+    needs a fifth kind to handle "nested" specially."""
     text, pages_used, total_pages = _page_aware_ocr_context(doc)
     connector, conn = await _get_connector(db, connection_id, organization_id, acting_user_id)
     covered = ", ".join(sorted(covered_field_names))
@@ -730,27 +824,141 @@ async def find_gap_fields(
     try:
         parsed = await _generate_json(
             db, connector, conn, organization_id=organization_id, user_id=acting_user_id,
-            feature="GAP_FILL", prompt=prompt, system=GAP_FILL_SYSTEM, max_tokens=1200,
+            feature="GAP_FILL", prompt=prompt, system=GENERIC_FIELD_SYSTEM, max_tokens=1500,
         )
     except ExtractionError:
-        # Gap-fill is optional best-effort enrichment on top of an already-
-        # extracted baseline — even after the corrective retry inside
-        # _generate_json(), a persistent bad response here shouldn't fail
-        # the whole extraction; just contribute nothing extra.
+        # Generic extraction is optional best-effort enrichment on top of
+        # an already-extracted baseline — even after the corrective retry
+        # inside _generate_json(), a persistent bad response here
+        # shouldn't fail the whole extraction; just contribute nothing
+        # extra.
         return []
     if not isinstance(parsed, list):
         return []
 
     covered_lower = {c.lower() for c in covered_field_names}
+    full_text_norm = _normalize_for_grounding(text)
+    seen_names: set[str] = set()
+
+    def available(candidate_name: str) -> bool:
+        """A name is claimable only once — checked, but NOT reserved,
+        before the grounding work below runs; reserved (via seen_names.add)
+        only once an item is actually kept, so a kind that turns out to
+        have zero groundable data never blocks a later, different-shaped
+        proposal for the same name from being considered."""
+        name_lower = candidate_name.lower()
+        return bool(candidate_name) and name_lower not in covered_lower and name_lower not in seen_names
+
+    # A fixed, disclosed heuristic confidence for every kind below — not
+    # the model's own self-reported number (this prompt never asks for
+    # one, deliberately, since a model's confidence in its own
+    # hallucination-prone second guess isn't trustworthy). 70.0 reflects
+    # "real text-grounded match, not independently verified beyond that"
+    # — same category of fixed heuristic confidence custom_engine.py
+    # already uses for its own regex-fallback matches (see _type_fallback()).
+    GENERIC_CONFIDENCE = 70.0
+
     fields = []
     for f in parsed:
-        if not isinstance(f, dict) or not f.get("name"):
+        if not isinstance(f, dict):
             continue
-        name = str(f["name"])
-        if name.lower() in covered_lower:
-            continue
-        fields.append({
-            "name": name, "type": str(f.get("type") or "string"),
-            "required": False, "instruction": str(f.get("instruction") or ""),
-        })
+        kind = str(f.get("kind") or "scalar").strip().lower()
+
+        if kind == "scalar":
+            name = str(f.get("name") or "").strip()
+            value = f.get("value")
+            evidence = str(f.get("evidence") or "").strip()
+            if not available(name) or value in (None, "") or not _is_grounded(evidence, full_text_norm):
+                continue
+            seen_names.add(name.lower())
+            fields.append({
+                "kind": "scalar", "name": name, "type": str(f.get("type") or "string"),
+                "value": str(value), "evidence": evidence, "confidence": GENERIC_CONFIDENCE,
+            })
+
+        elif kind == "repeated":
+            name = str(f.get("name") or "").strip()
+            raw_occurrences = f.get("occurrences")
+            if not available(name) or not isinstance(raw_occurrences, list):
+                continue
+            occurrences = []
+            seen_occ: set[tuple[str, str]] = set()
+            for occ in raw_occurrences[:MAX_GENERIC_OCCURRENCES]:
+                if not isinstance(occ, dict):
+                    continue
+                occ_value = occ.get("value")
+                occ_evidence = str(occ.get("evidence") or "").strip()
+                if occ_value in (None, "") or not _is_grounded(occ_evidence, full_text_norm):
+                    continue
+                dedup_key = (str(occ_value), occ_evidence)
+                if dedup_key in seen_occ:
+                    continue
+                seen_occ.add(dedup_key)
+                occurrences.append({"value": str(occ_value), "evidence": occ_evidence})
+            if not occurrences:
+                # Not one occurrence in this repeated group actually
+                # grounded — drop the whole group rather than keep a
+                # name with no real data behind it.
+                continue
+            seen_names.add(name.lower())
+            fields.append({
+                "kind": "repeated", "name": name, "type": str(f.get("type") or "string"),
+                "occurrences": occurrences, "confidence": GENERIC_CONFIDENCE,
+            })
+
+        elif kind == "nested":
+            group_name = str(f.get("name") or "").strip()
+            raw_subfields = f.get("fields")
+            if not group_name or not isinstance(raw_subfields, list):
+                continue
+            for sub in raw_subfields[:MAX_GENERIC_NESTED_FIELDS]:
+                if not isinstance(sub, dict):
+                    continue
+                sub_name = str(sub.get("name") or "").strip()
+                sub_value = sub.get("value")
+                sub_evidence = str(sub.get("evidence") or "").strip()
+                if not sub_name or sub_value in (None, "") or not _is_grounded(sub_evidence, full_text_norm):
+                    continue
+                flattened_name = f"{group_name}.{sub_name}"
+                if not available(flattened_name):
+                    continue
+                seen_names.add(flattened_name.lower())
+                fields.append({
+                    "kind": "scalar", "name": flattened_name, "type": str(sub.get("type") or "string"),
+                    "value": str(sub_value), "evidence": sub_evidence, "confidence": GENERIC_CONFIDENCE,
+                })
+
+        elif kind == "table":
+            name = str(f.get("name") or "").strip()
+            raw_columns = f.get("columns")
+            raw_rows = f.get("rows")
+            if not available(name) or not isinstance(raw_columns, list) or not isinstance(raw_rows, list):
+                continue
+            columns = [str(c) for c in raw_columns if isinstance(c, (str, int, float))]
+            if not columns:
+                continue
+            rows: list[dict] = []
+            row_evidence: list[str] = []
+            for row in raw_rows[:MAX_GENERIC_TABLE_ROWS]:
+                if not isinstance(row, dict):
+                    continue
+                evidence = str(row.get("evidence") or "").strip()
+                if not _is_grounded(evidence, full_text_norm):
+                    continue
+                rows.append({col: str(row.get(col) or "") for col in columns})
+                row_evidence.append(evidence)
+            if not rows:
+                # Not one row in this ad-hoc table actually grounded —
+                # drop the whole table rather than persist an empty shell.
+                continue
+            seen_names.add(name.lower())
+            fields.append({
+                "kind": "table", "name": name, "columns": columns, "rows": rows,
+                "row_evidence": row_evidence, "confidence": GENERIC_CONFIDENCE,
+            })
+
+        # Any other/unrecognized "kind" is silently skipped — never
+        # guessed at or coerced into a shape the model didn't actually
+        # declare.
+
     return fields

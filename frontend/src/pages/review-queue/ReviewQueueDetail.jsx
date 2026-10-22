@@ -384,6 +384,7 @@ function FieldReviewPane({ detail, drafts, setDrafts, selectedField, setSelected
           >
             <div className="rqd-field-row-hdr">
               <span className="rqd-field-name">{f.name}</span>
+              {f.is_generic && <StatusBadge variant="info" size="sm">Generic Extraction</StatusBadge>}
               <StatusBadge variant={confidenceVariant(f.confidence)} dot>{f.confidence != null ? `${f.confidence}%` : '—'}</StatusBadge>
             </div>
             <div className="rqd-field-row-meta">
@@ -391,12 +392,45 @@ function FieldReviewPane({ detail, drafts, setDrafts, selectedField, setSelected
               <span>&middot;</span>
               <span>{f.bbox ? `[${f.bbox.join(', ')}]` : 'no bbox'}</span>
               <span>&middot;</span>
-              <StatusBadge variant={f.validation_status === 'valid' ? 'success' : f.validation_status === 'warning' ? 'warning' : 'danger'} size="sm">
-                {f.validation_status ?? 'unknown'}
+              <StatusBadge
+                variant={
+                  f.validation_status === 'valid' ? 'success'
+                    : f.validation_status === 'warning' ? 'warning'
+                    : f.validation_status === 'not_found' ? 'gray'
+                    : 'danger'
+                }
+                size="sm"
+              >
+                {f.validation_status === 'not_found' ? 'not found' : (f.validation_status ?? 'unknown')}
               </StatusBadge>
             </div>
             <div className="rqd-field-row-value">
               <span className="rqd-field-ai-value">{f.value || <em className="text-muted">missing</em>}</span>
+              {f.is_generic && f.type === 'table' && Array.isArray(f.rows) && f.rows.length > 0 ? (
+                // Repeated label or ad-hoc table — show every row with its
+                // OWN grounding evidence, not just one representative
+                // snippet, so "preserved as an array, never overwritten"
+                // is actually visible, not just counted.
+                <div className="text-muted text-sm" style={{ marginTop: 4 }}>
+                  {f.rows.map((row, i) => {
+                    const rowEvidence = f.row_evidence?.[i];
+                    return (
+                      <div key={i} style={{ marginBottom: 2 }}>
+                        &bull; {Object.values(row).join(' — ')}
+                        {rowEvidence && (
+                          <span style={{ fontStyle: 'italic' }} title={rowEvidence}>
+                            {' '}(evidence: "{rowEvidence.length > 50 ? `${rowEvidence.slice(0, 50)}…` : rowEvidence}")
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : f.is_generic && f.evidence && (
+                <div className="text-muted text-sm" style={{ marginTop: 2, fontStyle: 'italic' }} title={f.evidence}>
+                  Evidence: "{f.evidence.length > 80 ? `${f.evidence.slice(0, 80)}…` : f.evidence}"
+                </div>
+              )}
               {isOpen && (
                 <input
                   className="rq-select rqd-field-input"

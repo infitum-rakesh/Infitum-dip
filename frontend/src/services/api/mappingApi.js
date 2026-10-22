@@ -63,4 +63,51 @@ export const mappingApi = {
 
   /** -> { stale, issues, source_column_count_then/now, target_column_count_then/now } */
   getStaleness: (id, versionNumber) => apiClient.get(`/mappings/${id}/staleness`, { params: { version: versionNumber } }).then((r) => r.data),
+
+  // ── Document Mapping Profiles (Mapping Editor UI) ───────────────
+  // A mapping's source can be a Document Intelligence document_type
+  // instead of a connection, and its target can be the real Invoice
+  // Schema instead of a connector-backed table — see
+  // models/column_mapping.py's module docstring. These never touch a
+  // connection; they're served straight off document_taxonomies.py /
+  // ApInvoice's own reflected columns.
+
+  /** -> string[] (e.g. ["GENERIC", "INVOICE"]) */
+  getDocumentTypes: () => apiClient.get('/mappings/document-types').then((r) => r.data),
+
+  /** -> { document_type, columns: [{name, data_type}] } */
+  getDocumentSourceColumns: (documentType) =>
+    apiClient.get('/mappings/document-source-columns', { params: { document_type: documentType } }).then((r) => r.data),
+
+  /** -> [{name, data_type, nullable, ...}] — ApInvoice's own curated, user-mappable columns */
+  getInvoiceSchemaColumns: () => apiClient.get('/mappings/invoice-schema-columns').then((r) => r.data),
+
+  /** -> { items: [{id, filename, uploaded_at}] } — real, already-processed documents of this type, for "Test Against Sample Document" */
+  getSampleDocuments: (documentType) =>
+    apiClient.get('/mappings/sample-documents', { params: { document_type: documentType } }).then((r) => r.data),
+
+  /**
+   * Dry-run of an in-progress (possibly unsaved) document-sourced
+   * mapping definition against one real sample document — never
+   * persists anything, unlike documentApi.applyMapping(). body:
+   * { document_id, source_document_type, target_format, mappings }
+   * -> { columns, rows, row_count, rejected_rows }
+   */
+  previewAgainstDocument: (body) => apiClient.post('/mappings/preview-document', body).then((r) => r.data),
+
+  // ── Scheduled Mapping (Document Intelligence spec, section 7) ──
+  // Org-level default mapping profile per document_type, consulted when
+  // a Document Source schedule has no explicit mapping_id of its own —
+  // see document_mapping_resolution_service.resolve_scheduled_mapping().
+
+  /** -> { items: [{id, organization_id, document_type, mapping_id, mapping_name, ...}] } */
+  getMappingDefaults: () => apiClient.get('/mappings/defaults').then((r) => r.data),
+
+  /** body: { document_type, mapping_id } — upsert, never a duplicate row for the same document_type. */
+  setMappingDefault: (body) => apiClient.put('/mappings/defaults', body).then((r) => r.data),
+
+  clearMappingDefault: (documentType) => apiClient.delete(`/mappings/defaults/${documentType}`),
+
+  /** -> { items: [{schedule_id, schedule_name, document_type, usage: 'EXPLICIT'|'DEFAULT'}] } */
+  getSchedulesUsingMapping: (id) => apiClient.get(`/mappings/${id}/schedules`).then((r) => r.data),
 };

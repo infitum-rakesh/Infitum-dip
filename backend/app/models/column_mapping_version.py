@@ -51,12 +51,20 @@ class ColumnMappingVersion(TenantBase):
 
     # Snapshot of the source/target object this version was built against --
     # self-contained even if the parent header row's refs later change.
-    source_connection_id: Mapped[int] = mapped_column(ForeignKey("connections.id"), nullable=False)
+    # Document Mapping Profiles — see models/column_mapping.py's module
+    # docstring: source_connection_id/target_connection_id are nullable;
+    # source_document_type/target_format are the alternate, mutually
+    # exclusive discriminators, snapshotted here too so a historical
+    # version stays self-describing even if a future feature ever lets
+    # the header's own source/target be repointed.
+    source_connection_id: Mapped[int | None] = mapped_column(ForeignKey("connections.id"), nullable=True)
     source_schema: Mapped[str | None] = mapped_column(String(200), nullable=True)
     source_object: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    target_connection_id: Mapped[int] = mapped_column(ForeignKey("connections.id"), nullable=False)
+    source_document_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    target_connection_id: Mapped[int | None] = mapped_column(ForeignKey("connections.id"), nullable=True)
     target_schema: Mapped[str | None] = mapped_column(String(200), nullable=True)
     target_object: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    target_format: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
     # Runtime policy for execution/mapping_execution.py::apply_mapping_to_dataframe()
     unmapped_column_policy: Mapped[str] = mapped_column(String(20), default="IGNORE")  # IGNORE | ERROR | WARNING (spec section 26)

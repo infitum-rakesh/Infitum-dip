@@ -31,6 +31,7 @@ import { documentApi } from '@/services/api/documentApi.js';
 import { documentStorageApi } from '@/services/api/documentStorageApi.js';
 import { documentWebhookApi } from '@/services/api/documentWebhookApi.js';
 import { connectionApi } from '@/services/api/connectionApi.js';
+import { mappingApi } from '@/services/api/mappingApi.js';
 import { TenantDatabaseTab } from '@/components/settings/TenantDatabaseTab.jsx';
 import { LANGUAGE_NAMES, languageName } from '@/utils/languageNames.js';
 import './settings.css';
@@ -349,6 +350,30 @@ function DocumentIntelligenceTab({ settings, onSave }) {
             <NumberInput min={0} max={100} value={draft.default_confidence_threshold} onChange={(e) => set('default_confidence_threshold')(Number(e.target.value))} />
           </Field>
         </div>
+        <div style={{ marginTop: 4 }}>
+          <CheckboxRow
+            label="Enable Generic Field Extraction"
+            checked={!!draft.generic_extraction_enabled}
+            onChange={() => set('generic_extraction_enabled')(!draft.generic_extraction_enabled)}
+            description="Beyond the known fields, also look for other key-value pairs genuinely present in the document (e.g. a vendor-specific reference code). Each one is only kept if the AI model quotes the exact OCR text it found it in — never invented. OFF by default; a controlled rollout — validate on representative documents before relying on it."
+          />
+        </div>
+        <div style={{ marginTop: 4 }}>
+          <CheckboxRow
+            label="Enable Mapping Profiles"
+            checked={!!draft.mapping_profiles_enabled}
+            onChange={() => set('mapping_profiles_enabled')(!draft.mapping_profiles_enabled)}
+            description="Lets a published Column Mapping profile (Transformation → Mappings) be applied to a document's extracted fields, producing a mapped output (e.g. onto the Invoice Schema). Profiles can still be authored/versioned/published regardless of this flag — it only gates actually applying one to a real document. OFF by default; a controlled rollout."
+          />
+        </div>
+        <div style={{ marginTop: 4 }}>
+          <CheckboxRow
+            label="Enable Tally Auto-Sync"
+            checked={!!draft.tally_auto_sync_enabled}
+            onChange={() => set('tally_auto_sync_enabled')(!draft.tally_auto_sync_enabled)}
+            description="When an invoice is auto-decisioned STRAIGHT_THROUGH (Invoice Intelligence), automatically build its Tally voucher, submit it through the existing Approval engine, and write it back to Tally — no manual Voucher Preview button needed. Also requires at least one Vendor → Company Mapping row (Tally Reconciliation page) for this to do anything; with no mapping configured, this flag has no effect. OFF by default."
+          />
+        </div>
         <SaveBar permission={SETTINGS_PERMISSIONS.SETTINGS_EDIT} dirty={dirty} saving={saving} error={error} onSave={handleSave} onReset={reset} />
       </div>
 
@@ -405,7 +430,114 @@ function DocumentIntelligenceTab({ settings, onSave }) {
       </div>
 
       <OcrDiagnosticsCard supportedLanguages={draft.supported_languages ?? ['en']} primaryLanguage={draft.primary_language ?? 'auto'} />
+      <ScheduledMappingDefaultsCard />
     </>
+  );
+}
+
+// Scheduled Mapping (Document Intelligence spec, section 7.3) — the
+// organisation's default mapping profile per document_type, consulted by
+// a Document Source schedule that has no explicit mapping of its own
+// (document_mapping_resolution_service.resolve_scheduled_mapping()).
+// Independent of the dirty-draft Save flow above — each row upserts/
+// clears immediately, same as OcrDiagnosticsCard's own standalone pattern.
+function ScheduledMappingDefaultsCard() {
+  const [documentTypes, setDocumentTypes] = useState([]);
+  const [profiles, setProfiles] = useState([]);
+  const [defaults, setDefaults] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [pending, setPending] = useState({}); // documentType -> mapping_id being chosen
+  const [busyType, setBusyType] = useState(null);
+
+  const load = useCallback(() => {
+    setLoading(true); setError('');
+    Promise.all([mappingApi.getDocumentTypes(), mappingApi.list({ status: 'PUBLISHED' }), mappingApi.getMappingDefaults()])
+      .then(([types, mappingList, defaultsList]) => {
+        setDocumentTypes(types.filter((t) => t !== 'GENERIC'));
+        setProfiles((mappingList.items ?? []).filter((m) => m.source_document_type));
+        setDefaults(defaultsList.items ?? []);
+      })
+      .catch((err) => setError(err?.response?.data?.detail ?? err?.message ?? 'Could not load mapping defaults.'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const setDefault = async (documentType) => {
+    const mappingId = pending[documentType];
+    if (!mappingId) return;
+    setBusyType(documentType); setError('');
+    try {
+      await mappingApi.setMappingDefault({ document_type: documentType, mapping_id: Number(mappingId) });
+      load();
+    } catch (err) {
+      setError(err?.response?.data?.detail ?? err?.message ?? 'Could not set default.');
+    } finally {
+      setBusyType(null);
+    }
+  };
+
+  const clearDefault = async (documentType) => {
+    setBusyType(documentType); setError('');
+    try {
+      await mappingApi.clearMappingDefault(documentType);
+      load();
+    } catch (err) {
+      setError(err?.response?.data?.detail ?? err?.message ?? 'Could not clear default.');
+    } finally {
+      setBusyType(null);
+    }
+  };
+
+  return (
+    <div className="stg-card">
+      <div className="stg-card-title">Scheduled Mapping Defaults</div>
+      <p className="stg-field-hint" style={{ marginBottom: 14 }}>
+        The mapping profile a Document Source schedule falls back to when it has no explicit profile of its own
+        (set per-schedule in the schedule's own form). An explicit schedule-level choice always takes precedence
+        over the default below — see the schedule form's "Mapping Profile" field.
+      </p>
+      {loading ? (
+        <p className="text-muted text-sm">Loading…</p>
+      ) : error ? (
+        <p className="stg-form-error">{error}</p>
+      ) : documentTypes.length === 0 ? (
+        <p className="text-muted text-sm">No document types available yet.</p>
+      ) : (
+        <table className="stg-table">
+          <thead>
+            <tr><th>Document Type</th><th>Current Default</th><th>Set To</th><th></th></tr>
+          </thead>
+          <tbody>
+            {documentTypes.map((docType) => {
+              const current = defaults.find((d) => d.document_type === docType);
+              const eligible = profiles.filter((m) => m.source_document_type === docType || m.source_document_type === 'GENERIC');
+              return (
+                <tr key={docType}>
+                  <td>{docType}</td>
+                  <td>{current ? current.mapping_name : <span className="text-muted">None — preserves original extracted JSON</span>}</td>
+                  <td>
+                    <select
+                      className="sched-input"
+                      value={pending[docType] ?? ''}
+                      onChange={(e) => setPending((p) => ({ ...p, [docType]: e.target.value }))}
+                    >
+                      <option value="">Select a mapping profile…</option>
+                      {eligible.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                    </select>
+                  </td>
+                  <td style={{ display: 'flex', gap: 8 }}>
+                    <Button size="sm" variant="secondary" disabled={!pending[docType] || busyType === docType} loading={busyType === docType} onClick={() => setDefault(docType)}>Set</Button>
+                    {current && <Button size="sm" variant="ghost" disabled={busyType === docType} onClick={() => clearDefault(docType)}>Clear</Button>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
   );
 }
 
