@@ -10,11 +10,75 @@
  */
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, RefreshCw, ShieldAlert } from 'lucide-react';
+import { ArrowLeft, RefreshCw, ShieldAlert, Eye } from 'lucide-react';
 import { Button, StatusBadge, LoadingSpinner, Modal } from '@/components/common/index.js';
 import { formatDateTime } from '@/utils/formatters.js';
 import indiaVerificationApi from '@/services/api/indiaVerificationApi.js';
 import './compliance.css';
+
+// Every verification field key is snake_case from the provider/gateway —
+// "holder_name" -> "Holder Name". Generic on purpose: this module's own
+// design explicitly keeps adding check types (PAN/GSTIN/TAN/MCA/UDYAM/
+// AADHAAR/MOA, and real vendors later per verification_orchestrator.py's
+// docstring) without any frontend code change needed per new field.
+function humanizeKey(key) {
+  return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function renderScalar(value) {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  return String(value);
+}
+
+// A value inside normalized_result is one of: a scalar, an array of
+// scalars (e.g. MOA's missing_fields), or an array of objects (e.g.
+// MCA's matches, MOA's comparisons) — rendered as its own mini-table
+// rather than flattened into one unreadable line.
+function renderFieldValue(value) {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '—';
+    if (typeof value[0] !== 'object' || value[0] === null) {
+      return value.map((v) => renderScalar(v)).join(', ');
+    }
+    const columns = [...new Set(value.flatMap((row) => Object.keys(row)))];
+    return (
+      <table className="iv-mini-table iv-moa-field-value-nested">
+        <thead><tr>{columns.map((c) => <th key={c}>{humanizeKey(c)}</th>)}</tr></thead>
+        <tbody>
+          {value.map((row, i) => (
+            <tr key={i}>{columns.map((c) => <td key={c}>{renderScalar(row[c])}</td>)}</tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  }
+  if (value !== null && typeof value === 'object') {
+    return (
+      <div className="iv-moa-field-value-nested">
+        {Object.entries(value).map(([k, v]) => (
+          <div key={k}><strong>{humanizeKey(k)}:</strong> {renderScalar(v)}</div>
+        ))}
+      </div>
+    );
+  }
+  return renderScalar(value);
+}
+
+function NormalizedResultList({ normalized }) {
+  const entries = Object.entries(normalized || {});
+  if (entries.length === 0) return <div className="iv-detail-empty">No provider data recorded for this check yet.</div>;
+  return (
+    <div className="iv-moa-field-list">
+      {entries.map(([key, value]) => (
+        <div key={key} className="iv-moa-field-row">
+          <div className="iv-moa-field-name">{humanizeKey(key)}</div>
+          <div className="iv-moa-field-value">{renderFieldValue(value)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function apiErrorMessage(err, fallback) {
   return err?.data?.detail || err?.response?.data?.detail || err?.message || fallback;
@@ -62,6 +126,8 @@ export default function VerificationCaseDetail() {
   const [retryForm, setRetryForm] = useState({ identifier: '', cin: '', llpin: '', legalName: '', submittedName: '', connectionId: '', consentReference: '', purpose: '' });
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState(null);
+
+  const [detailTarget, setDetailTarget] = useState(null); // the VerificationResultOut being viewed in full, or null
 
   const load = () => {
     setLoading(true);
@@ -173,7 +239,10 @@ export default function VerificationCaseDetail() {
                   <td>{summarizeResult(r)}</td>
                   <td>{r.verified_at ? formatDateTime(r.verified_at) : '—'}</td>
                   <td>{r.retry_count + 1}</td>
-                  <td><Button size="sm" variant="secondary" icon={<RefreshCw size={12} />} onClick={() => openRetry(r)}>Retry</Button></td>
+                  <td style={{ display: 'flex', gap: 6 }}>
+                    <Button size="sm" variant="secondary" icon={<Eye size={12} />} onClick={() => setDetailTarget(r)}>Details</Button>
+                    <Button size="sm" variant="secondary" icon={<RefreshCw size={12} />} onClick={() => openRetry(r)}>Retry</Button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -249,6 +318,60 @@ export default function VerificationCaseDetail() {
           <Button variant="secondary" onClick={() => setRetryTarget(null)}>Cancel</Button>
           <Button loading={retrying} disabled={!canRetry()} onClick={handleRetry}>Retry</Button>
         </div>
+      </Modal>
+
+      <Modal
+        open={!!detailTarget}
+        onClose={() => setDetailTarget(null)}
+        title={detailTarget ? `${detailTarget.check_type} — Full Verification Detail` : ''}
+        size="lg"
+      >
+        {detailTarget && (
+          <>
+            <div className="iv-detail-section">
+              <div className="iv-moa-subhead">Check Summary</div>
+              <div className="iv-result-meta" style={{ marginBottom: 4 }}>
+                <span>Format: <strong>{detailTarget.format_status}</strong></span>
+                <span>Provider Outcome: <strong>{detailTarget.provider_status_code ?? '—'}</strong></span>
+                <span>Name Match: <strong>{detailTarget.match_status ?? '—'}</strong></span>
+                <span>Overall: <StatusBadge variant={STATUS_VARIANT[detailTarget.overall_status] ?? 'gray'} dot>{detailTarget.overall_status}</StatusBadge></span>
+                <span>Verified At: <strong>{detailTarget.verified_at ? formatDateTime(detailTarget.verified_at) : '—'}</strong></span>
+                <span>Expires At: <strong>{detailTarget.expires_at ? formatDateTime(detailTarget.expires_at) : '—'}</strong></span>
+                <span>Attempts: <strong>{detailTarget.retry_count + 1}</strong></span>
+                {detailTarget.provider_reference && <span>Provider Reference: <strong>{detailTarget.provider_reference}</strong></span>}
+              </div>
+            </div>
+
+            <div className="iv-detail-section">
+              <div className="iv-moa-subhead">Verified Data</div>
+              <NormalizedResultList normalized={detailTarget.normalized_result} />
+            </div>
+
+            {(detailTarget.evidence ?? []).length > 0 && (
+              <div className="iv-detail-section">
+                <div className="iv-moa-subhead">Evidence</div>
+                <table className="iv-mini-table">
+                  <thead><tr><th>Type</th><th>Document</th><th>Page</th><th>Reference</th><th>Details</th></tr></thead>
+                  <tbody>
+                    {detailTarget.evidence.map((e) => (
+                      <tr key={e.id}>
+                        <td>{e.evidence_type}</td>
+                        <td>{e.document_id ?? '—'}</td>
+                        <td>{e.page_number ?? '—'}</td>
+                        <td>{e.snapshot_ref ?? '—'}</td>
+                        <td>{Object.keys(e.details ?? {}).length > 0 ? renderFieldValue(e.details) : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+              <Button variant="secondary" onClick={() => setDetailTarget(null)}>Close</Button>
+            </div>
+          </>
+        )}
       </Modal>
     </div>
   );

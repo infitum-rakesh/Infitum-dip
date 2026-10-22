@@ -105,3 +105,11 @@
 .iv-moa-field-row:last-child { border-bottom: none; }
 .iv-moa-field-name { flex: 0 0 160px; color: var(--text-muted); text-transform: capitalize; }
 .iv-moa-field-value { color: var(--text-primary); word-break: break-word; }
+
+/* Full per-check detail modal (VerificationCaseDetail) — generic
+   normalized_result renderer, reuses the .iv-moa-field-* label/value row
+   pattern above so a raw PAN/GSTIN/TAN/UDYAM field list and an MOA
+   extracted-clause list look like the same system, not two designs. */
+.iv-detail-section + .iv-detail-section { margin-top: 18px; }
+.iv-moa-field-value-nested { width: 100%; }
+.iv-detail-empty { padding: 10px; color: var(--text-muted); font-size: var(--fs-sm); }
