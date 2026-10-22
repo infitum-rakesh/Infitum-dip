@@ -4,6 +4,7 @@ Entry point: uvicorn app.main:app --reload --port 8000
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -78,6 +79,9 @@ from app.api.invoice_rules import router as invoice_rules_router
 from app.api.approvals import router as approvals_router
 from app.api.bulk_migration import router as bulk_migration_router
 from app.api.tally import router as tally_router
+from app.api.tally_agents import router as tally_agents_router
+from app.api.ws_tally_agent import router as ws_tally_agent_router
+from app.api.compliance import router as compliance_router
 from app.models.pipeline_source_file import PipelineSourceFile  # noqa: F401 — string FK to pipelines.id needs this imported before init_db()
 from app.models.tenant_database import TenantDatabase  # noqa: F401 — new table, needs registering before init_db()
 from app.models.tenant_migration_job import TenantMigrationJob, TenantMigrationJobLog  # noqa: F401 — new tables, need registering before init_db()
@@ -164,7 +168,7 @@ from app.models.tally_extraction import TallyExtractionRun, TallyExtractionRecor
 from app.models.tally_canonical import TallyCanonicalVoucher, TallyCanonicalParty, TallyCanonicalLedger  # noqa: F401
 # Tally Integration (TALLY-D) — account mapping + voucher preview +
 # pre-write validation.
-from app.models.tally_mapping import TallyAccountMapping, TallyVoucherPreview, TallyVoucherValidationResult  # noqa: F401
+from app.models.tally_mapping import TallyAccountMapping, TallyVendorMapping, TallyVoucherPreview, TallyVoucherValidationResult  # noqa: F401
 # Tally Integration (TALLY-E) — reconciliation between ApInvoice and
 # TallyCanonicalVoucher/Party, reusing app/reconciliation/engine.py's
 # real row-diffing (see that module's own docstring for why).
@@ -176,6 +180,12 @@ from app.models.tally_writeback import TallyVoucherWriteBackTransaction, TallyVo
 # additive extension of the Schedules module (see that model's own
 # docstring for the AD12/Scheduled-Document-Intelligence precedent it follows).
 from app.models.tally_schedule import TallyReconciliationScheduleConfig  # noqa: F401
+# Multi-Client TallyPrime Integration Platform (Agent Relay) — a second,
+# NAT/firewall-safe transport alongside the direct-HTTP connector above;
+# see models/tally_agent.py's own docstring for the full design.
+from app.models.tally_agent import (  # noqa: F401 — new tables, need registering before init_db()
+    AgentInstallation, AgentCredential, EnrollmentToken, AgentCommand,
+)
 # AI Connection Subscription & Organisation-Level Access Management —
 # per-user/per-role connection grants, default-connection resolution,
 # token usage ledger, and atomic quota reservations. Connection.is_public
@@ -184,6 +194,25 @@ from app.models.tally_schedule import TallyReconciliationScheduleConfig  # noqa:
 from app.models.ai_connection import (  # noqa: F401
     AIConnectionPermission, AIConnectionDefault, AITokenUsageEvent, AIQuotaReservation,
 )
+# Document Mapping Profiles — reuses column_mappings/column_mapping_versions
+# (already registered above via models/column_mapping*.py's own import,
+# transitively through mapping_service.py — see models/column_mapping.py's
+# docstring); this is the one genuinely new table, the append-only
+# execution-result history.
+from app.models.document_mapped_output import DocumentMappedOutput  # noqa: F401
+# Scheduled Mapping (section 7) — the org-level document-type default table.
+from app.models.document_mapping_default import DocumentMappingDefault  # noqa: F401
+# India Business/Tax Identity/Corporate Document Verification (IV1) — see
+# models/india_verification.py's own docstring for the case/request/result
+# shape.
+from app.models.india_verification import (  # noqa: F401
+    VerificationCase, VerificationRequest, VerificationResult,
+    VerificationEvidence, VerificationDocument, VerificationUsage,
+)
+# Phase Group 4 (IV19/IV21) — Rules Engine + batch/scheduled verification jobs.
+from app.models.india_verification_rules import VerificationRule  # noqa: F401
+from app.models.india_verification_jobs import VerificationJobRun, VerificationJobItem  # noqa: F401
+from app.models.india_verification_schedule import IndiaVerificationScheduleConfig  # noqa: F401
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -194,6 +223,12 @@ _FRONTEND_DIST = _PROJECT_ROOT / "frontend" / "dist"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Captured first, before anything else — the Tally Agent WebSocket
+    # gateway's dispatch mechanism (Phase Group 3) needs this process's
+    # one event loop reference to schedule work from a worker thread.
+    from app.ws import tally_agent_registry
+    tally_agent_registry.set_main_loop(asyncio.get_running_loop())
+
     logger.info("Starting up — checking/initialising database …")
     # Ensure any bundled backup DB is restored if the runtime DB has no users
     await _restore_db_from_backup_if_needed()
@@ -226,6 +261,7 @@ async def lifespan(app: FastAPI):
     await _recover_bulk_migration_tasks()
     await _recover_document_batches()
     await _recover_tally_extraction_runs()
+    await _recover_verification_jobs()
     scheduler = _start_billing_scheduler()
     yield
     scheduler.shutdown(wait=False)
@@ -254,6 +290,17 @@ async def _recover_bulk_migration_tasks() -> None:
     stats = await recover_stuck_bulk_migration_tasks()
     if stats["recovered_runs"] or stats["requeued_tasks"] or stats["failed_tasks"]:
         logger.info("Bulk migration recovery: %s", stats)
+
+
+async def _recover_verification_jobs() -> None:
+    """India Verification batch jobs (Phase Group 4, IV21) startup
+    recovery — same place and shape as _recover_bulk_migration_tasks()
+    above. See verification_job_service.recover_stuck_verification_jobs()."""
+    from app.services.compliance.verification_job_service import recover_stuck_verification_jobs
+
+    stats = await recover_stuck_verification_jobs()
+    if stats["recovered_runs"] or stats["requeued_items"]:
+        logger.info("Verification job recovery: %s", stats)
 
 
 async def _recover_document_batches() -> None:
@@ -347,6 +394,8 @@ def _start_billing_scheduler():
     from app.services.approval.notification_outbox_service import process_pending_standalone as run_approval_notification_outbox
     from app.services.approval.sla_scheduler_service import run_sla_sweep_standalone as run_approval_sla_sweep
     from app.services.bulk_migration_service import sweep_stale_bulk_migration_tasks as run_bulk_migration_stale_sweep
+    from app.services.compliance.verification_job_service import sweep_stale_verification_job_items as run_verification_job_stale_sweep
+    from app.services.compliance.verification_job_service import purge_expired_verification_data as run_verification_data_retention_cleanup
     from app.services.document_batch_service import sweep_stale_document_batch_files as run_document_batch_stale_sweep
     from app.services.document_batch_service import cleanup_expired_document_batches as run_document_batch_retention_cleanup
     from app.services.batch_upload_service import cleanup_expired_uploads as run_batch_upload_retention_cleanup
@@ -397,6 +446,22 @@ def _start_billing_scheduler():
         except Exception:
             logger.exception("Bulk migration stale-task sweep failed")
 
+    async def _run_verification_job_stale_sweep_safely():
+        try:
+            stats = await run_verification_job_stale_sweep()
+            if stats["requeued_items"]:
+                logger.info("Verification job stale-item sweep: %s", stats)
+        except Exception:
+            logger.exception("Verification job stale-item sweep failed")
+
+    async def _run_verification_data_retention_cleanup_safely():
+        try:
+            stats = await run_verification_data_retention_cleanup()
+            if stats["scrubbed_items"] or stats["purged_usage_rows"]:
+                logger.info("Verification data retention cleanup: %s", stats)
+        except Exception:
+            logger.exception("Verification data retention cleanup failed")
+
     async def _run_document_batch_stale_sweep_safely():
         try:
             stats = await run_document_batch_stale_sweep()
@@ -436,6 +501,12 @@ def _start_billing_scheduler():
     # a hung task's heartbeat isn't stale for much longer than the
     # threshold itself before this sweep notices and requeues it.
     scheduler.add_job(_run_bulk_migration_stale_sweep_safely, "interval", minutes=2, id="bulk_migration_stale_sweep")
+    # 2 minutes — same reasoning as the bulk-migration sweep above, sized
+    # against verification_job_service._STALE_CLAIM_THRESHOLD_SECONDS (5 min).
+    scheduler.add_job(_run_verification_job_stale_sweep_safely, "interval", minutes=2, id="verification_job_stale_sweep")
+    # Once daily — retention cleanup, same cadence as document batch
+    # retention (disk/DB housekeeping, not a correctness-critical path).
+    scheduler.add_job(_run_verification_data_retention_cleanup_safely, "interval", hours=24, id="verification_data_retention_cleanup")
     # 2 minutes — same reasoning as the bulk-migration sweep above, sized
     # against _STALE_FILE_HEARTBEAT_THRESHOLD_SECONDS (180s = 6 missed
     # heartbeat ticks at document_batch_service._HEARTBEAT_INTERVAL_SECONDS).
@@ -607,6 +678,9 @@ app.include_router(invoice_rules_router, prefix="/api")
 app.include_router(approvals_router, prefix="/api")
 app.include_router(bulk_migration_router, prefix="/api")
 app.include_router(tally_router, prefix="/api")
+app.include_router(tally_agents_router, prefix="/api")
+app.include_router(ws_tally_agent_router, prefix="/api")
+app.include_router(compliance_router, prefix="/api")
 
 if _FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")), name="frontend_assets")

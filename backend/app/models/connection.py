@@ -25,6 +25,13 @@ class ConnectionCategory(str, enum.Enum):
     CLOUD = "CLOUD"
     AI_PROVIDER = "AI_PROVIDER"
     OCR_PROVIDER = "OCR_PROVIDER"
+    # India Business/Tax Identity/Corporate Document Verification module —
+    # see connectors/verification/*. Pluggable like OCR_PROVIDER: this
+    # category holds whichever verification vendor(s) are configured, the
+    # built-in default being a local mock gateway (no real verification)
+    # for development/testing — never implied as a live government/KYC
+    # integration on its own.
+    VERIFICATION_PROVIDER = "VERIFICATION_PROVIDER"
 
 
 class ConnectionType(str, enum.Enum):
@@ -56,6 +63,16 @@ class ConnectionType(str, enum.Enum):
     # local XML-over-HTTP gateway (typically port 9000), not a SQL dialect
     # or a WSDL/SOAP service. See connectors/application/tallyprime.py.
     TALLY_PRIME = "TALLY_PRIME"
+    # TallyPrime via the Agent Relay (Multi-Client TallyPrime Integration
+    # Platform) — for a customer whose TallyPrime machine is behind NAT/a
+    # firewall and not directly reachable from this backend. Routes
+    # through a connected Windows agent over an authenticated WebSocket
+    # instead of a direct HTTP call; same operation surface, same return
+    # shapes as TALLY_PRIME — see connectors/application/tallyprime_agent.py
+    # and models/tally_agent.py. A genuinely separate transport, not a
+    # replacement: TALLY_PRIME keeps working unchanged for customers whose
+    # Tally machine IS directly reachable.
+    TALLY_PRIME_AGENT = "TALLY_PRIME_AGENT"
     # Storage
     SFTP = "SFTP"
     FTP = "FTP"
@@ -84,6 +101,13 @@ class ConnectionType(str, enum.Enum):
     AWS_TEXTRACT = "AWS_TEXTRACT"
     GOOGLE_VISION = "GOOGLE_VISION"
     AZURE_FORM_RECOGNIZER = "AZURE_FORM_RECOGNIZER"
+    # Verification Provider (Compliance & Verification module) — a local
+    # mock gateway today (scripts/mock_verification_gateway.py); real
+    # vendors (a UIDAI-licensed AUA/KYC aggregator, GSTN/MCA-authorized
+    # data providers, ...) get their own ConnectionType value here once
+    # credentials for one are actually supplied — see
+    # connectors/verification/base_verification.py's docstring.
+    MOCK_VERIFICATION_PROVIDER = "MOCK_VERIFICATION_PROVIDER"
 
 
 class ConnectionEnvironment(str, enum.Enum):

@@ -6,7 +6,7 @@ import {
   AlertTriangle, PlayCircle, Clock, Users, Shield, Building2, Key,
   ScrollText, Settings, ChevronRight, LogOut, BarChart3, ArrowLeftRight,
   CreditCard, Puzzle, Gauge, UserCog, Monitor, DollarSign, Receipt, Zap, Lock,
-  BadgeCheck, History, Boxes, Calculator, FileText,
+  BadgeCheck, History, Boxes, Calculator, FileText, Landmark, FileCheck2, ListChecks, Cpu,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth.js';
 import { usePermission } from '@/hooks/usePermission.js';
@@ -86,6 +86,26 @@ const NAV = [
       { to: '/app/tally/companies', label: 'Companies', icon: Calculator },
       { to: '/app/tally/vouchers', label: 'Voucher Preview', icon: FileText },
       { to: '/app/tally/reconciliation', label: 'Reconciliation', icon: Scale },
+      { to: '/app/tally/agents', label: 'Agents', icon: Cpu },
+    ],
+  },
+  {
+    // India Business/Tax Identity/Corporate Document Verification —
+    // PAN/GSTIN/TAN/MCA/Udyam/Aadhaar (Phase Groups 1-2) + MOA document
+    // verification (Phase Group 3); Rules/Jobs items join as later
+    // phases ship (see the approved plan's Phase Group 4-5).
+    section: 'COMPLIANCE & VERIFICATION',
+    module: MODULES.INDIA_VERIFICATION,
+    items: [
+      { to: '/app/india-verification', label: 'Dashboard', icon: Shield },
+      { to: '/app/india-verification/identity', label: 'Identity Verification', icon: FileSearch },
+      { to: '/app/india-verification/tax', label: 'Tax Registration', icon: Landmark },
+      { to: '/app/india-verification/company', label: 'Company & Startup', icon: Building2 },
+      { to: '/app/india-verification/moa', label: 'Corporate Documents', icon: FileCheck2 },
+      { to: '/app/india-verification/rules', label: 'Rules', icon: ListChecks },
+      { to: '/app/india-verification/jobs', label: 'Batches', icon: Boxes },
+      { to: '/app/india-verification/history', label: 'History', icon: History },
+      { to: '/app/india-verification/reports', label: 'Reports & Audit', icon: ScrollText },
     ],
   },
   {

@@ -47,6 +47,7 @@ export const MODULES = {
   BULK_MIGRATION:        'BULK_MIGRATION',
   TALLY_INTEGRATION:     'TALLY_INTEGRATION',
   AI_CONNECTION:         'AI_CONNECTION',
+  INDIA_VERIFICATION:    'INDIA_VERIFICATION',
 };
 
 /** License status */
@@ -370,6 +371,19 @@ export const BULK_MIGRATION_PERMISSIONS = {
 export const TALLY_PERMISSIONS = {
   TALLY_VIEW:     { module: MODULES.TALLY_INTEGRATION, action: ACTIONS.VIEW },
   TALLY_DISCOVER: { module: MODULES.TALLY_INTEGRATION, action: ACTIONS.EXECUTE },
+};
+
+/**
+ * India Business/Tax Identity/Corporate Document Verification (Compliance
+ * & Verification). Phase 1 (IV1-IV6) scopes PAN only — same shape every
+ * later check type (GSTIN/TAN/MCA/Udyam/Aadhaar/MOA) reuses. Mirrors the
+ * other module permission maps above; VERIFICATION_RUN covers both
+ * running a new check and retrying an existing one (api/compliance.py's
+ * POST .../verifications and POST .../checks/pan both need EXECUTE).
+ */
+export const INDIA_VERIFICATION_PERMISSIONS = {
+  VERIFICATION_VIEW: { module: MODULES.INDIA_VERIFICATION, action: ACTIONS.VIEW },
+  VERIFICATION_RUN:  { module: MODULES.INDIA_VERIFICATION, action: ACTIONS.EXECUTE },
 };
 
 /**

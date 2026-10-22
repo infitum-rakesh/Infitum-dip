@@ -45,6 +45,7 @@ from app.connectors.api.soap import SoapApiConnector
 from app.connectors.application.netsuite_soap import NetSuiteSoapConnector
 from app.connectors.application.oracle_erp import OracleErpConnector
 from app.connectors.application.tallyprime import TallyPrimeConnector
+from app.connectors.application.tallyprime_agent import AgentAwareTallyConnector
 from app.connectors.ocr.aws_textract import AwsTextractConnector
 from app.connectors.ocr.azure_document_intelligence import AzureDocumentIntelligenceConnector
 from app.connectors.ocr.google_vision import GoogleVisionConnector
@@ -66,6 +67,7 @@ from app.connectors.files.local import LocalFileConnector
 from app.connectors.ftp.client import FtpConnector
 from app.connectors.sftp.client import SftpConnector
 from app.connectors.smb.client import NetworkFileConnector
+from app.connectors.verification.mock_provider import MockVerificationProvider
 
 CONNECTOR_REGISTRY: dict[str, type[BaseConnector]] = {
     "POSTGRESQL": PostgresConnector,
@@ -125,6 +127,14 @@ CONNECTOR_REGISTRY: dict[str, type[BaseConnector]] = {
     # connectors/application/tallyprime.py's docstring for the full
     # disclosure.
     "TALLY_PRIME": TallyPrimeConnector,
+    # Multi-Client TallyPrime Integration Platform (Agent Relay) — a
+    # SECOND transport for the identical operation surface, for a
+    # customer whose Tally machine is behind NAT/a firewall. Real, but
+    # not live-verified against an actual Windows agent or TallyPrime
+    # install (neither exists in this environment) — live-verified
+    # instead against a scripted stand-in agent; see
+    # connectors/application/tallyprime_agent.py's own docstring.
+    "TALLY_PRIME_AGENT": AgentAwareTallyConnector,
     # SALESFORCE — real simple-salesforce REST/SOQL client. Field schema
     # was corrected this session (see connection_service.py's SALESFORCE
     # entry) from a broken NetSuite-TBA-shaped set to Salesforce's actual
@@ -187,6 +197,14 @@ CONNECTOR_REGISTRY: dict[str, type[BaseConnector]] = {
     "AWS_TEXTRACT": AwsTextractConnector,
     "GOOGLE_VISION": GoogleVisionConnector,
     "AZURE_FORM_RECOGNIZER": AzureDocumentIntelligenceConnector,
+    # Verification Provider connections (Compliance & Verification module,
+    # India Business/Tax Identity/Corporate Document Verification) — a
+    # local mock gateway only; real code, live-verified against
+    # scripts/mock_verification_gateway.py, same "real connector, mock
+    # target server" precedent as TALLY_PRIME. No real government/KYC
+    # vendor is wired — see connectors/verification/mock_provider.py's
+    # own docstring.
+    "MOCK_VERIFICATION_PROVIDER": MockVerificationProvider,
 }
 
 UNVERIFIED: dict[str, str] = {}

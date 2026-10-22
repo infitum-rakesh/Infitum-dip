@@ -8,7 +8,17 @@
  * a "leave blank to keep unchanged" placeholder, and are only included in
  * the submitted payload if the user actually types a new value — the
  * masked "••••••••" the backend returns is never treated as an editable value.
+ *
+ * "agent_select" (TALLY_PRIME_AGENT's agent_installation_id — Multi-Client
+ * TallyPrime Integration Platform) is the one field type whose options
+ * aren't static: unlike a plain "select" (field.options, an inline array
+ * from FIELD_SCHEMAS), its choices are the org's own enrolled Tally Agent
+ * installations, fetched once here (not per-field-render) from GET
+ * /tally-agents when any visible field needs it.
  */
+import { useEffect, useState } from 'react';
+import tallyAgentApi from '@/services/api/tallyAgentApi.js';
+
 const SECRET_PLACEHOLDER_SET = '•••••••• (already set — leave blank to keep unchanged)';
 const SECRET_PLACEHOLDER_UNSET = 'Not set';
 
@@ -18,6 +28,16 @@ export function DynamicConnectionFields({ fields, values, onChange, editable, is
     return values[f.show_if.field] === f.show_if.equals;
   });
 
+  const needsAgentOptions = visibleFields.some((f) => f.type === 'agent_select');
+  const [agentInstallations, setAgentInstallations] = useState(null); // null = not fetched yet
+
+  useEffect(() => {
+    if (!needsAgentOptions || agentInstallations !== null) return;
+    tallyAgentApi.listInstallations()
+      .then((r) => setAgentInstallations(r.items ?? []))
+      .catch(() => setAgentInstallations([]));
+  }, [needsAgentOptions, agentInstallations]);
+
   return (
     <div className="conn-field-grid">
       {visibleFields.map((f) => (
@@ -25,13 +45,14 @@ export function DynamicConnectionFields({ fields, values, onChange, editable, is
           key={f.key} field={f} values={values} onChange={onChange}
           editable={editable && (!f.secret || secretsEditable)}
           isSecretSet={isSecretSet}
+          agentInstallations={agentInstallations}
         />
       ))}
     </div>
   );
 }
 
-function FieldInput({ field, values, onChange, editable, isSecretSet }) {
+function FieldInput({ field, values, onChange, editable, isSecretSet, agentInstallations }) {
   const value = values[field.key] ?? '';
   const set = (v) => onChange(field.key, v);
 
@@ -56,6 +77,26 @@ function FieldInput({ field, values, onChange, editable, isSecretSet }) {
           <option value="">Select…</option>
           {(field.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
         </select>
+      ) : field.type === 'agent_select' ? (
+        agentInstallations === null ? (
+          <select className="conn-input" disabled>
+            <option>Loading agents…</option>
+          </select>
+        ) : (
+          <select className="conn-input" value={value} disabled={!editable} onChange={(e) => set(e.target.value)}>
+            <option value="">Select…</option>
+            {agentInstallations
+              .filter((a) => a.status === 'ENROLLED')
+              .map((a) => (
+                <option key={a.id} value={String(a.id)}>
+                  {a.name} — {a.is_connected ? 'online' : 'offline'}{a.hostname ? ` (${a.hostname})` : ''}
+                </option>
+              ))}
+            {agentInstallations.filter((a) => a.status === 'ENROLLED').length === 0 && (
+              <option value="" disabled>No enrolled agents yet — create one under Tally Agents</option>
+            )}
+          </select>
+        )
       ) : field.type === 'textarea' ? (
         <textarea
           className="conn-input conn-textarea"

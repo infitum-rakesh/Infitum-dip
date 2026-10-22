@@ -40,6 +40,7 @@ AUDIT_MODULES = [
     "AI Extraction", "Transformation", "Validation", "Reconciliation",
     "Pipeline", "Schedule", "Incident", "Settings", "Anomaly Detection",
     "Column Mapping", "Bulk Object Migration", "Document Batch", "AI Connections",
+    "India Verification", "Tally Agent",
 ]
 
 

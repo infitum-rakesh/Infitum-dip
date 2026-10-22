@@ -256,6 +256,30 @@ FIELD_SCHEMAS: dict[str, dict] = {
              "help": "Only needed if this Tally instance's HTTP gateway sits behind a reverse proxy that requires a bearer token — Tally's own gateway has no built-in authentication."},
         ],
     },
+    "TALLY_PRIME_AGENT": {
+        # Multi-Client TallyPrime Integration Platform (Agent Relay) — for
+        # a customer whose TallyPrime machine is behind NAT/a firewall and
+        # not directly reachable from this backend. Routes through a
+        # connected Windows agent over an authenticated WebSocket instead
+        # of a direct HTTP call; see connectors/application/
+        # tallyprime_agent.py. No host/port/secret fields here — those
+        # live on the AgentInstallation itself (one agent can back several
+        # company-scoped connections), and authentication already happened
+        # at the WebSocket layer, not at this Connection.
+        "label": "TallyPrime (via Agent)", "category": "APPLICATION",
+        "fields": [
+            {"key": "agent_installation_id", "label": "Agent", "type": "agent_select", "required": True,
+             "help": "The enrolled Windows agent to route this connection's Tally operations through — see Tally Agents."},
+            {"key": "company_name", "label": "Company", "type": "text",
+             "help": "Leave blank until you've run Test Connection at least once — then use Discover Companies to pick from Tally's real company list."},
+            {"key": "timeout_seconds", "label": "Timeout (seconds)", "type": "number", "default": 60,
+             "help": "Higher than the direct-HTTP default (30s) — a WebSocket + local-HTTP round trip through the agent adds latency."},
+            {"key": "max_retries", "label": "Max Retries", "type": "number", "default": 3},
+            {"key": "read_mode", "label": "Read Mode", "type": "select", "options": ["Full", "Incremental"], "default": "Incremental"},
+            {"key": "write_enabled", "label": "Write Enabled", "type": "checkbox", "default": False,
+             "help": "OFF by default — identical semantics to the direct-HTTP TallyPrime connection's own write gate."},
+        ],
+    },
     "LOCAL_FILE": {
         "label": "Local Folder", "category": "STORAGE",
         "fields": [
@@ -429,16 +453,34 @@ FIELD_SCHEMAS: dict[str, dict] = {
             {"key": "api_key", "label": "API Key", "type": "password", "required": True, "secret": True},
         ],
     },
+    "MOCK_VERIFICATION_PROVIDER": {
+        # India Business/Tax Identity Verification module's only real
+        # provider today — a local mock gateway for development/testing
+        # (scripts/mock_verification_gateway.py). A real vendor (KYC
+        # aggregator, GSTN/MCA-authorized data provider, a UIDAI-licensed
+        # AUA for Aadhaar) gets its own entry here once credentials exist;
+        # until then every check reports NOT_CONFIGURED rather than a
+        # simulated pass — see connectors/verification/base_verification.py.
+        "label": "Mock Verification Gateway (dev/test only)", "category": "VERIFICATION_PROVIDER",
+        "fields": [
+            {"key": "base_url", "label": "Gateway URL", "type": "text", "required": True, "default": "http://localhost:9601",
+             "help": "The local mock verification gateway's base URL — never a real government/KYC endpoint. Run scripts/mock_verification_gateway.py first."},
+            {"key": "api_key", "label": "API Key", "type": "password", "required": False, "secret": True,
+             "help": "Optional — the mock gateway accepts any value; present only so the real-provider UX (secret field, masked, encrypted) is exercised end-to-end."},
+            {"key": "timeout_seconds", "label": "Timeout (seconds)", "type": "number", "default": 15},
+        ],
+    },
 }
 
 CATEGORIES = [
     {"key": "DATABASE", "label": "Database", "types": ["SQL_SERVER", "POSTGRESQL", "MYSQL", "ORACLE", "SNOWFLAKE", "SAP", "VERTICA", "FABRIC"]},
-    {"key": "APPLICATION", "label": "Application", "types": ["SALESFORCE", "NETSUITE_SUITEQL", "NETSUITE_SOAP", "ORACLE_ERP_CLOUD", "TALLY_PRIME"]},
+    {"key": "APPLICATION", "label": "Application", "types": ["SALESFORCE", "NETSUITE_SUITEQL", "NETSUITE_SOAP", "ORACLE_ERP_CLOUD", "TALLY_PRIME", "TALLY_PRIME_AGENT"]},
     {"key": "STORAGE", "label": "Storage", "types": ["LOCAL_FILE", "SFTP", "FTP", "NETWORK_FILE", "EMAIL_IMAP"]},
     {"key": "API", "label": "API", "types": ["REST", "SOAP"]},
     {"key": "CLOUD", "label": "Cloud", "types": ["AZURE", "AWS", "OTHER"]},
     {"key": "AI_PROVIDER", "label": "AI Agent", "types": ["OPENAI", "ANTHROPIC", "OLLAMA"]},
     {"key": "OCR_PROVIDER", "label": "OCR Provider", "types": ["AWS_TEXTRACT", "GOOGLE_VISION", "AZURE_FORM_RECOGNIZER"]},
+    {"key": "VERIFICATION_PROVIDER", "label": "Verification Provider", "types": ["MOCK_VERIFICATION_PROVIDER"]},
 ]
 
 # Field used to populate the table's "Host / Endpoint" / "Database" columns
@@ -449,6 +491,11 @@ _HOST_FIELD = {
     "SALESFORCE": "username", "NETSUITE_SUITEQL": "dsn", "NETSUITE_SOAP": "account",
     "ORACLE_ERP_CLOUD": "host",
     "TALLY_PRIME": "host",
+    # Shows the raw agent_installation_id for now — resolving it to the
+    # agent's display name needs an async DB lookup to_out() doesn't have
+    # (no db session passed in); the Tally Agents frontend page (Phase
+    # Group 6) independently shows the real agent name where it matters.
+    "TALLY_PRIME_AGENT": "agent_installation_id",
     "LOCAL_FILE": "base_path", "SFTP": "host", "FTP": "host", "NETWORK_FILE": "unc_path", "EMAIL_IMAP": "host",
     "REST": "base_url", "SOAP": "wsdl_url",
     "AZURE": "storage_account", "AWS": "region", "OTHER": "host",
@@ -457,6 +504,7 @@ _HOST_FIELD = {
     # the secret service-account JSON) — deliberately unmapped so the table
     # shows a genuine blank rather than a key that's never in conn.config.
     "AWS_TEXTRACT": "region", "AZURE_FORM_RECOGNIZER": "endpoint",
+    "MOCK_VERIFICATION_PROVIDER": "base_url",
 }
 _DATABASE_FIELD = {
     "SQL_SERVER": "database", "POSTGRESQL": "database", "MYSQL": "database", "ORACLE": "service_name",
@@ -865,13 +913,21 @@ async def get_stats(db: AsyncSession, organization_id: int | None) -> dict:
 
 
 def to_out(conn: Connection, owner_name: str | None) -> dict:
+    # host_display/database_display are typed as str | None (ConnectionOut)
+    # — most _HOST_FIELD/_DATABASE_FIELD targets are already strings
+    # (host, account, dsn, ...), but TALLY_PRIME_AGENT's is
+    # agent_installation_id, a real int. Coerced here rather than typing
+    # the schema loosely, since every other caller of these fields
+    # legitimately expects a string.
+    host_raw = conn.config.get(_HOST_FIELD.get(conn.connection_type.value, ""))
+    database_raw = conn.config.get(_DATABASE_FIELD.get(conn.connection_type.value, ""))
     return {
         "id": conn.id, "name": conn.name, "category": conn.category.value,
         "connection_type": conn.connection_type.value, "environment": conn.environment.value,
         "config": _masked_config(conn.connection_type.value, conn.config, conn.encrypted_secrets),
         "status": conn.status.value,
-        "host_display": conn.config.get(_HOST_FIELD.get(conn.connection_type.value, "")),
-        "database_display": conn.config.get(_DATABASE_FIELD.get(conn.connection_type.value, "")),
+        "host_display": str(host_raw) if host_raw is not None else None,
+        "database_display": str(database_raw) if database_raw is not None else None,
         "owner_id": conn.owner_id, "owner_name": owner_name,
         "last_tested_at": conn.last_tested_at, "last_test_success": conn.last_test_success,
         "last_test_message": conn.last_test_message, "secrets_rotated_at": conn.secrets_rotated_at,

@@ -124,6 +124,22 @@ import TallyCompanies from '@/pages/tally/TallyCompanies.jsx';
 import TallyVoucherPreview from '@/pages/tally/TallyVoucherPreview.jsx';
 // TALLY-J7 — reconciliation run-now + history + scheduled-run visibility.
 import TallyReconciliation from '@/pages/tally/TallyReconciliation.jsx';
+// TA20 — Windows Client Agent installations (Agent Relay admin UI).
+import TallyAgents from '@/pages/tally/TallyAgents.jsx';
+import TallyAgentDetail from '@/pages/tally/TallyAgentDetail.jsx';
+
+// Compliance & Verification (IV1-IV17) — PAN (Phase 1) + GSTIN/TAN/MCA/
+// Udyam/Aadhaar (Phase Group 2) + MOA document verification (Phase Group 3).
+import IndiaVerificationDashboard from '@/pages/compliance/IndiaVerificationDashboard.jsx';
+import IdentityVerification from '@/pages/compliance/IdentityVerification.jsx';
+import TaxRegistrationVerification from '@/pages/compliance/TaxRegistrationVerification.jsx';
+import CompanyVerification from '@/pages/compliance/CompanyVerification.jsx';
+import CorporateDocumentVerification from '@/pages/compliance/CorporateDocumentVerification.jsx';
+import VerificationRules from '@/pages/compliance/VerificationRules.jsx';
+import VerificationJobs from '@/pages/compliance/VerificationJobs.jsx';
+import VerificationHistory from '@/pages/compliance/VerificationHistory.jsx';
+import VerificationReports from '@/pages/compliance/VerificationReports.jsx';
+import VerificationCaseDetail from '@/pages/compliance/VerificationCaseDetail.jsx';
 
 // Customer Billing (implemented, SB29)
 import CustomerBilling from '@/pages/billing/CustomerBilling.jsx';
@@ -363,6 +379,21 @@ export const router = createBrowserRouter([
           { path: 'tally/vouchers', element: <TallyVoucherPreview /> },
           // TALLY-J7 — reconciliation run-now + history + scheduled-run visibility.
           { path: 'tally/reconciliation', element: <TallyReconciliation /> },
+          // TA20 — Windows Client Agent installations (Agent Relay admin UI).
+          { path: 'tally/agents', element: <TallyAgents /> },
+          { path: 'tally/agents/:installationId', element: <TallyAgentDetail /> },
+
+          // Compliance & Verification (IV1-IV17).
+          { path: 'india-verification', element: <IndiaVerificationDashboard /> },
+          { path: 'india-verification/identity', element: <IdentityVerification /> },
+          { path: 'india-verification/tax', element: <TaxRegistrationVerification /> },
+          { path: 'india-verification/company', element: <CompanyVerification /> },
+          { path: 'india-verification/moa', element: <CorporateDocumentVerification /> },
+          { path: 'india-verification/rules', element: <VerificationRules /> },
+          { path: 'india-verification/jobs', element: <VerificationJobs /> },
+          { path: 'india-verification/history', element: <VerificationHistory /> },
+          { path: 'india-verification/reports', element: <VerificationReports /> },
+          { path: 'india-verification/cases/:caseId', element: <VerificationCaseDetail /> },
 
           // Billing (SB29) — org-scoped self-service Subscriptions/
           // Invoices/Payments, reachable regardless of subscription
