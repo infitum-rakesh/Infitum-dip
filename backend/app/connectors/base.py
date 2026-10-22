@@ -624,6 +624,58 @@ class BaseConnector(abc.ABC):
     def cancel_voucher(self, voucher_id: str, *, company: str) -> dict:
         raise ConnectorUnsupportedError(f"{self.connection_type} does not support voucher cancellation.")
 
+    # ── India Business/Tax Identity/Corporate Document Verification
+    # (Compliance & Verification module) ────────────────────────────────
+    # Modeled after the OCR/ERP/Accounting extension clusters above: a
+    # verification-provider connection IS a Connection like any other
+    # (Test Connection, encrypted secrets, connector registry) — it just
+    # has verification-shaped verbs. Every method returns a plain,
+    # provider-normalized dict with a "status" key using THIS check
+    # type's own documented outcome vocabulary (see
+    # services/compliance/identity_verification_service.py etc. for each
+    # one's allowed set) — never a fabricated VERIFIED for a format-valid
+    # input the provider never actually confirmed. Only
+    # connectors/verification/* override these; every connector that
+    # doesn't implement a given check keeps the default below, which the
+    # orchestrator (services/compliance/verification_orchestrator.py)
+    # reports as NOT_CONFIGURED/UNAVAILABLE, never a guessed outcome.
+
+    def verify_pan(self, pan: str, *, submitted_name: str | None = None) -> dict:
+        """Real PAN verification call. Returns at least {"status": str,
+        "holder_name": str | None, "entity_type": str | None,
+        "reference_id": str, "verified_at": str (ISO 8601)} — "status" is
+        one of the PAN outcome vocabulary (VERIFIED/NOT_VERIFIED/
+        NAME_MISMATCH/INACTIVE_OR_INVALID/PENDING/UNAVAILABLE/ERROR);
+        name-mismatch detection may be done by the provider itself (when
+        submitted_name is passed and the provider supports comparison) or
+        left to the caller to compute from holder_name — either way the
+        connector must say which it did."""
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support PAN verification.")
+
+    def verify_gstin(self, gstin: str, *, submitted_name: str | None = None) -> dict:
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support GSTIN verification.")
+
+    def verify_tan(self, tan: str, *, submitted_name: str | None = None) -> dict:
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support TAN verification.")
+
+    def verify_aadhaar(self, aadhaar_masked_ref: str, *, consent_reference: str, purpose: str) -> dict:
+        """Aadhaar verification requires a provider-issued consent/OTP
+        flow this codebase never short-circuits — see
+        services/compliance/identity_verification_service.py's own
+        docstring. consent_reference/purpose are always required, never
+        optional, for this one verb."""
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support Aadhaar verification.")
+
+    def search_mca_company(self, *, cin: str | None = None, llpin: str | None = None, legal_name: str | None = None) -> dict:
+        """Returns {"status": str, "matches": [ {...candidate fields...} ]}
+        — a legal-name search may return several candidates; an exact
+        CIN/LLPIN lookup returns at most one. The caller must never
+        auto-pick an uncertain name-search match."""
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support MCA company/LLP search.")
+
+    def verify_udyam(self, udyam_number: str, *, submitted_name: str | None = None) -> dict:
+        raise ConnectorUnsupportedError(f"{self.connection_type} does not support Udyam/MSME verification.")
+
     def _scrub(self, message: str) -> str:
         """Instance-method convenience wrapper around the module-level
         scrub_secrets() — see its docstring for the full rationale."""

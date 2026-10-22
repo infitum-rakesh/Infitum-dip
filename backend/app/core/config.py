@@ -104,6 +104,14 @@ class Settings(BaseSettings):
     allow_nested_zip: bool = False        # a .zip-within-the-.zip is catalogued as NESTED_ARCHIVE_NOT_SUPPORTED unless true
     zip_retention_days: int = 30
     extracted_file_retention_days: int = 30
+    # India Verification (Phase Group 5, IV24) — how long a MANUAL batch
+    # item's plaintext identifier (verification_job_items.identifiers) is
+    # kept to support a user re-running "Retry Failed" before it's purged
+    # by the retention sweep; also bounds how long raw VerificationUsage
+    # log rows are kept before being purged (aggregates, not the
+    # identifier itself, already derive from them at read time — see
+    # VerificationUsage's own docstring).
+    verification_data_retention_days: int = 90
     auto_process_after_upload: bool = True
     upload_chunk_size_mb: int = 8
     upload_concurrency: int = 4           # concurrent chunk uploads the client may use per session

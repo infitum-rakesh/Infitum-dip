@@ -1,0 +1,107 @@
+/* ============================================================
+   Compliance & Verification module styles — scoped to .iv-*
+   Mirrors tally.css's .tly-* pattern (page header, banners, build
+   panel, list table panel) and monitoring.css's .mon-kpi-* pattern,
+   so the module looks native rather than inventing a third style.
+   ============================================================ */
+
+.iv-page { max-width: 1280px; }
+
+.iv-header {
+  display: flex; align-items: flex-start;
+  justify-content: space-between; margin-bottom: 20px; gap: 16px; flex-wrap: wrap;
+}
+.iv-title {
+  font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--text-primary);
+  display: flex; align-items: center; gap: 8px;
+}
+.iv-subtitle { font-size: var(--fs-md); color: var(--text-muted); margin-top: 3px; max-width: 640px; }
+
+.iv-section-title { font-size: var(--fs-md); font-weight: var(--fw-semibold); color: var(--text-primary); margin-bottom: 4px; }
+
+.iv-tab-nav { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.iv-tab-btn {
+  padding: 8px 14px; font-size: var(--fs-sm); font-weight: var(--fw-medium);
+  color: var(--text-muted); cursor: pointer;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: var(--transition); background: none;
+}
+.iv-tab-btn:hover  { color: var(--text-primary); }
+.iv-tab-btn.active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
+
+.iv-kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.iv-kpi-card {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  padding: 14px 16px; display: flex; flex-direction: column; gap: 4px;
+}
+.iv-kpi-label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
+.iv-kpi-value { font-size: 24px; font-weight: 700; color: var(--text-primary); }
+.iv-kpi-value.danger  { color: #DC2626; }
+.iv-kpi-value.success { color: #10B981; }
+.iv-kpi-value.warning { color: #D97706; }
+
+.iv-list-table-panel { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl); overflow: hidden; }
+
+.iv-text-muted { color: var(--text-muted); font-size: var(--fs-sm); }
+
+.iv-build-panel {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl);
+  padding: 16px; display: flex; flex-direction: column; gap: 14px; margin-bottom: 20px;
+}
+.iv-build-row { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+.iv-build-field { display: flex; flex-direction: column; gap: 6px; min-width: 220px; flex: 1; }
+.iv-build-field label { font-size: var(--fs-xs); font-weight: var(--fw-medium); color: var(--text-muted); }
+
+.iv-inline-input, .iv-inline-select {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--border);
+  border-radius: var(--radius-md); background: var(--bg-card); color: var(--text-primary); font-size: var(--fs-sm);
+}
+
+.iv-banner-success, .iv-banner-error, .iv-banner-info {
+  padding: 10px 14px; border-radius: var(--radius-md); font-size: var(--fs-sm);
+}
+.iv-banner-success { background: var(--color-success-light, #ECFDF5); color: var(--color-success-dark, #065F46); }
+.iv-banner-error   { background: var(--color-danger-light, #FEF2F2); color: var(--color-danger-dark, #991B1B); }
+.iv-banner-info    { background: var(--color-info-light, #EFF6FF); color: var(--color-info-dark, #1E40AF); }
+
+.iv-result-card {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl);
+  padding: 20px; display: flex; flex-direction: column; gap: 12px;
+}
+.iv-result-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.iv-result-header h3 { font-size: var(--fs-lg); font-weight: var(--fw-semibold); }
+.iv-result-meta { display: flex; flex-wrap: wrap; gap: 18px; font-size: var(--fs-sm); color: var(--text-secondary); }
+.iv-result-meta strong { color: var(--text-primary); font-weight: var(--fw-medium); }
+
+.iv-detail-panel {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl);
+  padding: 20px; display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px;
+}
+.iv-detail-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.iv-detail-header h2 { font-size: var(--fs-xl); font-weight: var(--fw-semibold); }
+.iv-detail-meta { display: flex; flex-wrap: wrap; gap: 18px; font-size: var(--fs-sm); color: var(--text-secondary); }
+
+.iv-mini-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.iv-mini-table th {
+  text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border);
+  color: var(--text-muted); font-weight: var(--fw-medium); font-size: var(--fs-xs); text-transform: uppercase;
+}
+.iv-mini-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.iv-mini-table tr:last-child td { border-bottom: none; }
+
+/* MOA document viewer — original OCR text side-by-side with extracted clauses */
+.iv-moa-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 900px) { .iv-moa-grid { grid-template-columns: 1fr; } }
+.iv-moa-subhead { font-size: var(--fs-xs); font-weight: var(--fw-semibold); text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin-bottom: 6px; }
+.iv-moa-text-box {
+  background: var(--bg-secondary, var(--bg-hover)); border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 12px; font-size: var(--fs-sm); color: var(--text-secondary); white-space: pre-wrap;
+  max-height: 320px; overflow-y: auto; font-family: var(--font-mono, monospace);
+}
+.iv-moa-field-list {
+  border: 1px solid var(--border); border-radius: var(--radius-md); max-height: 320px; overflow-y: auto;
+}
+.iv-moa-field-row { display: flex; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: var(--fs-sm); }
+.iv-moa-field-row:last-child { border-bottom: none; }
+.iv-moa-field-name { flex: 0 0 160px; color: var(--text-muted); text-transform: capitalize; }
+.iv-moa-field-value { color: var(--text-primary); word-break: break-word; }

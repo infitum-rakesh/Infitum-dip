@@ -53,6 +53,7 @@ export const MODULE_META = {
   [MODULES.BULK_MIGRATION]:        { label: 'Bulk Object Migration', icon: '📦', group: 'Pipeline' },
   [MODULES.TALLY_INTEGRATION]:     { label: 'Tally Integration',     icon: '🧮', group: 'Intelligence' },
   [MODULES.AI_CONNECTION]:         { label: 'AI Connections',        icon: '🤖', group: 'Operations' },
+  [MODULES.INDIA_VERIFICATION]:    { label: 'India Business Verification', icon: '🛡️', group: 'Compliance' },
 };
 
 export const SUBSCRIPTION_PLANS = {
