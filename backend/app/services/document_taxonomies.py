@@ -187,9 +187,67 @@ GENERIC_TABLE = {
     ],
 }
 
+# Memorandum of Association (Compliance & Verification module, Phase
+# Group 3 / IV14) — fields follow the real clause structure Indian
+# company law gives every MOA (Companies Act, 2013, Form INC-33/
+# Table A-J schedules): Name Clause, Registered Office Clause, Objects
+# Clause, Liability Clause, Capital Clause, and the subscription/
+# association clause listing the first subscribers. Extracted exactly
+# like every other taxonomy — grounded in this document's real OCR text,
+# never fabricated — and then handed to moa_verification_service.py for
+# the completeness/authenticity/cross-record checks spec section 11
+# actually asks for (OCR+AI extraction alone can confirm a clause's
+# TEXT is present; it can never independently prove the document is
+# genuine, currently effective, or filed with MCA — see that module's
+# own docstring for how it keeps those two kinds of claim separate).
+MOA_FIELDS: list[tuple[str, str, str]] = [
+    ("document_title", "string", "The document's own title/heading, e.g. 'Memorandum of Association'"),
+    ("company_name", "string", "The company's full legal name as stated in the Name Clause"),
+    ("cin", "string", "Corporate Identification Number (CIN), if printed on the document"),
+    ("llpin", "string", "LLP Identification Number, if this is an LLP agreement rather than a company MOA"),
+    ("company_type", "string", "Entity type/classification stated (e.g. Private Limited, Public Limited, One Person Company, Section 8)"),
+    ("registered_office_address", "string", "The full registered office address as stated in the Registered Office Clause"),
+    ("state_of_registration", "string", "The State in which the registered office is situated, per the Registered Office Clause"),
+    ("incorporation_date", "date", "Date of incorporation, if stated"),
+    ("roc_jurisdiction", "string", "Registrar of Companies (RoC) jurisdiction named, if stated"),
+
+    ("objects_clause_text", "string", "The full text of the Objects Clause — the company's main objects and matters necessary for their attainment"),
+
+    ("liability_clause_text", "string", "The full text of the Liability Clause"),
+    ("liability_type", "string", "The liability type stated — Limited by Shares / Limited by Guarantee / Unlimited"),
+
+    ("capital_clause_text", "string", "The full text of the Capital Clause"),
+    ("authorized_capital_amount", "number", "Authorized share capital amount stated in the Capital Clause"),
+    ("authorized_capital_currency", "string", "Currency of the authorized capital amount"),
+    ("number_of_shares", "number", "Number of shares the authorized capital is divided into"),
+    ("share_face_value", "number", "Face value per share"),
+
+    ("execution_date", "date", "The date the memorandum was executed/adopted/signed"),
+    ("amendment_indicator", "string", "Any text indicating this is an amended/altered memorandum, and the amendment date if stated — blank for an original, unamended memorandum"),
+    ("has_signature", "boolean", "Whether the document shows a signature block for subscribers/witnesses"),
+    ("has_company_seal_or_stamp", "boolean", "Whether a company seal, rubber stamp, or certification mark is visible"),
+    ("certifying_authority", "string", "Any certifying professional/authority named (e.g. a practising Company Secretary) who certified the document, if stated"),
+    ("total_pages_stated", "number", "Total page count, if stated on the document itself (e.g. a page footer or certificate)"),
+    ("referenced_schedules", "string", "Any schedules, annexures, or attachments referenced in the body text, if any"),
+]
+
+MOA_SUBSCRIBERS_TABLE = {
+    "name": "subscribers",
+    "instruction": "Each subscriber/signatory listed in the Memorandum's subscription/association clause — the people who subscribed for shares and signed as the company's first members",
+    "columns": [
+        {"name": "subscriber_name", "type": "string"},
+        {"name": "father_or_husband_name", "type": "string"},
+        {"name": "address", "type": "string"},
+        {"name": "occupation", "type": "string"},
+        {"name": "shares_subscribed", "type": "number"},
+        {"name": "witness_name", "type": "string"},
+    ],
+}
+
 TAXONOMIES: dict[str, dict] = {
     "INVOICE": {"fields": INVOICE_FIELDS, "table": INVOICE_LINE_ITEMS_TABLE},
     "GENERIC": {"fields": GENERIC_FIELDS, "table": GENERIC_TABLE},
+    "MOA": {"fields": MOA_FIELDS, "table": MOA_SUBSCRIBERS_TABLE},
 }
 
 

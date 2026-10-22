@@ -68,6 +68,13 @@ MODULE_CATALOG: dict[str, dict] = {
     "BULK_MIGRATION":       {"label": "Bulk Object Migration",  "category": "OPERATIONS"},
     "TALLY_INTEGRATION":    {"label": "Tally Integration",      "category": "OPERATIONS"},
     "AI_CONNECTION":        {"label": "AI Connections",         "category": "OPERATIONS"},
+    # India Business/Tax Identity/Corporate Document Verification —
+    # Phase 1 (IV1-IV6) scopes PAN only; GSTIN/TAN/MCA/Udyam/Aadhaar/MOA
+    # join under this same module key in later phases (see
+    # services/compliance/*). A new category rather than folding into an
+    # existing one — this is its own top-level "Compliance & Verification"
+    # nav section, not a sub-feature of Document Intelligence/Operations.
+    "INDIA_VERIFICATION":   {"label": "India Business Verification", "category": "COMPLIANCE"},
 }
 CATALOG_VERSION = "1.0.0"  # matches main.py's FastAPI(version=...) — one platform release, no per-module versioning exists
 

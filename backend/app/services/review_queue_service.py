@@ -331,6 +331,33 @@ async def create_from_tally_exception(db: AsyncSession, doc: Document, *, issue:
     return item
 
 
+async def create_from_verification_mismatch(db: AsyncSession, doc: Document, *, issue: str) -> ReviewQueueItem:
+    """Compliance & Verification module (IV16) — escalates an MOA
+    verification finding (a MISMATCH_FOUND against the case's own MCA
+    result, or AUTHENTICITY_NOT_ESTABLISHED/REQUIRES_MANUAL_REVIEW — see
+    services/compliance/moa_verification_service.py) into a real Review
+    Queue item. Same BUSINESS_RULE-direct-build + "anchor to the real
+    Document, never a fake row" + "return the already-open item instead
+    of None" pattern as create_from_tally_exception() immediately above
+    — this is that exact template applied to a different cross-system
+    mismatch source."""
+    existing = await _open_item_for_document(db, doc.id)
+    if existing:
+        return existing
+
+    picked = {
+        "review_type": ReviewType.BUSINESS_RULE, "issue": issue, "field_name": None,
+        "extracted_value": None, "expected_value": None, "confidence": doc.confidence, "validation_status": None,
+    }
+    item = _build_item(doc, picked)
+    db.add(item)
+    await db.flush()
+    await _log(db, item.id, None, "Flagged for Review", new_value=issue, reason="Auto-flagged by Compliance & Verification (MOA)")
+    await db.commit()
+    await db.refresh(item)
+    return item
+
+
 _MANUAL_ISSUE = {
     "review_type": ReviewType.VALIDATION,
     "issue": "Manually sent for review",
